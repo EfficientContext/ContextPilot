@@ -1,0 +1,9 @@
+datasets
+transformers
+elasticsearch==8.18.1
+aiohttp
+ujson
+scipy
+fastapi[all]
+cupy-cuda12x
+pytest

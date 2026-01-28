@@ -19,11 +19,14 @@
 - [2026/01] Code is released! 
 
 ## About
+<div align="center">
+  <img src="assets/about.png" alt="About" width="600"/>
+</div>
 
 ContextPilot is a fast optimization system on context engineering layer for agentic workloads:
 1. **High Throughput**: Boosting prefill throughput with intelligent context reuse.
 2. **Accuracy Preserved**: Reasoning accuracy is fully preserved and even enhanced!
-3. **Strong Compatibility**: Strong compatibility with existing RAG libraries (PageIndex), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang). Both single-node and multi-node deployment!
+3. **Strong Compatibility**: Strong compatibility with existing RAG libraries (HippoRAG), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang). Both single-node and multi-node deployment!
 4. **Widely Tested**: Tested with a wide range of RAG and Agentic AI applications.
 
 ## Target Workloads
@@ -92,15 +95,6 @@ Go hands-on with our [examples](examples/), demonstrating how to address differe
 ## Contributing
 
 We welcome and value all contributions! Please feel free to submit issues and pull requests.
-
-## Contact
-
-- [Yinsicheng Jiang](mailto:ysc.jiang@ed.ac.uk)
-- [Yeqi Huang](mailto:yeqi.huang@ed.ac.uk)
-- [Cheng Deng](mailto:cdeng@ed.ac.uk)
-- [Liang Cheng](mailto:L.cheng@ed.ac.uk)
-- [Xuan Sun](mailto:xuan.sun@ed.ac.uk)
-- [Luo Mai](mailto:luo.mai@ed.ac.uk)
 
 ## Citation
 

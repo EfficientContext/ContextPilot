@@ -23,14 +23,14 @@
 ContextPilot is a fast optimization system on context engineering layer for agentic workloads:
 1. **High Throughput**: Boosting prefill throughput with intelligent context reuse.
 2. **Accuracy Preserved**: Reasoning accuracy is fully preserved and even enhanced!
-3. **Strong Compatibility**: Strong compatibility with existing RAG libraries (HippoRAG), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang). Both single-node and multi-node deployment!
+3. **Strong Compatibility**: Strong compatibility with existing RAG libraries (PageIndex), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang). Both single-node and multi-node deployment!
 4. **Widely Tested**: Tested with a wide range of RAG and Agentic AI applications.
 
 ## Target Workloads
 
 1. **Trending Topic QA with Retrieval** — Search and generation for breaking news and hot topics beyond model knowledge
 2. **Closed-Domain Long-Context QA** — Retrieval-augmented QA over specialized corpora (novels, financial reports, legal documents)
-3. **Multi-Turn Conversations with Long-Term Memory** — Persistent context across sessions (e.g. Mem0)
+3. **Multi-Turn Conversations with Long-Term Memory** — Persistent context across sessions (e.g. [Mem0](https://github.com/mem0ai/mem0))
 
 ## Benchmark and Performance
 

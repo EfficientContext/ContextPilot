@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="assets/about.png" alt="ContextPilot Logo" width="500"/>
-  
+  <img src="assets/about.png" alt="ContextPilot Logo" width="800"/>
+
   <h2><strong>ContextPilot: Efficient Long Context Inference with Context Reuse</strong></h2>
 
   [![arXiv](https://img.shields.io/badge/arXiv-2511.03475-b31b1b.svg)](https://arxiv.org/abs/2511.03475)

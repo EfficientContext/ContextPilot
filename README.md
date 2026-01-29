@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="assets/contextpilot_logo.png" alt="ContextPilot Logo" width="400"/>
-
-  <p><strong>Efficient Long Context Inference with Context Reuse</strong></p>
+  <img src="assets/about.png" alt="ContextPilot Logo" width="500"/>
+  
+  <h2><strong>ContextPilot: Efficient Long Context Inference with Context Reuse</strong></h2>
 
   [![arXiv](https://img.shields.io/badge/arXiv-2511.03475-b31b1b.svg)](https://arxiv.org/abs/2511.03475)
   [![Python](https://img.shields.io/badge/python-≥3.10-blue)](https://www.python.org/)
@@ -19,9 +19,6 @@
 - [2026/01] Code is released! 
 
 ## About
-<div align="center">
-  <img src="assets/about.png" alt="About" width="600"/>
-</div>
 
 ContextPilot is a fast optimization system on context engineering layer for agentic workloads:
 1. **High Throughput**: Boosting prefill throughput with intelligent context reuse.

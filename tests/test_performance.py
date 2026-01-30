@@ -111,13 +111,16 @@ class TestBenchmarkClustering:
         
         assert elapsed < 120, f"Benchmark took too long: {elapsed:.2f}s"
     
+    @pytest.mark.gpu
     def test_benchmark_clustering_gpu(self, benchmark_contexts_medium):
         """Benchmark: GPU clustering with 200 contexts (if available)."""
         from contextpilot.context_index import ContextIndex
-        import torch
-        
-        if not torch.cuda.is_available():
-            pytest.skip("GPU not available")
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                pytest.skip("GPU not available")
+        except ImportError:
+            pytest.skip("torch not installed")
         
         print("\n" + "=" * 60)
         print("BENCHMARK: GPU Clustering (200 contexts)")
@@ -149,10 +152,14 @@ class TestBenchmarkClustering:
         
         assert elapsed < 60, f"Benchmark took too long: {elapsed:.2f}s"
     
+    @pytest.mark.gpu
     def test_benchmark_cpu_vs_gpu_comparison(self, benchmark_contexts_medium):
         """Benchmark: Compare CPU vs GPU performance."""
         from contextpilot.context_index import ContextIndex
-        import torch
+        try:
+            import torch
+        except ImportError:
+            pytest.skip("torch not installed")
         
         print("\n" + "=" * 60)
         print("BENCHMARK: CPU vs GPU Comparison (200 contexts)")

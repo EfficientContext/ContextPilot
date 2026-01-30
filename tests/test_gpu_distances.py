@@ -16,7 +16,10 @@ try:
 except ImportError:
     HAS_CUDA = False
 
-pytestmark = pytest.mark.skipif(not HAS_CUDA, reason="CUDA not available")
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not HAS_CUDA, reason="CUDA not available")
+]
 
 
 def compute_distance_cpu(context_i, context_j, alpha):

@@ -1,0 +1,50 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop, pageindex]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run tests (CPU only - GPU tests skipped on GitHub Actions)
+        run: |
+          # Skip GPU tests as GitHub Actions runners don't have CUDA
+          # To run GPU tests locally: pytest tests/ -v -m "gpu"
+          pytest tests/ -v --tb=short -m "not slow and not gpu and not integration"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black isort
+
+      - name: Check formatting
+        run: |
+          black --check contextpilot/ --line-length 100
+          isort --check-only contextpilot/
+        continue-on-error: true

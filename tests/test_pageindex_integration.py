@@ -207,9 +207,18 @@ class TestPageIndexRetrieverImport:
         assert config.retriever_type == "pageindex"
 
 
+# Check if openai is available for PageIndex tests
+try:
+    import openai
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+
+
 class TestPageIndexRetrieverBasic:
     """Basic tests for PageIndexRetriever."""
     
+    @pytest.mark.skipif(not HAS_OPENAI, reason="openai not installed")
     def test_init_with_tree_structure(self, sample_tree_structure, tmp_path):
         """Test initialization with tree structure."""
         from contextpilot.retriever import PageIndexRetriever
@@ -224,6 +233,7 @@ class TestPageIndexRetrieverBasic:
         
         assert 'test' in retriever.documents
     
+    @pytest.mark.skipif(not HAS_OPENAI, reason="openai not installed")
     def test_get_corpus(self, sample_tree_structure, tmp_path):
         """Test getting corpus from tree structure."""
         from contextpilot.retriever import PageIndexRetriever
@@ -355,6 +365,7 @@ class TestPageIndexWithContextPilot:
 class TestPageIndexEndToEnd:
     """End-to-end tests for PageIndex + ContextPilot workflow."""
     
+    @pytest.mark.skipif(not HAS_OPENAI, reason="openai not installed")
     def test_complete_workflow(self, sample_tree_structure, sample_queries, tmp_path):
         """Test the complete PageIndex + ContextPilot workflow."""
         from contextpilot.retriever import PageIndexRetriever

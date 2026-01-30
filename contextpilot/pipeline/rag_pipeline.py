@@ -24,6 +24,7 @@ from .components import (
 from .multi_turn import MultiTurnManager
 from ..retriever import BM25Retriever, FAISSRetriever, FAISS_AVAILABLE
 from ..retriever import Mem0Retriever, MEM0_AVAILABLE
+from ..retriever import PageIndexRetriever, PAGEINDEX_AVAILABLE
 from ..context_index import build_context_index
 from ..context_ordering import InterContextScheduler
 from ..utils.prompt_generator import prompt_generator
@@ -235,6 +236,37 @@ class RAGPipeline:
             self._log("🔧 Using custom retriever...")
             self.retriever = self.retriever_config.custom_retriever
         
+        elif self.retriever_config.retriever_type == "pageindex":
+            if not PAGEINDEX_AVAILABLE:
+                raise ImportError(
+                    "PageIndex retriever requires pageindex package. "
+                    "Install with: pip install pageindex"
+                )
+            self._log("🌲 Initializing PageIndex retriever (reasoning-based tree search)...")
+            self.retriever = PageIndexRetriever(
+                model=self.retriever_config.pageindex_model,
+                openai_api_key=self.retriever_config.pageindex_openai_api_key,
+                tree_cache_dir=self.retriever_config.pageindex_tree_cache_dir,
+                verbose=self.verbose
+            )
+            
+            # Index documents or load tree structures
+            if self.retriever_config.pageindex_document_paths:
+                self._log("  Building tree structures from PDF documents...")
+                self.retriever.index_documents(self.retriever_config.pageindex_document_paths)
+                self._log("  ✅ PageIndex trees built")
+            elif self.retriever_config.pageindex_tree_paths:
+                self._log("  Loading pre-built tree structures...")
+                self.retriever.load_tree_structures(self.retriever_config.pageindex_tree_paths)
+                self._log("  ✅ Tree structures loaded")
+            elif self.retriever_config.corpus_path or self.retriever_config.corpus_data:
+                self._log("  Using corpus data directly...")
+                self.retriever.index_corpus(
+                    corpus_file=self.retriever_config.corpus_path,
+                    corpus_data=self.retriever_config.corpus_data
+                )
+                self._log("  ✅ Corpus loaded")
+        
         elif self.retriever_config.retriever_type == "mem0":
             if not MEM0_AVAILABLE:
                 raise ImportError(
@@ -288,6 +320,12 @@ class RAGPipeline:
             # Use mem0's corpus map
             self.corpus_map = self.retriever.get_corpus_map()
             self._log(f"  ✅ {len(self.corpus)} memories available")
+        # For PageIndex, use the corpus from the retriever
+        elif self.retriever_config.retriever_type == "pageindex":
+            self._log("📖 Using corpus from PageIndex tree nodes...")
+            self.corpus = self.retriever.get_corpus()
+            self.corpus_map = self.retriever.get_corpus_map()
+            self._log(f"  ✅ {len(self.corpus)} tree nodes available")
         elif self.retriever_config.corpus_data:
             self.corpus = self.retriever_config.corpus_data
         elif self.retriever_config.corpus_path:

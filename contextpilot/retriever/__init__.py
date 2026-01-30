@@ -16,6 +16,14 @@ except ImportError:
     create_mem0_corpus_map = None
     MEM0_AVAILABLE = False
 
+# PageIndex is optional - only import if available
+try:
+    from .pageindex_retriever import PageIndexRetriever
+    PAGEINDEX_AVAILABLE = True
+except ImportError:
+    PageIndexRetriever = None
+    PAGEINDEX_AVAILABLE = False
+
 __all__ = [
     "BM25Retriever",
     "FAISSRetriever",
@@ -23,4 +31,6 @@ __all__ = [
     "Mem0Retriever",
     "create_mem0_corpus_map",
     "MEM0_AVAILABLE",
+    "PageIndexRetriever",
+    "PAGEINDEX_AVAILABLE",
 ]

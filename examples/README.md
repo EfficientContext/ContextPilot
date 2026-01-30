@@ -10,6 +10,7 @@ Practical code examples for using ContextPilot. See [docs/USAGE.md](../docs/USAG
 | `multi_turn_example.py` | Multi-turn conversation with deduplication | Corpus file |
 | `http_server_example.py` | Index server integration | ContextPilot server running |
 | `stateless_batch_example.py` | Stateless batch scheduling | ContextPilot server (stateless mode) |
+| `mem0_example.py` | mem0 Memory integration for personalized RAG | mem0ai package |
 
 ## Running Examples
 
@@ -52,6 +53,19 @@ python -m contextpilot.server.http_server --port 8765 --max-tokens 1000000 --inf
 python examples/http_server_example.py
 ```
 
+### 5. mem0 Memory Integration
+
+```bash
+# Install mem0 (if not already installed)
+pip install mem0ai
+
+# Set OpenAI API key (required by mem0 for LLM and embeddings)
+export OPENAI_API_KEY="your-api-key"
+
+# Run mem0 example
+python examples/mem0_example.py
+```
+
 ## Directory Structure
 
 ```
@@ -60,6 +74,7 @@ examples/
 ├── multi_turn_example.py         # Multi-turn with deduplication
 ├── http_server_example.py        # Stateful index server
 ├── stateless_batch_example.py    # Stateless batch scheduling
+├── mem0_example.py               # mem0 Memory integration
 ├── batch_inference/              # Low-level batch processing
 │   ├── prepare_batch.py          # Batch optimization
 │   ├── sglang_inference.py       # SGLang inference

@@ -23,6 +23,8 @@ from .components import (
 )
 from .multi_turn import MultiTurnManager
 from ..retriever import BM25Retriever, FAISSRetriever, FAISS_AVAILABLE
+from ..retriever import Mem0Retriever, MEM0_AVAILABLE
+from ..retriever import PageIndexRetriever, PAGEINDEX_AVAILABLE
 from ..context_index import build_context_index
 from ..context_ordering import InterContextScheduler
 from ..utils.prompt_generator import prompt_generator
@@ -234,27 +236,122 @@ class RAGPipeline:
             self._log("🔧 Using custom retriever...")
             self.retriever = self.retriever_config.custom_retriever
         
+        elif self.retriever_config.retriever_type == "pageindex":
+            if not PAGEINDEX_AVAILABLE:
+                raise ImportError(
+                    "PageIndex retriever requires pageindex package. "
+                    "Install with: pip install pageindex"
+                )
+            self._log("🌲 Initializing PageIndex retriever (reasoning-based tree search)...")
+            self.retriever = PageIndexRetriever(
+                model=self.retriever_config.pageindex_model,
+                openai_api_key=self.retriever_config.pageindex_openai_api_key,
+                tree_cache_dir=self.retriever_config.pageindex_tree_cache_dir,
+                verbose=self.verbose
+            )
+            
+            # Index documents or load tree structures
+            if self.retriever_config.pageindex_document_paths:
+                self._log("  Building tree structures from PDF documents...")
+                self.retriever.index_documents(self.retriever_config.pageindex_document_paths)
+                self._log("  ✅ PageIndex trees built")
+            elif self.retriever_config.pageindex_tree_paths:
+                self._log("  Loading pre-built tree structures...")
+                self.retriever.load_tree_structures(self.retriever_config.pageindex_tree_paths)
+                self._log("  ✅ Tree structures loaded")
+            elif self.retriever_config.corpus_path or self.retriever_config.corpus_data:
+                self._log("  Using corpus data directly...")
+                self.retriever.index_corpus(
+                    corpus_file=self.retriever_config.corpus_path,
+                    corpus_data=self.retriever_config.corpus_data
+                )
+                self._log("  ✅ Corpus loaded")
+        
+        elif self.retriever_config.retriever_type == "mem0":
+            if not MEM0_AVAILABLE:
+                raise ImportError(
+                    "mem0 retriever requires mem0ai package. "
+                    "Install with: pip install mem0ai"
+                )
+            self._log("🧠 Initializing mem0 retriever...")
+            self.retriever = Mem0Retriever(
+                memory=self.retriever_config.mem0_memory,
+                config=self.retriever_config.mem0_config,
+                use_client=self.retriever_config.mem0_use_client,
+                api_key=self.retriever_config.mem0_api_key,
+            )
+            
+            # Store mem0 search parameters for later use
+            self._mem0_user_id = self.retriever_config.mem0_user_id
+            self._mem0_agent_id = self.retriever_config.mem0_agent_id
+            self._mem0_run_id = self.retriever_config.mem0_run_id
+            self._mem0_threshold = self.retriever_config.mem0_threshold
+            self._mem0_rerank = self.retriever_config.mem0_rerank
+            
+            # Load existing memories as corpus if no corpus_path/data provided
+            if not self.retriever_config.corpus_path and not self.retriever_config.corpus_data:
+                self._log("  Loading memories from mem0...")
+                self.corpus = self.retriever.load_corpus_from_memories(
+                    user_id=self._mem0_user_id,
+                    agent_id=self._mem0_agent_id,
+                    run_id=self._mem0_run_id,
+                )
+                self._log(f"  ✅ Loaded {len(self.corpus)} memories from mem0")
+            else:
+                # Index provided corpus into mem0
+                self._log("  Indexing corpus into mem0...")
+                self.retriever.index_corpus(
+                    corpus_file=self.retriever_config.corpus_path,
+                    corpus_data=self.retriever_config.corpus_data,
+                    user_id=self._mem0_user_id,
+                    agent_id=self._mem0_agent_id,
+                    run_id=self._mem0_run_id,
+                )
+                self._log("  ✅ Corpus indexed into mem0")
+        
         else:
             raise ValueError(f"Unsupported retriever type: {self.retriever_config.retriever_type}")
     
     def _load_corpus(self):
         """Load corpus documents into memory."""
-        if self.retriever_config.corpus_data:
+        # For mem0, corpus may already be loaded during retriever setup
+        if self.retriever_config.retriever_type == "mem0" and self.corpus:
+            self._log("📖 Using corpus loaded from mem0 memories...")
+            # Use mem0's corpus map
+            self.corpus_map = self.retriever.get_corpus_map()
+            self._log(f"  ✅ {len(self.corpus)} memories available")
+        # For PageIndex, use the corpus from the retriever
+        elif self.retriever_config.retriever_type == "pageindex":
+            self._log("📖 Using corpus from PageIndex tree nodes...")
+            self.corpus = self.retriever.get_corpus()
+            self.corpus_map = self.retriever.get_corpus_map()
+            self._log(f"  ✅ {len(self.corpus)} tree nodes available")
+        elif self.retriever_config.corpus_data:
             self.corpus = self.retriever_config.corpus_data
         elif self.retriever_config.corpus_path:
             self._log(f"📖 Loading corpus from {self.retriever_config.corpus_path}...")
             with open(self.retriever_config.corpus_path, 'r') as f:
                 self.corpus = [json.loads(line) for line in f]
             self._log(f"  ✅ Loaded {len(self.corpus)} documents")
+        elif self.retriever_config.retriever_type == "mem0":
+            # mem0 with no corpus - this is fine, memories loaded during setup
+            self._log("  Using mem0 memories as corpus")
+            self.corpus_map = self.retriever.get_corpus_map()
+            return
         else:
             raise ValueError("Either corpus_path or corpus_data must be provided")
         
-        # Create mapping from doc_id to document
-        self.corpus_map = {}
-        for doc in self.corpus:
-            doc_id = doc.get("_id") or doc.get("document_id") or doc.get("chunk_id")
-            if doc_id is not None:
-                self.corpus_map[str(doc_id)] = doc
+        # Create mapping from doc_id to document (skip for mem0 which uses memory IDs)
+        if self.retriever_config.retriever_type == "mem0":
+            # For mem0, merge file corpus into memory cache
+            if self.retriever_config.corpus_path or self.retriever_config.corpus_data:
+                self.corpus_map = self.retriever.get_corpus_map()
+        else:
+            self.corpus_map = {}
+            for doc in self.corpus:
+                doc_id = doc.get("_id") or doc.get("document_id") or doc.get("chunk_id")
+                if doc_id is not None:
+                    self.corpus_map[str(doc_id)] = doc
     
     def retrieve(
         self,
@@ -309,6 +406,19 @@ class RAGPipeline:
                 query_data=queries,
                 top_k=top_k
             ))
+        elif self.retriever_config.retriever_type == "mem0":
+            # mem0 retriever with user/agent/run scoping
+            results = self.retriever.search_queries(
+                query_data=queries,
+                top_k=top_k,
+                user_id=self._mem0_user_id,
+                agent_id=self._mem0_agent_id,
+                run_id=self._mem0_run_id,
+                threshold=self._mem0_threshold,
+                rerank=self._mem0_rerank,
+            )
+            # Update corpus_map with any new memories found during search
+            self.corpus_map = self.retriever.get_corpus_map()
         else:
             # Custom retriever
             results = self.retriever.retrieve(queries, top_k=top_k)

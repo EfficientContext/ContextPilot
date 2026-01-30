@@ -23,7 +23,7 @@
 ContextPilot is a fast optimization system on context engineering layer for agentic workloads:
 1. **High Throughput**: Boosting prefill throughput with intelligent context reuse.
 2. **Accuracy Preserved**: Reasoning accuracy is fully preserved and even enhanced!
-3. **Strong Compatibility**: Strong compatibility with existing RAG libraries (HippoRAG), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang). Both single-node and multi-node deployment!
+3. **Strong Compatibility**: Strong compatibility with existing popular RAG libraries (PageIndex), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang). Both single-node and multi-node deployment!
 4. **Widely Tested**: Tested with a wide range of RAG and Agentic AI applications.
 
 ## Target Workloads
@@ -80,6 +80,35 @@ uv pip install "sglang" --prerelease=allow
 ```
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs, including Docker setup and FAISS configuration.
+
+### PageIndex Integration (NEW!)
+
+ContextPilot now supports [PageIndex](https://github.com/VectifyAI/PageIndex), a **reasoning-based, vectorless RAG** system. PageIndex uses LLM reasoning over hierarchical document tree structures instead of vector similarity search:
+
+```python
+from contextpilot.retriever import PageIndexRetriever
+from contextpilot import RAGPipeline, RetrieverConfig, OptimizerConfig
+
+# Option 1: Use PageIndexRetriever directly
+retriever = PageIndexRetriever(model="gpt-4o")
+retriever.load_tree_structures(["document_structure.json"])
+results = retriever.search_queries(query_data=[{"question": "What is the revenue?"}])
+
+# Option 2: Use unified RAGPipeline
+pipeline = RAGPipeline(
+    retriever=RetrieverConfig(
+        retriever_type="pageindex",
+        pageindex_model="gpt-4o",
+        pageindex_tree_paths=["document_structure.json"],
+        top_k=5
+    ),
+    optimizer=OptimizerConfig(enabled=True),
+    use_contextpilot=True
+)
+pipeline.setup()
+```
+
+See [examples/pageindex_example.py](examples/pageindex_example.py) for detailed usage.
 
 ## Documentation
 

@@ -14,6 +14,7 @@ class RetrieverType(str, Enum):
     """Supported retriever types."""
     BM25 = "bm25"
     FAISS = "faiss"
+    PAGEINDEX = "pageindex"
     CUSTOM = "custom"
 
 
@@ -51,6 +52,24 @@ class RetrieverConfig:
     ef_construction: int = 400
     ef_search: int = 200
     
+    # mem0-specific
+    mem0_config: Optional[Dict[str, Any]] = None  # mem0 configuration dict
+    mem0_memory: Optional[Any] = None  # Existing mem0 Memory instance
+    mem0_api_key: Optional[str] = None  # API key for mem0 cloud
+    mem0_use_client: bool = False  # Use mem0 MemoryClient instead of local Memory
+    mem0_user_id: Optional[str] = None  # Default user_id for mem0 operations
+    mem0_agent_id: Optional[str] = None  # Default agent_id for mem0 operations
+    mem0_run_id: Optional[str] = None  # Default run_id for mem0 operations
+    mem0_threshold: Optional[float] = None  # Score threshold for mem0 search
+    mem0_rerank: bool = True  # Whether to use mem0's reranker
+    
+    # PageIndex-specific (reasoning-based tree search retrieval)
+    pageindex_model: str = "gpt-4o"  # LLM model for tree generation and search
+    pageindex_openai_api_key: Optional[str] = None  # OpenAI API key
+    pageindex_tree_cache_dir: Optional[str] = None  # Directory to cache tree structures
+    pageindex_document_paths: Optional[List[str]] = None  # List of PDF document paths
+    pageindex_tree_paths: Optional[List[str]] = None  # List of pre-built tree structure paths
+    
     # Custom retriever
     custom_retriever: Optional[Any] = None
     
@@ -59,11 +78,30 @@ class RetrieverConfig:
     
     def __post_init__(self):
         """Validate configuration."""
-        if self.retriever_type not in ["bm25", "faiss", "custom"]:
+        if self.retriever_type not in ["bm25", "faiss", "mem0", "pageindex", "custom"]:
             raise ValueError(f"Unsupported retriever type: {self.retriever_type}")
         
         if self.retriever_type == "custom" and self.custom_retriever is None:
             raise ValueError("custom_retriever must be provided when retriever_type='custom'")
+        
+        if self.retriever_type == "pageindex":
+            # PageIndex requires either document_paths or tree_paths
+            if not self.pageindex_document_paths and not self.pageindex_tree_paths:
+                if not self.corpus_path and not self.corpus_data:
+                    raise ValueError(
+                        "PageIndex retriever requires either 'pageindex_document_paths', "
+                        "'pageindex_tree_paths', 'corpus_path', or 'corpus_data'"
+                    )
+        
+        if self.retriever_type == "mem0":
+            # Validate mem0 configuration
+            if self.mem0_use_client and self.mem0_api_key is None:
+                raise ValueError("mem0_api_key is required when mem0_use_client=True")
+            if not any([self.mem0_user_id, self.mem0_agent_id, self.mem0_run_id]):
+                raise ValueError(
+                    "At least one of 'mem0_user_id', 'mem0_agent_id', or 'mem0_run_id' "
+                    "must be provided when using mem0 retriever"
+                )
 
 
 @dataclass

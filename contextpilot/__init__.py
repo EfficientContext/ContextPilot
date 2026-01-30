@@ -42,6 +42,9 @@ from .retriever import (
     BM25Retriever,
     FAISSRetriever,
     FAISS_AVAILABLE,
+    Mem0Retriever,
+    create_mem0_corpus_map,
+    MEM0_AVAILABLE,
 )
 
 __version__ = "0.2.0"
@@ -65,4 +68,7 @@ __all__ = [
     'BM25Retriever',
     'FAISSRetriever',
     'FAISS_AVAILABLE',
+    'Mem0Retriever',
+    'create_mem0_corpus_map',
+    'MEM0_AVAILABLE',
 ]

@@ -2,6 +2,19 @@
 
 Offline mode is best for **batch processing** where you process all queries at once without needing live cache management.
 
+## How ContextPilot Optimizes Batches
+
+ContextPilot performs **two levels of optimization** to maximize KV-cache prefix sharing:
+
+1. **Inter-Context Reordering**: Queries with similar retrieved documents are scheduled together
+2. **Intra-Context Reordering**: Document IDs within each query are reordered so shared documents appear first as a common prefix
+
+For example, if Query A retrieves docs `[5, 1, 8, 2]` and Query B retrieves `[2, 9, 1, 5]`, after optimization:
+- Query A: `[1, 2, 5, 8]` (shared IDs first)
+- Query B: `[1, 2, 5, 9]` (same prefix `[1, 2, 5]`!)
+
+This creates identical prefixes that SGLang can cache and reuse.
+
 ## Prerequisites
 
 1. **Start your inference engine:**

@@ -130,7 +130,9 @@ class ScheduleRequest(BaseModel):
     """Request to schedule a batch (stateless mode - no cache tracking)."""
 
     contexts: List[List[Any]] = Field(
-        ..., description="List of contexts (each is a list of document IDs)"
+        ..., 
+        description="List of contexts. Each context is a list of items (int doc IDs OR string doc contents). "
+                    "If strings are provided, identical strings are treated as the same document."
     )
     alpha: float = Field(0.005, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
@@ -514,6 +516,11 @@ async def schedule_batch(request: ScheduleRequest):
     2. Process batches independently without maintaining server state
     3. Send scheduled contexts directly to LLM engine without cache sync
 
+    Supports two input formats:
+    - List[List[int]]: Each context is a list of document IDs
+    - List[List[str]]: Each context is a list of document contents (strings)
+      Identical strings are treated as the same document.
+
     No cache tracking, eviction, or token updates required.
     Each call is independent - perfect for batch processing.
 
@@ -525,18 +532,51 @@ async def schedule_batch(request: ScheduleRequest):
     try:
         logger.info(f"Scheduling batch with {len(request.contexts)} contexts (stateless mode)...")
 
+        # Check if input is strings or ints
+        contexts = request.contexts
+        str_to_id = {}
+        id_to_str = {}
+        is_string_input = False
+        
+        if contexts and contexts[0] and isinstance(contexts[0][0], str):
+            is_string_input = True
+            logger.info("Detected string input, converting to integer IDs...")
+            
+            # Build mapping: unique string -> integer ID
+            next_id = 0
+            converted_contexts = []
+            for ctx in contexts:
+                converted_ctx = []
+                for item in ctx:
+                    if item not in str_to_id:
+                        str_to_id[item] = next_id
+                        id_to_str[next_id] = item
+                        next_id += 1
+                    converted_ctx.append(str_to_id[item])
+                converted_contexts.append(converted_ctx)
+            
+            contexts = converted_contexts
+            logger.info(f"Converted {len(str_to_id)} unique strings to IDs")
+
         # Create a temporary index just for clustering/scheduling
         temp_index = LiveContextIndex(
             alpha=request.alpha,
             use_gpu=request.use_gpu,
             linkage_method=request.linkage_method,
-            max_tokens=None,  # No max_tokens - stateless mode
         )
 
         # Build and schedule without live tracking
         result = temp_index.schedule_only(
-            contexts=request.contexts,
+            contexts=contexts,
         )
+
+        # Convert back to strings if input was strings
+        scheduled_contexts = result["scheduled_reordered"]
+        if is_string_input:
+            scheduled_contexts = [
+                [id_to_str[item_id] for item_id in ctx]
+                for ctx in scheduled_contexts
+            ]
 
         logger.info(
             f"Batch scheduled: {len(result['groups'])} groups, "
@@ -547,9 +587,10 @@ async def schedule_batch(request: ScheduleRequest):
             "status": "success",
             "message": "Batch scheduled successfully (stateless mode)",
             "mode": "stateless",
+            "input_type": "string" if is_string_input else "integer",
             "num_contexts": len(request.contexts),
             "num_groups": len(result["groups"]),
-            "scheduled_contexts": result["scheduled_reordered"],
+            "scheduled_contexts": scheduled_contexts,
             "original_indices": result["final_mapping"],
             "groups": result["groups"],
             "stats": result.get("stats", {}),

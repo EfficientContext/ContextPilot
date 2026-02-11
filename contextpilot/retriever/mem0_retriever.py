@@ -349,7 +349,7 @@ class Mem0Retriever:
             }
             
             # Add metadata fields
-            if "metadata" in mem:
+            if mem.get("metadata"):
                 doc.update(mem["metadata"])
             
             # Add user/agent/run info if present

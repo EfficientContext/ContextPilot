@@ -399,6 +399,8 @@ async def build_index(request: BuildIndexRequest):
             "inserted_count": len(request.contexts),
             "request_id_mapping": request_id_mapping,
             "request_ids": request_ids,
+            "scheduled_reordered": result.get("scheduled_reordered", request.contexts),
+            "scheduled_order": result.get("final_mapping", list(range(len(request.contexts)))),
             "stats": _index.get_stats(),
         }
         
@@ -929,9 +931,8 @@ async def proxy_completions(request: Request):
 
         # Pass request_id to SGLang so it can use the same ID for request tracking
         # SGLang will notify ContextPilot via /evict callback when this request is evicted
-        # Only set rid if we have a valid request_id AND it's not already in the body
         if request_id:
-            body["rid"] = request_id  # Ensure rid is set (may already be there from RAGPipeline)
+            body["rid"] = request_id
             logger.info(f"Proxy: forwarding request with rid={request_id}")
         else:
             logger.info("Proxy: forwarding request without rid (no ContextPilot tracking)")

@@ -273,6 +273,8 @@ class RadixCache(BasePrefixCache):
         # Request tracking: maps request_id to the deepest node where it has extra tokens
         self._request_to_node: dict = {}
 
+        self._cache_hit_records: list = []  # [(matched_len, total_len)]
+
         if params.enable_metrics:
             self.init_metrics_collector()
 
@@ -338,6 +340,7 @@ class RadixCache(BasePrefixCache):
         self.protected_size_ = 0
         # Clear request tracking on reset
         self._request_to_node = {}
+        self._cache_hit_records = []
         self._record_all_cleared_event()
 
     def maybe_bigram_convert(
@@ -416,6 +419,14 @@ class RadixCache(BasePrefixCache):
             value = torch.cat(value)
         else:
             value = torch.empty((0,), dtype=torch.int64, device=self.device)
+
+        self._cache_hit_records.append((len(value), len(key)))
+        if len(self._cache_hit_records) % 32 == 0:
+            recent = self._cache_hit_records[-32:]
+            avg_m = sum(r[0] for r in recent) / len(recent)
+            avg_t = sum(r[1] for r in recent) / len(recent)
+            logger.info(f"[RadixCache] cache_hit avg last 32: {avg_m/avg_t:.4f} ({avg_m:.0f}/{avg_t:.0f} tokens)" if avg_t else "[RadixCache] cache_hit: no tokens")
+
         return MatchResult(
             device_indices=value,
             last_device_node=last_node,
@@ -686,6 +697,24 @@ class RadixCache(BasePrefixCache):
             cache.set_eviction_callback(on_eviction)
         """
         self.eviction_callback = callback
+
+    def get_cache_hit_stats(self) -> dict:
+        if not self._cache_hit_records:
+            return {"num_calls": 0, "avg_hit_rate": 0.0}
+        r = self._cache_hit_records
+        avg_m = sum(x[0] for x in r) / len(r)
+        avg_t = sum(x[1] for x in r) / len(r)
+        recent = r[-32:]
+        rm, rt = sum(x[0] for x in recent) / len(recent), sum(x[1] for x in recent) / len(recent)
+        return {
+            "num_calls": len(r),
+            "avg_hit_rate": avg_m / avg_t if avg_t else 0.0,
+            "avg_matched": avg_m, "avg_total": avg_t,
+            "last_32_avg_hit_rate": rm / rt if rt else 0.0,
+        }
+
+    def reset_cache_hit_stats(self):
+        self._cache_hit_records = []
 
     def get_tracked_request_ids(self) -> set:
         """

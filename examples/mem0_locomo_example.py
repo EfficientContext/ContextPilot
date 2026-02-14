@@ -112,8 +112,8 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
     label = "contextpilot" if optimize else "baseline"
     print(f"\n--- {label} multi-turn ({NUM_TURNS} turns) ---")
 
-    prev_doc_ids = []
-    ttfts, f1s, judges, overlaps = [], [], [], []
+    prev_doc_ids, prev_reordered = [], []
+    ttfts, f1s, judges, prefix_matches = [], [], [], []
     if cp_available and optimize:
         requests.post(f"{CONTEXTPILOT_URL}/reset", timeout=5)
 
@@ -146,8 +146,13 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
                 reordered, _, mapping, _ = InterContextScheduler().schedule_contexts(ci)
                 reordered_ids = reordered[mapping.index(len(all_ctx) - 1)]
 
-        prior_set = {d for ids in prev_doc_ids for d in ids}
-        overlap = len(set(reordered_ids) & prior_set)
+        # Count consecutive matching docs from position 0 (prefix overlap)
+        prefix_match = 0
+        if prev_reordered:
+            for a, b in zip(reordered_ids, prev_reordered):
+                if a != b:
+                    break
+                prefix_match += 1
 
         # Build prompt and measure TTFT
         prompt = build_prompt(qa["question"], reordered_ids, cmap)
@@ -156,7 +161,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
         # Skip turn 0 — no prior context, so baseline and optimized are identical
         if idx > 0:
             ttfts.append(out["ttft"])
-            overlaps.append(overlap / len(reordered_ids) if reordered_ids else 0)
+            prefix_matches.append(prefix_match / len(reordered_ids) if reordered_ids else 0)
 
         # Score answer
         if out["success"] and out["text"]:
@@ -174,18 +179,19 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
                 print(f"Ground Truth: {gt}")
                 print(f"F1={f1:.3f} Judge={score:.1f}")
 
-        print(f"  T{idx:>2d}: TTFT={out['ttft']:.4f}s  overlap={overlap}/{len(reordered_ids)}")
+        print(f"  T{idx:>2d}: TTFT={out['ttft']:.4f}s  prefix={prefix_match}/{len(reordered_ids)}")
 
         prev_doc_ids.append(doc_ids)
+        prev_reordered = reordered_ids
 
     stats = {
         "ttft": sum(ttfts) / len(ttfts) if ttfts else 0,
         "f1": sum(f1s) / len(f1s) if f1s else 0,
         "judge": sum(judges) / len(judges) if judges else 0,
-        "overlap": sum(overlaps) / len(overlaps) if overlaps else 0,
+        "prefix": sum(prefix_matches) / len(prefix_matches) if prefix_matches else 0,
     }
     print(f"\n[{label} k={top_k}] TTFT={stats['ttft']:.4f}s  F1={stats['f1']:.4f}  "
-          f"Judge={stats['judge']:.3f}  Overlap={stats['overlap']:.1%}")
+          f"Judge={stats['judge']:.3f}  Prefix={stats['prefix']:.1%}")
     return stats
 
 
@@ -265,8 +271,8 @@ if __name__ == "__main__":
             "opt_f1": f"{o['f1']:.3f}",
             "opt_judge": f"{o['judge']:.3f}",
             "ttft_delta": f"{d:+.1f}%",
-            "base_overlap": f"{b['overlap']:.1%}",
-            "opt_overlap": f"{o['overlap']:.1%}",
+            "base_prefix": f"{b['prefix']:.1%}",
+            "opt_prefix": f"{o['prefix']:.1%}",
         } for k, b, o, d in rows])
         print(f"\n{'='*70}\nFINAL SUMMARY\n{'='*70}")
         print(df.to_string(index=False))

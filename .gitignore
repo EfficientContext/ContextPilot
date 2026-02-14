@@ -5,3 +5,6 @@ dist/
 *.log
 *.jsonl
 *.egg-info/
+*/.DS_Store
+*.DS_Store
+

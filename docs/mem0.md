@@ -18,6 +18,7 @@ bash patches/sglang/apply_patch.sh
 ## Start servers
 
 ```bash
+export RAGBOOST_INDEX_URL=http://localhost:8765
 python -m sglang.launch_server --model <model> --port 30000
 
 # ContextPilot is optional, but to track the cache hit metrics you'll need the server

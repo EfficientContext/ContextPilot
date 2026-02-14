@@ -1,4 +1,5 @@
 import asyncio, json, os, re, time, urllib.request, uuid
+os.environ["TQDM_DISABLE"] = "1"
 from pathlib import Path
 
 import aiohttp, openai, requests
@@ -15,10 +16,12 @@ LOCOMO_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/l
 LOCOMO_CACHE = Path(__file__).resolve().parent.parent / "tests" / ".locomo_cache" / "locomo10.json"
 
 CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
-MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "50"))
+MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
-NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "50"))
-TOP_K_LIST = [int(k) for k in os.environ.get("LOCOMO_TOP_K", "20,50").split(",")]
+NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "200"))
+TOP_K_LIST = [int(k) for k in os.environ.get("LOCOMO_TOP_K", "50,100").split(",")]
+BENCH_MODE = os.environ.get("BENCH_MODE", "both")  # baseline, optimized, both
+BENCH_USER_ID = os.environ.get("BENCH_USER_ID", "")
 
 
 async def _stream_ttft(prompt, model, max_tokens=512, rid=None):
@@ -56,15 +59,17 @@ def run_ttft(prompt, model, max_tokens=512, rid=None):
     return asyncio.run(_stream_ttft(prompt, model, max_tokens, rid=rid))
 
 
-def build_prompt(question, doc_ids, corpus_map, history=None):
+def build_prompt(question, doc_ids, corpus_map, original_order=None):
     docs = [corpus_map.get(str(d), {}).get("text", f"[memory {d}]") for d in doc_ids]
     ctx = "\n".join(f"[{i+1}] {d}" for i, d in enumerate(docs))
-    parts = [f"Memories:\n{ctx}"]
-    if history:
-        parts.append("Conversation so far:\n" + "\n".join(history))
-    parts.append(f"Based on the memories above, concisely answer the following "
-                 f"question in as few words as possible.\nQuestion: {question}\nAnswer:")
-    return "\n\n".join(parts)
+    hint = ""
+    if original_order and list(original_order) != list(doc_ids):
+        pos = {d: i + 1 for i, d in enumerate(doc_ids)}
+        reading = ", ".join(f"[{pos[d]}]" for d in original_order if d in pos)
+        hint = f"\nPlease read the memories in order: {reading}"
+    return (f"Memories:\n{ctx}\n\n"
+            f"Based on the memories above, concisely answer the following "
+            f"question in as few words as possible.{hint}\nQuestion: {question}\nAnswer:")
 
 
 def llm_judge(question, prediction, ground_truth):
@@ -112,12 +117,13 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
     label = "contextpilot" if optimize else "baseline"
     print(f"\n--- {label} multi-turn ({NUM_TURNS} turns) ---")
 
-    history, prev_doc_ids = [], []
-    ttfts, f1s, judges = [], [], []
+    prev_doc_ids, prev_reordered = [], []
+    ttfts, f1s, judges, prefix_matches = [], [], [], []
     if cp_available and optimize:
         requests.post(f"{CONTEXTPILOT_URL}/reset", timeout=5)
 
-    for idx, qa in enumerate(qa_pairs[:NUM_TURNS]):
+    for idx in range(min(NUM_TURNS, len(qa_pairs))):
+        qa = qa_pairs[idx % len(qa_pairs)]
         # Retrieve from mem0
         s = retriever.search_queries(
             query_data=[{"qid": idx, "text": qa["question"]}],
@@ -145,14 +151,23 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
                 reordered, _, mapping, _ = InterContextScheduler().schedule_contexts(ci)
                 reordered_ids = reordered[mapping.index(len(all_ctx) - 1)]
 
-        prior_set = {d for ids in prev_doc_ids for d in ids}
-        overlap = len(set(reordered_ids) & prior_set)
+        # Count consecutive matching docs from position 0 (prefix overlap)
+        prefix_match = 0
+        if prev_reordered:
+            for a, b in zip(reordered_ids, prev_reordered):
+                if a != b:
+                    break
+                prefix_match += 1
 
         # Build prompt and measure TTFT
-        prompt = build_prompt(qa["question"], reordered_ids, cmap, history[-4:])
+        prompt = build_prompt(qa["question"], reordered_ids, cmap,
+                              original_order=doc_ids if optimize else None)
         out = run_ttft(prompt, model, MAX_GEN, rid=rid)
         gt = str(qa["answer"])
-        ttfts.append(out["ttft"])
+        # Skip turn 0 — no prior context, so baseline and optimized are identical
+        if idx > 0:
+            ttfts.append(out["ttft"])
+            prefix_matches.append(prefix_match / len(reordered_ids) if reordered_ids else 0)
 
         # Score answer
         if out["success"] and out["text"]:
@@ -164,23 +179,24 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
                 judges.append(score)
             if idx < 5:
                 print(f"Q{idx}: {qa['question'][:80]}")
+                print(f"  original:  {doc_ids}")
+                print(f"  reordered: {reordered_ids}")
                 print(f"Pred: {answer[:500]}")
                 print(f"Ground Truth: {gt}")
                 print(f"F1={f1:.3f} Judge={score:.1f}")
 
-        print(f"  T{idx:>2d}: TTFT={out['ttft']:.4f}s  overlap={overlap}/{len(reordered_ids)}")
 
         prev_doc_ids.append(doc_ids)
-        history.append(f"Q: {qa['question']}")
-        if out["success"] and out["text"]:
-            history.append(f"A: {out['text'][:200]}")
+        prev_reordered = reordered_ids
 
     stats = {
         "ttft": sum(ttfts) / len(ttfts) if ttfts else 0,
         "f1": sum(f1s) / len(f1s) if f1s else 0,
         "judge": sum(judges) / len(judges) if judges else 0,
+        "prefix": sum(prefix_matches) / len(prefix_matches) if prefix_matches else 0,
     }
-    print(f"\n[{label} k={top_k}] TTFT={stats['ttft']:.4f}s  F1={stats['f1']:.4f}  Judge={stats['judge']:.3f}")
+    print(f"\n[{label} k={top_k}] TTFT={stats['ttft']:.4f}s  F1={stats['f1']:.4f}  "
+          f"Judge={stats['judge']:.3f}  Prefix={stats['prefix']:.1%}")
     return stats
 
 
@@ -190,7 +206,7 @@ if __name__ == "__main__":
         f"SGLang not reachable at {SGLANG_URL}"
 
     model = requests.get(f"{SGLANG_URL}/v1/models", timeout=5).json()["data"][0]["id"]
-    print(f"SGLang model: {model}")
+    print(f"SGLang model: {model}  mode: {BENCH_MODE}")
 
     try:
         cp_available = requests.get(f"{CONTEXTPILOT_URL}/health", timeout=3).status_code in (200, 503)
@@ -208,23 +224,25 @@ if __name__ == "__main__":
     conv = conv["conversation"]
     print(f"LoCoMo conv {CONV_INDEX}: {conv['speaker_a']} & {conv['speaker_b']}, {len(qa_pairs)} QA pairs")
 
-    # Ingest into mem0
-    user_id = f"locomo_{uuid.uuid4().hex[:8]}"
+    # Ingest into mem0 (or reuse existing)
+    user_id = BENCH_USER_ID or f"locomo_{uuid.uuid4().hex[:8]}"
     retriever = Mem0Retriever(config={
         "llm": {"provider": "openai", "config": {"model": "gpt-4.1-mini-2025-04-14"}},
         "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
     })
-    n = 1
-    while f"session_{n}" in conv:
-        turns = conv[f"session_{n}"]
-        dt = conv.get(f"session_{n}_date_time", "")
-        msgs = [{"role": "user" if t["speaker"] == conv["speaker_a"] else "assistant",
-                 "content": t["text"]} for t in turns]
-        retriever.add_memory(msgs, user_id=user_id)
-        print(f"  session {n} ({len(turns)} turns, {dt})")
-        n += 1
-    print("Waiting for mem0 indexing ...")
-    time.sleep(5)
+    if not BENCH_USER_ID:
+        n = 1
+        while f"session_{n}" in conv:
+            turns = conv[f"session_{n}"]
+            dt = conv.get(f"session_{n}_date_time", "")
+            msgs = [{"role": "user" if t["speaker"] == conv["speaker_a"] else "assistant",
+                     "content": t["text"]} for t in turns]
+            retriever.add_memory(msgs, user_id=user_id)
+            print(f"  session {n} ({len(turns)} turns, {dt})")
+            n += 1
+        print("Waiting for mem0 indexing ...")
+        time.sleep(5)
+    print(f"mem0 user_id: {user_id}")
 
     # Warmup SGLang
     for _ in range(3):
@@ -258,6 +276,8 @@ if __name__ == "__main__":
             "opt_f1": f"{o['f1']:.3f}",
             "opt_judge": f"{o['judge']:.3f}",
             "ttft_delta": f"{d:+.1f}%",
+            "base_prefix": f"{b['prefix']:.1%}",
+            "opt_prefix": f"{o['prefix']:.1%}",
         } for k, b, o, d in rows])
         print(f"\n{'='*70}\nFINAL SUMMARY\n{'='*70}")
         print(df.to_string(index=False))
@@ -272,8 +292,12 @@ if __name__ == "__main__":
             pass
 
     finally:
-        try:
-            retriever.delete_all_memories(user_id=user_id)
-            print(f"\nCleaned up memories for {user_id}")
-        except Exception as e:
-            print(f"\nCleanup warning: {e}")
+        if not BENCH_USER_ID:
+            try:
+                retriever.delete_all_memories(user_id=user_id)
+                print(f"\nCleaned up memories for {user_id}")
+            except Exception as e:
+                print(f"\nCleanup warning: {e}")
+        # Force cleanup before Python shutdown to avoid Qdrant __del__ traceback
+        del retriever
+        import gc; gc.collect()

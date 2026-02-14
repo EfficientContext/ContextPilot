@@ -155,7 +155,7 @@ config = InferenceConfig(
 
 ## HTTP Server Endpoints
 
-ContextPilot provides an HTTP server for live index management with SGLang integration.
+ContextPilot provides an HTTP server for live index management with inference engine integration.
 
 ### Health Check
 
@@ -189,9 +189,16 @@ Compute optimal scheduling without maintaining state.
 **Response:**
 ```json
 {
-    "original_indices": [0, 1],
+    "status": "success",
+    "message": "Batch scheduled successfully (stateless mode)",
+    "mode": "stateless",
+    "input_type": "integer",
+    "num_contexts": 2,
     "num_groups": 1,
-    "scheduling_time": 0.05
+    "scheduled_contexts": [[2, 3, 1], [2, 3, 4]],
+    "original_indices": [0, 1],
+    "groups": [...],
+    "stats": {...}
 }
 ```
 
@@ -201,7 +208,7 @@ Compute optimal scheduling without maintaining state.
 POST /build
 ```
 
-Build a new index or incrementally update an existing one. Supports multi-turn deduplication.
+Build the index or incrementally update an existing one. Auto-detects mode: empty index → cold start, existing index → incremental search. Call `POST /reset` to force cold start. Supports multi-turn deduplication.
 
 **Request:**
 ```json
@@ -211,7 +218,6 @@ Build a new index or incrementally update an existing one. Supports multi-turn d
     "alpha": 0.005,
     "use_gpu": false,
     "linkage_method": "average",
-    "incremental": false,
     "deduplicate": false,
     "parent_request_ids": [null, null],
     "hint_template": "Refer to Doc {doc_id} from Turn {turn_number}"
@@ -225,19 +231,42 @@ Build a new index or incrementally update an existing one. Supports multi-turn d
 | `alpha` | float | `0.005` | Distance computation parameter |
 | `use_gpu` | bool | `false` | Use GPU for distance computation |
 | `linkage_method` | str | `"average"` | Clustering method |
-| `incremental` | bool | `false` | Use incremental build (search/reorder/merge) |
 | `deduplicate` | bool | `false` | Enable multi-turn deduplication |
 | `parent_request_ids` | List[str\|null] | `null` | Parent request IDs for deduplication |
 | `hint_template` | str | `null` | Custom template for reference hints |
 
-**Response (without deduplication):**
+**Response (initial build):**
 ```json
 {
     "status": "success",
     "message": "Index built successfully",
     "mode": "initial",
+    "input_type": "integer",
     "num_contexts": 2,
+    "matched_count": 0,
+    "inserted_count": 2,
+    "request_id_mapping": {...},
     "request_ids": ["contextpilot_abc123", "contextpilot_def456"],
+    "scheduled_reordered": [[2, 3, 1], [2, 3, 4]],
+    "scheduled_order": [0, 1],
+    "stats": {...}
+}
+```
+
+**Response (incremental build — index already exists):**
+```json
+{
+    "status": "success",
+    "message": "Incremental build completed",
+    "mode": "incremental",
+    "input_type": "integer",
+    "num_contexts": 1,
+    "matched_count": 1,
+    "merged_count": 0,
+    "request_ids": ["contextpilot_ghi789"],
+    "reordered_contexts": [[2, 3, 5]],
+    "scheduled_order": [0],
+    "groups": [...],
     "stats": {...}
 }
 ```
@@ -320,20 +349,6 @@ This is a lightweight endpoint designed for **Turn 2+** in multi-turn conversati
 }
 ```
 
-### Update Tokens (Stateful)
-
-```
-POST /update_tokens
-```
-
-**Request:**
-```json
-{
-    "request_id": "req-abc",
-    "num_tokens": 1500
-}
-```
-
 ### Evict (Stateful)
 
 ```
@@ -407,7 +422,6 @@ result = client.schedule(contexts, alpha=0.005, use_gpu=False)
 client.build(contexts, alpha=0.005, use_gpu=False, deduplicate=True)
 client.deduplicate(contexts, parent_request_ids, hint_template=None)
 client.evict(request_ids)
-client.update_tokens(request_id, num_tokens)
 client.health()
 
 client.close()
@@ -421,8 +435,6 @@ client.close()
 | `build(contexts, alpha, use_gpu, deduplicate, parent_request_ids)` | Build live index |
 | `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+) |
 | `evict(request_ids)` | Remove requests from index |
-| `update_tokens(request_id, num_tokens)` | Update token count |
-| `touch(request_id)` | Update LRU access time |
 | `reset()` | Reset index and conversation tracker |
 | `health()` | Health check |
 | `is_ready()` | Check if server is ready |

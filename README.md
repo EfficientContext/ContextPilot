@@ -79,7 +79,7 @@ pip install uv
 uv pip install "sglang" --prerelease=allow
 ```
 
-More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs, including Docker setup and FAISS configuration.
+More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
 ### PageIndex Integration (NEW!)
 
@@ -108,7 +108,7 @@ pipeline = RAGPipeline(
 pipeline.setup()
 ```
 
-See [examples/pageindex_example.py](examples/pageindex_example.py) for detailed usage.
+See [examples/pageindex_e2e_example.py](examples/pageindex_e2e_example.py) for detailed usage.
 
 ## Documentation
 

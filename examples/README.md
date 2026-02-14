@@ -1,84 +1,89 @@
 # ContextPilot Examples
 
-Practical code examples for using ContextPilot. See [docs/USAGE.md](../docs/USAGE.md) for comprehensive documentation.
+Practical code examples for using ContextPilot.
 
 ## Quick Reference
 
 | Example | Description | Prerequisites |
 |---------|-------------|---------------|
-| `pipeline_examples.py` | Basic Pipeline API usage | Corpus file |
-| `multi_turn_example.py` | Multi-turn conversation with deduplication | Corpus file |
-| `http_server_example.py` | Index server integration | ContextPilot server running |
-| `stateless_batch_example.py` | Stateless batch scheduling | ContextPilot server (stateless mode) |
-| `mem0_example.py` | mem0 Memory integration for personalized RAG | mem0ai package |
+| `simple_reorder_example.py` | Minimal "hello world" — call `/schedule` with 4 contexts | ContextPilot server (stateless) |
+| `pipeline_examples.py` | Pipeline API usage (BM25, FAISS, generation) | Corpus file |
+| `http_server_example.py` | Stateful index server (build, proxy, eviction) | ContextPilot + SGLang |
+| `stateless_batch_example.py` | Stateless batch scheduling (3 approaches) | ContextPilot server (stateless) |
+| `stateless_sglang_e2e.py` | Stateless scheduling → SGLang inference e2e | ContextPilot + SGLang |
+| `pageindex_e2e_example.py` | PageIndex tree search + ContextPilot optimization | PageIndex package |
+| `mem0_bench_simple.py` | A/B benchmark: Baseline vs ContextPilot (cache hit rate) | mem0ai + OpenAI key + SGLang |
+| `mem0_locomo_example.py` | LoCoMo multi-turn benchmark with TTFT & F1 scoring | mem0ai + OpenAI key + SGLang |
 
 ## Running Examples
 
-### 1. Basic Pipeline (Offline Mode)
+### 1. Minimal Example (Stateless)
 
 ```bash
-# Start inference server
-python -m sglang.launch_server --model-path Qwen/Qwen2.5-7B-Instruct --port 30000
+# Terminal 1: Start server in stateless mode
+python -m contextpilot.server.http_server --port 8765 --stateless
 
-# Run pipeline example
+# Terminal 2: Run
+python examples/simple_reorder_example.py
+```
+
+### 2. Pipeline API (Offline)
+
+```bash
 python examples/pipeline_examples.py
 ```
 
-### 2. Multi-Turn Conversations
+### 3. Stateful Server (Live Mode)
 
 ```bash
-python examples/multi_turn_example.py
-```
-
-### 3. Index Server (Stateless Mode)
-
-```bash
-# Terminal 1: Start server
-python -m contextpilot.server.http_server --port 8765 --stateless
-
-# Terminal 2: Run example
-python examples/stateless_batch_example.py
-```
-
-### 4. Index Server (Stateful Mode)
-
-```bash
-# Terminal 1: Start SGLang
-python -m sglang.launch_server --model-path Qwen/Qwen2.5-7B-Instruct --port 30000
+# Terminal 1: Start SGLang with ContextPilot eviction callback
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+    --model-path Qwen/Qwen3-4B --port 30000 --schedule-policy lpm
 
 # Terminal 2: Start ContextPilot server
-python -m contextpilot.server.http_server --port 8765 --max-tokens 1000000 --infer-api-url http://localhost:30000
+python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
 
 # Terminal 3: Run example
 python examples/http_server_example.py
 ```
 
-### 5. mem0 Memory Integration
+### 4. Stateless Scheduling → SGLang e2e
 
 ```bash
-# Install mem0 (if not already installed)
+# Terminal 1: Start SGLang
+python -m sglang.launch_server --model-path Qwen/Qwen3-4B --port 30000
+
+# Terminal 2: Start ContextPilot (stateless — no CONTEXTPILOT_INDEX_URL needed on SGLang)
+python -m contextpilot.server.http_server --port 8765 --stateless --infer-api-url http://localhost:30000
+
+# Terminal 3: Run
+python examples/stateless_sglang_e2e.py
+```
+
+### 5. mem0 A/B Benchmark
+
+```bash
 pip install mem0ai
+export OPENAI_API_KEY="your-key"
 
-# Set OpenAI API key (required by mem0 for LLM and embeddings)
-export OPENAI_API_KEY="your-api-key"
-
-# Run mem0 example
-python examples/mem0_example.py
+# Start SGLang + ContextPilot (live mode), then:
+python examples/mem0_bench_simple.py
 ```
 
 ## Directory Structure
 
 ```
 examples/
-├── pipeline_examples.py          # Basic Pipeline API
-├── multi_turn_example.py         # Multi-turn with deduplication
+├── simple_reorder_example.py     # Minimal hello world
+├── pipeline_examples.py          # Pipeline API (BM25, FAISS, generation)
 ├── http_server_example.py        # Stateful index server
 ├── stateless_batch_example.py    # Stateless batch scheduling
-├── mem0_example.py               # mem0 Memory integration
-├── batch_inference/              # Low-level batch processing
-│   ├── prepare_batch.py          # Batch optimization
-│   ├── sglang_inference.py       # SGLang inference
-│   └── analyze_results.py        # Performance analysis
+├── stateless_sglang_e2e.py       # Stateless → SGLang e2e
+├── pageindex_e2e_example.py      # PageIndex + ContextPilot
+├── mem0_bench_simple.py          # A/B cache hit benchmark
+├── mem0_locomo_example.py        # LoCoMo multi-turn benchmark
+├── batch_inference/              # Batch processing utilities
+│   └── prepare_batch.py          # Batch optimization
 └── construct_rag_data/           # Data retrieval utilities
     ├── multihopRAG_bm25.py       # BM25 retrieval
     └── multihopRAG_faiss.py      # FAISS retrieval
@@ -95,7 +100,3 @@ examples/
 ```json
 {"doc_id": 0, "text": "Machine learning is a subset of AI..."}
 ```
-
-## More Information
-
-See [docs/USAGE.md](../docs/USAGE.md) for complete documentation.

@@ -19,7 +19,7 @@ Between runs, SGLang's radix cache and ContextPilot's index are both flushed.
 
 SETUP:
   # Terminal 1: SGLang with cache report + LPM
-  RAGBOOST_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+  CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
       --model-path Qwen/Qwen3-4B --tp-size 1 --schedule-policy lpm \
       --port 30000 --enable-cache-report
 
@@ -28,7 +28,7 @@ SETUP:
 
   # Terminal 3: Run this script
   export OPENAI_API_KEY=sk-...
-  python examples/mem0_ab_comparison.py
+  python examples/mem0_bench_simple.py
 """
 
 import os
@@ -319,10 +319,9 @@ def main():
         doc_ids = results[0]["top_k_doc_id"]
         cp_contexts_original.append(doc_ids)
 
-        # 2. Incremental /build — reorder this request's memories to maximize prefix sharing
+        # 2. /build — ContextPilot auto-detects: first call → cold start, subsequent → incremental search
         build_resp = requests.post(f"{CONTEXTPILOT_URL}/build", json={
             "contexts": [doc_ids],  # single request
-            "incremental": True,
             "initial_tokens_per_context": 0,
             "alpha": 0.005,
             "use_gpu": False,

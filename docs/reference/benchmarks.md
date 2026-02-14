@@ -76,19 +76,3 @@ python scripts/benchmark.py --gpu
 # Custom context sizes
 python scripts/benchmark.py --sizes 100 500 1000 2000
 ```
-
----
-
-## Hardware Requirements
-
-### Minimum
-
-- CPU: 4+ cores
-- RAM: 16GB
-- GPU: Optional (CUDA-compatible for acceleration)
-
-### Recommended (Production)
-
-- CPU: 16+ cores
-- RAM: 64GB
-- GPU: NVIDIA A100/H100 for large batches (>10k contexts)

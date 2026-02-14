@@ -116,17 +116,17 @@ client.close()
 
 ## Stateful Mode
 
-Stateful mode maintains a **live index** that tracks tokens and synchronizes with SGLang's cache.
+Stateful mode maintains a **live index** that tracks tokens and synchronizes with the inference engine's cache.
 
-**Best for:** Long-running services, cache-aware scheduling, SGLang integration.
+**Best for:** Long-running services, cache-aware scheduling, inference engine integration.
 
 ### Architecture
 
 ```
-┌─────────────┐         ┌─────────────────────┐         ┌─────────────┐
-│   Client    │ ──────► │  ContextPilot Index     │ ──────► │   SGLang    │
-│             │         │  Server (8765)      │         │   (30000)   │
-└─────────────┘         └─────────────────────┘         └─────────────┘
+┌─────────────┐         ┌─────────────────────┐         ┌─────────────────┐
+│   Client    │ ──────► │  ContextPilot Index  │ ──────► │ Inference Engine│
+│             │         │  Server (8765)       │         │ (30000)         │
+└─────────────┘         └─────────────────────┘         └─────────────────┘
                                │
                                ▼
                         ┌─────────────────┐
@@ -167,7 +167,7 @@ print(f"Built index with {len(request_ids)} contexts")
 
 ### Step 2: Send Requests via Proxy
 
-The server proxies requests to SGLang and tracks tokens automatically:
+The server proxies requests to the inference engine and tracks tokens automatically:
 
 ```python
 response = requests.post("http://localhost:8765/v1/completions", json={
@@ -181,20 +181,9 @@ result = response.json()
 print(result["choices"][0]["text"])
 ```
 
-### Step 3: Manual Token Updates (Alternative)
+### Step 3: Eviction Sync
 
-If not using the proxy:
-
-```python
-response = requests.post("http://localhost:8765/update_tokens", json={
-    "request_id": request_ids[0],
-    "num_tokens": 1500
-})
-```
-
-### Step 4: Eviction Sync (Automatic)
-
-When using the patched SGLang (see [SGLang Integration](#sglang-integration) below), eviction sync is **automatic**. SGLang's radix cache calls the `/evict` endpoint with evicted `request_ids` via a callback.
+When using an inference engine with ContextPilot integration (e.g. SGLang with the `CONTEXTPILOT_INDEX_URL` env var), eviction sync is **automatic**. The engine's cache calls the `/evict` endpoint with evicted `request_ids` via a callback.
 
 If you need manual eviction (e.g., for testing), use:
 
@@ -208,36 +197,7 @@ requests.post("http://localhost:8765/evict", json={
 
 ## SGLang Integration
 
-ContextPilot integrates with SGLang via the `RAGBOOST_INDEX_URL` environment variable. When set, SGLang automatically syncs evictions with ContextPilot.
-
-### Quick Start
-
-**Option A: Use Patch Script (Recommended)**
-
-Run the patch script to automatically install the patched files:
-
-```bash
-# From ContextPilot root directory
-bash patches/sglang/apply_patch.sh
-```
-
-This script will:
-- Find your SGLang installation automatically
-- Backup original files
-- Copy patched files to the correct location
-
-**Option B: Manual Copy**
-
-```bash
-# Copy patched files to your SGLang installation
-SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
-
-cp patches/sglang/cache_init_params.py $SGLANG_PATH/srt/mem_cache/
-cp patches/sglang/common.py $SGLANG_PATH/srt/mem_cache/
-cp patches/sglang/radix_cache.py $SGLANG_PATH/srt/mem_cache/
-
-echo "SGLang patched successfully!"
-```
+ContextPilot integrates with SGLang via the `CONTEXTPILOT_INDEX_URL` environment variable. When set, SGLang automatically syncs evictions with ContextPilot.
 
 ### Start SGLang with ContextPilot
 
@@ -248,27 +208,27 @@ python -m contextpilot.server.http_server \
     --infer-api-url http://localhost:30000
 
 # Start SGLang with ContextPilot integration enabled
-RAGBOOST_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
     --model-path Qwen/Qwen3-4B \
     --port 30000
 ```
 
 ### How It Works
 
-When `RAGBOOST_INDEX_URL` is set, SGLang integrates with ContextPilot at eviction time:
+When `CONTEXTPILOT_INDEX_URL` is set, SGLang integrates with ContextPilot at eviction time:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     Eviction Sync Flow                              │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  SGLang Cache Full → RadixCache.evict() → Callback invoked         │
+│  Cache Full → RadixCache.evict() → Callback invoked                │
 │                                      │                              │
 │                                      ▼                              │
 │                     POST /evict {"request_ids": ["rid1", "rid2"]}   │
 │                                      │                              │
 │                                      ▼                              │
-│                     ContextPilot removes evicted requests from index    │
+│                     ContextPilot removes evicted requests from index│
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -276,130 +236,8 @@ When `RAGBOOST_INDEX_URL` is set, SGLang integrates with ContextPilot at evictio
 **Key Components:**
 
 1. **Request ID Tracking**: Each request has a unique `request_id` (e.g., `contextpilot_abc123`)
-2. **Eviction Callback**: When SGLang evicts cache entries, it notifies ContextPilot
+2. **Eviction Callback**: When the engine evicts cache entries, it notifies ContextPilot
 3. **Index Sync**: ContextPilot removes evicted requests from its live index
-
----
-
-## Patched Files Reference
-
-Three SGLang files are modified for ContextPilot integration:
-
-### 1. `cache_init_params.py`
-
-Adds eviction callback support:
-
-```python
-from typing import Callable, Optional
-
-# Type alias for eviction callback
-EvictionCallback = Optional[Callable[[set], None]]
-
-@dataclasses.dataclass
-class CacheInitParams:
-    # ... existing fields ...
-    
-    # NEW: Callback invoked when requests are evicted
-    eviction_callback: EvictionCallback = None
-
-    def __post_init__(self):
-        """Auto-create eviction callback from RAGBOOST_INDEX_URL."""
-        if self.eviction_callback is None:
-            from sglang.srt.mem_cache.common import create_contextpilot_eviction_callback
-            self.eviction_callback = create_contextpilot_eviction_callback()
-```
-
-### 2. `common.py`
-
-Adds the callback factory function:
-
-```python
-import os
-import requests
-
-RAGBOOST_INDEX_URL = os.environ.get("RAGBOOST_INDEX_URL")
-_contextpilot_enabled = RAGBOOST_INDEX_URL is not None
-
-def create_contextpilot_eviction_callback():
-    """Create eviction callback for ContextPilot sync."""
-    if not _contextpilot_enabled:
-        return None
-    
-    def eviction_callback(evicted_request_ids: set):
-        """Send evicted request IDs to ContextPilot index."""
-        if not evicted_request_ids:
-            return
-        
-        # Filter out internal requests
-        filtered_ids = {
-            rid for rid in evicted_request_ids 
-            if not rid.startswith("HEALTH_CHECK")
-        }
-        
-        if not filtered_ids:
-            return
-        
-        try:
-            requests.post(
-                f"{RAGBOOST_INDEX_URL}/evict",
-                json={"request_ids": list(filtered_ids)},
-                timeout=1.0
-            )
-        except Exception as e:
-            logger.warning(f"ContextPilot eviction sync failed: {e}")
-    
-    return eviction_callback
-```
-
-### 3. `radix_cache.py`
-
-Adds request tracking and callback invocation:
-
-```python
-class TreeNode:
-    def __init__(self, ...):
-        # ... existing code ...
-        self.request_ids: set = set()  # NEW: Track request IDs at this node
-
-class RadixCache:
-    def __init__(self, params):
-        # ... existing code ...
-        self.eviction_callback = params.eviction_callback  # NEW
-        self._request_to_node: dict = {}  # NEW: request_id -> node mapping
-
-    def insert(self, key, value, priority=None, request_id=None):
-        # ... existing code ...
-        # NEW: Track request_id at leaf node
-        if request_id:
-            leaf_node.request_ids.add(request_id)
-            self._request_to_node[request_id] = leaf_node
-
-    def evict(self, num_tokens, ...):
-        fully_evicted_requests = set()
-        
-        while num_tokens > 0:
-            # ... existing eviction logic ...
-            
-            # NEW: Collect request_ids from evicted nodes
-            if node.request_ids:
-                fully_evicted_requests.update(node.request_ids)
-                for rid in node.request_ids:
-                    self._request_to_node.pop(rid, None)
-        
-        # NEW: Invoke callback with evicted request IDs
-        if fully_evicted_requests and self.eviction_callback:
-            self.eviction_callback(fully_evicted_requests)
-```
-
----
-
-## Manual Integration (Advanced)
-
-If you prefer to apply changes manually instead of using patched files, see the code snippets in the "Patched Files Reference" section above. The key changes are:
-
-1. Add `EvictionCallback` type and `eviction_callback` field to `CacheInitParams`
-2. Add `create_contextpilot_eviction_callback()` function in `common.py`
-3. Add `request_ids` tracking to `TreeNode` and callback invocation in `RadixCache.evict()`
 
 ---
 
@@ -467,7 +305,7 @@ for new_idx, orig_idx in enumerate(scheduled_order):
 
 ```bash
 # Terminal 1: Start SGLang
-python -m sglang.launch_server --model meta-llama/Llama-3.1-8B-Instruct --port 30000
+python -m sglang.launch_server --model Qwen/Qwen3-4B --port 30000
 
 # Terminal 2: Start ContextPilot  
 python -m contextpilot.server.http_server --port 8765
@@ -482,4 +320,3 @@ python examples/stateless_sglang_e2e.py
 
 - [Multi-Turn](multi_turn.md) - Conversation handling with deduplication
 - [API Reference](../reference/api.md) - Full API documentation
-- [Troubleshooting](../troubleshooting.md) - Common issues

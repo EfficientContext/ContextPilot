@@ -91,11 +91,10 @@ def llm_judge(question, prediction, ground_truth):
         return -1.0, f"judge error: {e}"
 
 
-def cp_build_index(contexts, initial_tokens_per_context=0, incremental=False):
+def cp_build_index(contexts, initial_tokens_per_context=0):
     r = requests.post(f"{CONTEXTPILOT_URL}/build", json={
         "contexts": contexts, "use_gpu": False, "linkage_method": "average",
         "alpha": 0.005, "initial_tokens_per_context": initial_tokens_per_context,
-        "incremental": incremental,
     }, timeout=30)
     r.raise_for_status()
     return r.json()
@@ -131,11 +130,10 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
             ctx_tokens = sum(len(cmap.get(str(d), {}).get("text", "")) // 4 for d in doc_ids)
             if cp_available:
                 try:
-                    br = cp_build_index([doc_ids], initial_tokens_per_context=ctx_tokens,
-                                        incremental=idx > 0)
+                    br = cp_build_index([doc_ids], initial_tokens_per_context=ctx_tokens)
                     rids = br.get("request_ids", [])
                     rid = rids[0] if rids else None
-                    rc = br.get("reordered_contexts")
+                    rc = br.get("reordered_contexts") or br.get("scheduled_reordered")
                     reordered_ids = rc[0] if rc else doc_ids
                 except Exception:
                     pass

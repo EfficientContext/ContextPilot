@@ -326,4 +326,3 @@ Simply don't use the `/deduplicate` endpoint - process documents directly.
 ## Next Steps
 
 - [API Reference](../reference/api.md) - Full API documentation including HTTP endpoints
-- [Troubleshooting](../troubleshooting.md) - Common issues

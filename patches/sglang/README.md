@@ -32,16 +32,16 @@ For development, you can symlink to the patched files:
 
 ```bash
 SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
-RAGBOOST_PATCHES=$(pwd)
+CONTEXTPILOT_PATCHES=$(pwd)
 
 # Backup and link
 mv $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak
 mv $SGLANG_PATH/srt/mem_cache/common.py $SGLANG_PATH/srt/mem_cache/common.py.bak  
 mv $SGLANG_PATH/srt/mem_cache/radix_cache.py $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak
 
-ln -s $RAGBOOST_PATCHES/cache_init_params.py $SGLANG_PATH/srt/mem_cache/
-ln -s $RAGBOOST_PATCHES/common.py $SGLANG_PATH/srt/mem_cache/
-ln -s $RAGBOOST_PATCHES/radix_cache.py $SGLANG_PATH/srt/mem_cache/
+ln -s $CONTEXTPILOT_PATCHES/cache_init_params.py $SGLANG_PATH/srt/mem_cache/
+ln -s $CONTEXTPILOT_PATCHES/common.py $SGLANG_PATH/srt/mem_cache/
+ln -s $CONTEXTPILOT_PATCHES/radix_cache.py $SGLANG_PATH/srt/mem_cache/
 ```
 
 ## What's Changed
@@ -50,11 +50,11 @@ ln -s $RAGBOOST_PATCHES/radix_cache.py $SGLANG_PATH/srt/mem_cache/
 
 - Added `EvictionCallback` type alias
 - Added `eviction_callback` field to `CacheInitParams` dataclass
-- Added `__post_init__` to auto-create callback from `RAGBOOST_INDEX_URL` env var
+- Added `__post_init__` to auto-create callback from `CONTEXTPILOT_INDEX_URL` env var
 
 ### 2. common.py
 
-- Added `RAGBOOST_INDEX_URL` environment variable support
+- Added `CONTEXTPILOT_INDEX_URL` environment variable support
 - Added `create_contextpilot_eviction_callback()` function
 - Modified `evict_from_tree_cache()` to note callback is used
 
@@ -71,14 +71,14 @@ ln -s $RAGBOOST_PATCHES/radix_cache.py $SGLANG_PATH/srt/mem_cache/
 
 ## Usage
 
-After installing the patches, start SGLang with the `RAGBOOST_INDEX_URL` environment variable:
+After installing the patches, start SGLang with the `CONTEXTPILOT_INDEX_URL` environment variable:
 
 ```bash
 # Start ContextPilot server first
 python -m contextpilot.server.http_server --port 8765
 
 # Start SGLang with ContextPilot integration
-RAGBOOST_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
     --model-path Qwen/Qwen3-4B \
     --port 30000
 ```

@@ -3,7 +3,7 @@ ContextPilot Live Index HTTP Server
 
 A FastAPI-based HTTP server that:
 1. Exposes the LiveContextIndex as a REST API
-2. Proxies LLM requests to SGLang backend
+2. Proxies LLM requests to inference engine backend
 3. Automatically tracks tokens and triggers eviction
 4. Multi-turn conversation context deduplication
 
@@ -11,8 +11,8 @@ Usage:
     python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
 
 Environment variables (alternative to CLI args):
-    RAGBOOST_MAX_TOKENS: Maximum tokens allowed in index
-    RAGBOOST_INFER_API_URL: Inference backend URL (default: http://localhost:30000)
+    CONTEXTPILOT_MAX_TOKENS: Maximum tokens allowed in index
+    CONTEXTPILOT_INFER_API_URL: Inference backend URL (default: http://localhost:30000)
 """
 
 import argparse
@@ -64,6 +64,11 @@ _aiohttp_session: Optional[aiohttp.ClientSession] = None
 _tokenizer = None  # AutoTokenizer instance for chat template
 _model_name: Optional[str] = None  # Model name for tokenizer
 _stateless_mode: bool = False  # Stateless mode: just clustering/scheduling, no cache tracking
+# Persistent string-to-ID mapping for string-input mode.
+# Same string always gets the same integer ID across /build calls.
+_str_to_id: Dict[str, int] = {}
+_id_to_str: Dict[int, str] = {}
+_next_str_id: int = 0
 
 
 def _init_config():
@@ -71,20 +76,20 @@ def _init_config():
     global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode
 
     # Check stateless mode first
-    env_stateless = os.environ.get("RAGBOOST_STATELESS_MODE", "0")
+    env_stateless = os.environ.get("CONTEXTPILOT_STATELESS_MODE", "0")
     _stateless_mode = env_stateless == "1"
 
     if _max_tokens is None and not _stateless_mode:
-        env_max_tokens = os.environ.get("RAGBOOST_MAX_TOKENS")
+        env_max_tokens = os.environ.get("CONTEXTPILOT_MAX_TOKENS")
         if env_max_tokens:
             _max_tokens = int(env_max_tokens)
 
     if _infer_api_url is None:
-        _infer_api_url = os.environ.get("RAGBOOST_INFER_API_URL", "http://localhost:30000")
+        _infer_api_url = os.environ.get("CONTEXTPILOT_INFER_API_URL", "http://localhost:30000")
 
     # Initialize tokenizer for chat template if model is specified
     if _tokenizer is None:
-        env_model = os.environ.get("RAGBOOST_MODEL_NAME")
+        env_model = os.environ.get("CONTEXTPILOT_MODEL_NAME")
         if env_model and AutoTokenizer is not None:
             try:
                 _model_name = env_model
@@ -107,9 +112,6 @@ class BuildIndexRequest(BaseModel):
     alpha: float = Field(0.005, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
     linkage_method: str = Field("average", description="Linkage method for clustering")
-    incremental: bool = Field(
-        False, description="If True and index exists, do incremental build (search, reorder, merge)"
-    )
     # Multi-turn deduplication fields
     parent_request_ids: Optional[List[Optional[str]]] = Field(
         None, 
@@ -201,7 +203,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ContextPilot Live Index Server",
-    description="HTTP API for ContextPilot LiveContextIndex with SGLang proxy and eviction synchronization",
+    description="HTTP API for ContextPilot LiveContextIndex with inference engine proxy and eviction synchronization",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -265,27 +267,27 @@ async def health():
 @app.post("/build")
 async def build_index(request: BuildIndexRequest):
     """
-    Build and initialize the index, or incrementally update existing index.
+    Build or incrementally update the index.
 
-    Two modes:
-    1. Initial build (incremental=False or no existing index):
-       - Creates new index from scratch
-       - Performs clustering and scheduling
-       - Auto-generates request_ids for all contexts
-       
-    2. Incremental build (incremental=True and index exists):
-       - Reorders matched contexts to align with existing prefix structure
-       - Builds a separate index for unmatched contexts
-       - Merges new index subtrees under the global root
-       - Returns NEW request_ids for all contexts
+    Auto-detects mode based on index state:
+    - Index empty/not initialized → cold start (full build + reorder)
+    - Index exists and live → incremental (search + reorder matched + merge unmatched)
 
-    Multi-turn deduplication (deduplicate=True):
+    Supports two input formats:
+    - List[List[int]]: Each context is a list of document IDs
+    - List[List[str]]: Each context is a list of document contents (strings)
+      Identical strings are treated as the same document.
+
+    Use POST /reset to clear the index and force a cold start.
+    Use POST /schedule for stateless reordering (no index).
+
+    Optional deduplication (deduplicate=True):
        - Compares contexts against conversation history
        - Returns deduplicated_contexts with overlapping docs removed
        - Returns reference_hints for each deduplicated document
 
     The response includes an ordered list of request_ids matching input contexts order.
-    These request_ids should be used when sending requests to SGLang so that
+    These request_ids should be used when sending requests to the inference engine so that
     the eviction callback can notify ContextPilot which contexts were evicted.
     """
     global _index
@@ -294,12 +296,41 @@ async def build_index(request: BuildIndexRequest):
     _init_config()
 
     try:
-        # Check if incremental mode is requested and index exists
-        if request.incremental and _index is not None and _index.is_live:
-            logger.info(f"Incremental build with {len(request.contexts)} contexts...")
+        # Convert string inputs to integer IDs if needed (persistent mapping)
+        global _str_to_id, _id_to_str, _next_str_id
+        contexts = request.contexts
+        is_string_input = False
+
+        if contexts and contexts[0] and isinstance(contexts[0][0], str):
+            is_string_input = True
+            logger.info("Detected string input, converting to integer IDs...")
+            converted_contexts = []
+            for ctx in contexts:
+                converted_ctx = []
+                for item in ctx:
+                    sid = _str_to_id.get(item)
+                    if sid is None:
+                        sid = _next_str_id
+                        _str_to_id[item] = sid
+                        _id_to_str[sid] = item
+                        _next_str_id += 1
+                    converted_ctx.append(sid)
+                converted_contexts.append(converted_ctx)
+            contexts = converted_contexts
+            logger.info(f"Converted to IDs ({_next_str_id} unique strings total)")
+
+        # Helper to convert reordered contexts back to strings
+        def _to_output(reordered):
+            if is_string_input and reordered:
+                return [[_id_to_str[i] for i in ctx] for ctx in reordered]
+            return reordered
+
+        # Auto-detect mode: index exists → search (incremental), otherwise → cold start
+        if _index is not None and _index.is_live:
+            logger.info(f"Incremental build with {len(contexts)} contexts...")
             
             result = _index.build_incremental(
-                contexts=request.contexts,
+                contexts=contexts,
                 initial_tokens_per_context=request.initial_tokens_per_context,
             )
             
@@ -314,7 +345,7 @@ async def build_index(request: BuildIndexRequest):
                 tracker = get_conversation_tracker()
                 dedup_results = tracker.deduplicate_batch(
                     request_ids=result['request_ids'],
-                    docs_list=result.get('reordered_contexts') or request.contexts,
+                    docs_list=result.get('reordered_contexts') or contexts,
                     parent_request_ids=request.parent_request_ids,
                     hint_template=request.hint_template
                 )
@@ -324,11 +355,12 @@ async def build_index(request: BuildIndexRequest):
                 "status": "success",
                 "message": "Incremental build completed",
                 "mode": "incremental",
-                "num_contexts": len(request.contexts),
+                "input_type": "string" if is_string_input else "integer",
+                "num_contexts": len(contexts),
                 "matched_count": result['matched_count'],
                 "merged_count": result['merged_count'],
                 "request_ids": result['request_ids'],
-                "reordered_contexts": result.get('reordered_contexts'),
+                "reordered_contexts": _to_output(result.get('reordered_contexts')),
                 "scheduled_order": result['scheduled_order'],
                 "groups": result['groups'],
                 "stats": _index.get_stats(),
@@ -355,7 +387,7 @@ async def build_index(request: BuildIndexRequest):
             return response
         
         # Initial build
-        logger.info(f"Building index with {len(request.contexts)} contexts...")
+        logger.info(f"Building index with {len(contexts)} contexts...")
 
         _index = LiveContextIndex(
             alpha=request.alpha,
@@ -364,11 +396,11 @@ async def build_index(request: BuildIndexRequest):
         )
 
         result = _index.build_and_schedule(
-            contexts=request.contexts,
+            contexts=contexts,
             initial_tokens_per_context=request.initial_tokens_per_context,
         )
 
-        # Extract request_id mapping for SGLang integration
+        # Extract request_id mapping for inference engine integration
         request_id_mapping = result.get("request_id_mapping", {})
         # Ordered list of request_ids matching input contexts order
         request_ids = result.get("request_ids", [])
@@ -381,7 +413,7 @@ async def build_index(request: BuildIndexRequest):
         dedup_results = None
         if request.deduplicate:
             tracker = get_conversation_tracker()
-            reordered = result.get('scheduled_reordered') or request.contexts
+            reordered = result.get('scheduled_reordered') or contexts
             dedup_results = tracker.deduplicate_batch(
                 request_ids=request_ids,
                 docs_list=reordered,
@@ -394,13 +426,14 @@ async def build_index(request: BuildIndexRequest):
             "status": "success",
             "message": "Index built successfully",
             "mode": "initial",
-            "num_contexts": len(request.contexts),
+            "input_type": "string" if is_string_input else "integer",
+            "num_contexts": len(contexts),
             "matched_count": 0,
-            "inserted_count": len(request.contexts),
+            "inserted_count": len(contexts),
             "request_id_mapping": request_id_mapping,
             "request_ids": request_ids,
-            "scheduled_reordered": result.get("scheduled_reordered", request.contexts),
-            "scheduled_order": result.get("final_mapping", list(range(len(request.contexts)))),
+            "scheduled_reordered": _to_output(result.get("scheduled_reordered", contexts)),
+            "scheduled_order": result.get("final_mapping", list(range(len(contexts)))),
             "stats": _index.get_stats(),
         }
         
@@ -550,11 +583,13 @@ async def schedule_batch(request: ScheduleRequest):
             for ctx in contexts:
                 converted_ctx = []
                 for item in ctx:
-                    if item not in str_to_id:
-                        str_to_id[item] = next_id
-                        id_to_str[next_id] = item
+                    sid = str_to_id.get(item)
+                    if sid is None:
+                        sid = next_id
+                        str_to_id[item] = sid
+                        id_to_str[sid] = item
                         next_id += 1
-                    converted_ctx.append(str_to_id[item])
+                    converted_ctx.append(sid)
                 converted_contexts.append(converted_ctx)
             
             contexts = converted_contexts
@@ -606,15 +641,15 @@ async def schedule_batch(request: ScheduleRequest):
 @app.post("/evict")
 async def evict(request: EvictRequest):
     """
-    Remove requests from the index (SGLang eviction callback integration).
+    Remove requests from the index (eviction callback integration).
 
-    THIS IS THE MAIN ENDPOINT THAT SGLANG'S EVICTION CALLBACK SHOULD CALL.
+    THIS IS THE MAIN ENDPOINT THAT THE INFERENCE ENGINE'S EVICTION CALLBACK SHOULD CALL.
 
-    When SGLang's radix_cache.evict() evicts nodes, it collects the request_ids
+    When the inference engine's cache evicts nodes, it collects the request_ids
     from the evicted nodes and invokes the registered callback. That callback
     should call this endpoint to remove the corresponding entries from ContextPilot.
 
-    Integration in SGLang:
+    Integration example (SGLang):
         def eviction_callback(evicted_request_ids: set):
             if evicted_request_ids:
                 try:
@@ -640,7 +675,7 @@ async def evict(request: EvictRequest):
         result = _index.remove_requests(request.request_ids)
         
         # Also clear conversation history for evicted requests
-        # This ensures ConversationTracker stays in sync with SGLang's cache
+        # This ensures ConversationTracker stays in sync with the engine's cache
         tracker = get_conversation_tracker()
         conversations_cleared = 0
         for req_id in request.request_ids:
@@ -670,15 +705,21 @@ async def reset_index():
     """
     Reset the index to initial state.
     
-    Clears all nodes, metadata, request tracking, and conversation history.
+    Clears all nodes, metadata, request tracking, conversation history,
+    and string-to-ID mappings.
     Use this to start fresh without restarting the server.
     
     After reset, you must call /build again before other operations.
     """
-    global _index
+    global _index, _str_to_id, _id_to_str, _next_str_id
     
     # Reset conversation tracker
     reset_conversation_tracker()
+    
+    # Reset string-to-ID mapping
+    _str_to_id = {}
+    _id_to_str = {}
+    _next_str_id = 0
     
     if _index is None:
         return {
@@ -689,7 +730,7 @@ async def reset_index():
     
     try:
         _index.reset()
-        logger.info("Index and conversation tracker reset successfully")
+        logger.info("Index, conversation tracker, and string mappings reset successfully")
         
         return {
             "status": "success",
@@ -733,8 +774,8 @@ async def insert_context(request: InsertRequest):
     Insert a new context into the index.
 
     Auto-generates a unique request_id for the new leaf node.
-    The response includes the request_id that should be passed to SGLang
-    so that SGLang can track it in its radix cache for eviction notifications.
+    The response includes the request_id that should be passed to the inference engine
+    so that the engine can track it in its cache for eviction notifications.
     """
     if _index is None:
         raise HTTPException(
@@ -752,7 +793,7 @@ async def insert_context(request: InsertRequest):
             "status": "success",
             "node_id": node_id,
             "search_path": search_path,
-            "request_id": request_id,  # Pass this to SGLang for cache tracking
+            "request_id": request_id,  # Pass this to inference engine for cache tracking
         }
 
     except Exception as e:
@@ -808,26 +849,6 @@ async def get_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/reset")
-async def reset_index():
-    """Reset the index (for debugging/testing). Note: max_tokens remains set from startup."""
-    global _index
-
-    try:
-        _index = None
-        logger.info("Index reset (max_tokens preserved from startup)")
-
-        return {
-            "status": "success",
-            "message": "Index reset successfully. Call POST /build to reinitialize.",
-            "max_tokens": _max_tokens,
-        }
-
-    except Exception as e:
-        logger.error(f"Error resetting index: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ============================================================================
 # Chat Template Helper
 # ============================================================================
@@ -867,17 +888,17 @@ def apply_chat_template(prompt: str, system_prompt: Optional[str] = None) -> str
 
 
 # ============================================================================
-# SGLang Proxy Endpoints
+# Inference Engine Proxy Endpoints
 # ============================================================================
 
 
 @app.post("/v1/completions")
 async def proxy_completions(request: Request):
     """
-    Proxy /v1/completions to SGLang and auto-update tokens.
+    Proxy /v1/completions to the inference engine and auto-update tokens.
 
     This endpoint:
-    1. Forwards the request to SGLang backend
+    1. Forwards the request to the inference engine backend
     2. Tracks token usage from the response
     3. Automatically updates the eviction heap
     4. Returns the response to the client
@@ -889,13 +910,13 @@ async def proxy_completions(request: Request):
         _init_config()
 
     infer_api_url = _infer_api_url or os.environ.get(
-        "RAGBOOST_INFER_API_URL", "http://localhost:30000"
+        "CONTEXTPILOT_INFER_API_URL", "http://localhost:30000"
     )
 
     if not infer_api_url:
         raise HTTPException(
             status_code=503,
-            detail="Inference API URL not configured. Set RAGBOOST_INFER_API_URL env var or use --infer-api-url.",
+            detail="Inference API URL not configured. Set CONTEXTPILOT_INFER_API_URL env var or use --infer-api-url.",
         )
 
     try:
@@ -922,31 +943,30 @@ async def proxy_completions(request: Request):
             logger.debug("Applied chat template to prompt")
 
         # Verify request_id exists in the index
-        # Note: LRU tracking is now handled by SGLang's radix cache, not ContextPilot
+        # Note: LRU tracking is now handled by the inference engine's cache, not ContextPilot
         if request_id and _index:
             node = _index.get_request_node(request_id)
             if node is None:  # Use 'is None' because node_id=0 is valid but falsy
                 logger.warning(f"Request ID '{request_id}' not found in index")
-                request_id = None  # Clear so SGLang won't try to track
+                request_id = None  # Clear so engine won't try to track
 
-        # Pass request_id to SGLang so it can use the same ID for request tracking
-        # SGLang will notify ContextPilot via /evict callback when this request is evicted
+        # Pass request_id to inference engine so it can use the same ID for request tracking
+        # Engine will notify ContextPilot via /evict callback when this request is evicted
         if request_id:
             body["rid"] = request_id
             logger.info(f"Proxy: forwarding request with rid={request_id}")
         else:
             logger.info("Proxy: forwarding request without rid (no ContextPilot tracking)")
 
-        # Forward to SGLang
+        # Forward to inference engine
         api_url = f"{infer_api_url}/v1/completions"
         logger.debug(f"Proxying to {api_url}")
 
         async with _aiohttp_session.post(api_url, json=body) as response:
             result = await response.json()
 
-            # Token tracking is handled by SGLang via RAGBOOST_INDEX_URL
-            # SGLang calls /update_tokens after request completion
-            # SGLang calls /evict after its internal cache eviction
+            # Token tracking is handled by the inference engine via CONTEXTPILOT_INDEX_URL
+            # The engine calls /evict after its internal cache eviction
             
             # Add request_id to response for client reference
             if request_id and response.status == 200:
@@ -959,32 +979,32 @@ async def proxy_completions(request: Request):
             return JSONResponse(content=result, status_code=response.status)
 
     except aiohttp.ClientError as e:
-        logger.error(f"Error proxying to SGLang: {e}")
-        raise HTTPException(status_code=502, detail=f"SGLang backend error: {str(e)}")
+        logger.error(f"Error proxying to inference engine: {e}")
+        raise HTTPException(status_code=502, detail=f"Inference engine backend error: {str(e)}")
     except Exception as e:
         logger.error(f"Error in proxy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST"])
-async def proxy_sglang(path: str, request: Request):
+async def proxy_engine(path: str, request: Request):
     """
-    Generic proxy for other SGLang /v1/* endpoints.
+    Generic proxy for other /v1/* endpoints.
 
-    Forwards requests to SGLang backend without modification.
+    Forwards requests to inference engine backend without modification.
     """
     # Ensure config is loaded
     if _infer_api_url is None:
         _init_config()
 
     infer_api_url = _infer_api_url or os.environ.get(
-        "RAGBOOST_INFER_API_URL", "http://localhost:30000"
+        "CONTEXTPILOT_INFER_API_URL", "http://localhost:30000"
     )
 
     if not infer_api_url:
         raise HTTPException(
             status_code=503,
-            detail="Inference API URL not configured. Set RAGBOOST_INFER_API_URL env var or use --infer-api-url.",
+            detail="Inference API URL not configured. Set CONTEXTPILOT_INFER_API_URL env var or use --infer-api-url.",
         )
 
     try:
@@ -1001,8 +1021,8 @@ async def proxy_sglang(path: str, request: Request):
                 return JSONResponse(content=result, status_code=response.status)
 
     except aiohttp.ClientError as e:
-        logger.error(f"Error proxying to SGLang: {e}")
-        raise HTTPException(status_code=502, detail=f"SGLang backend error: {str(e)}")
+        logger.error(f"Error proxying to inference engine: {e}")
+        raise HTTPException(status_code=502, detail=f"Inference engine backend error: {str(e)}")
     except Exception as e:
         logger.error(f"Error in proxy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1011,11 +1031,11 @@ async def proxy_sglang(path: str, request: Request):
 def main():
     """Run the HTTP server."""
     parser = argparse.ArgumentParser(
-        description="ContextPilot Live Index HTTP Server with SGLang Proxy",
+        description="ContextPilot Live Index HTTP Server with Inference Engine Proxy",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Live mode (with SGLang eviction callback integration):
+  # Live mode (with inference engine eviction callback):
   python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
 
   # Stateless mode (just clustering/scheduling, no index maintained):
@@ -1023,9 +1043,9 @@ Examples:
 
 Live mode:
   - Build context index via POST /build
-  - Receive eviction callbacks from SGLang at POST /evict
-  - SGLang notifies ContextPilot when requests are evicted from KV cache
-  - Start SGLang with: RAGBOOST_INDEX_URL=http://localhost:8765
+  - Receive eviction callbacks from inference engine at POST /evict
+  - Engine notifies ContextPilot when requests are evicted from KV cache
+  - For SGLang: set CONTEXTPILOT_INDEX_URL=http://localhost:8765
 
 Stateless mode:
   - Use POST /schedule endpoint for one-off batch reordering
@@ -1039,7 +1059,7 @@ Stateless mode:
         "--max-tokens",
         type=int,
         default=None,
-        help="(Deprecated) No longer required - eviction is now driven by SGLang callback",
+        help="(Deprecated) No longer required - eviction is now driven by engine callback",
     )
     parser.add_argument(
         "--stateless",
@@ -1069,15 +1089,15 @@ Stateless mode:
     args = parser.parse_args()
 
     # Note: --max-tokens is no longer required since eviction is now driven by
-    # SGLang's callback, not by ContextPilot's internal tracking
+    # engine's callback, not by ContextPilot's internal tracking
 
     # Set environment variables so they propagate to uvicorn workers
     if args.max_tokens is not None:
-        os.environ["RAGBOOST_MAX_TOKENS"] = str(args.max_tokens)
-    os.environ["RAGBOOST_INFER_API_URL"] = args.infer_api_url.rstrip("/")
-    os.environ["RAGBOOST_STATELESS_MODE"] = "1" if args.stateless else "0"
+        os.environ["CONTEXTPILOT_MAX_TOKENS"] = str(args.max_tokens)
+    os.environ["CONTEXTPILOT_INFER_API_URL"] = args.infer_api_url.rstrip("/")
+    os.environ["CONTEXTPILOT_STATELESS_MODE"] = "1" if args.stateless else "0"
     if args.model:
-        os.environ["RAGBOOST_MODEL_NAME"] = args.model
+        os.environ["CONTEXTPILOT_MODEL_NAME"] = args.model
 
     # Also set global config for direct access
     global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode
@@ -1106,7 +1126,7 @@ Stateless mode:
         logger.info("Use POST /schedule endpoint for batch reordering")
     else:
         logger.info(f"Starting ContextPilot Index Server on {args.host}:{args.port} (LIVE MODE)")
-        logger.info("Eviction is driven by SGLang callback (RAGBOOST_INDEX_URL)")
+        logger.info("Eviction is driven by engine callback (CONTEXTPILOT_INDEX_URL)")
     logger.info(f"Inference backend URL: {_infer_api_url}")
 
     # Run server

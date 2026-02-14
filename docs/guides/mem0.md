@@ -5,23 +5,24 @@ This example measures TTFT and answer accuracy (token-F1, LLM judge) with and wi
 * [Mem0](https://github.com/mem0ai/mem0) is an intelligent memory layer that facilitates memory storage and retrieval for agents.
 * [Locomo](https://github.com/snap-research/locomo) is a long conversation benchmark used to test memory retrieval. 
 
-![mem0_locomo_diagram](./images/mem0_locomo.png)
+![mem0_locomo_diagram](../images/mem0_locomo.png)
 
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-pip install "sglang[all]==0.5.6"
+pip install contextpilot
+pip install "sglang==0.5.6"
 bash patches/sglang/apply_patch.sh 
 ```
 
 ## Start servers
 
 ```bash
-python -m sglang.launch_server --model <model> --port 30000
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 \
+    python -m sglang.launch_server --model <model> --port 30000
 
 # ContextPilot is optional, but to track the cache hit metrics you'll need the server
-python -m contextpilot.server.http_server --port 8765
+python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
 ```
 
 ## Run
@@ -90,14 +91,17 @@ resp = requests.post("http://localhost:8765/build", json={
     "contexts": contexts,
 }).json()
 
-reordered = resp["reordered_contexts"]
+# After /reset the mode is "initial":
+reordered = resp["scheduled_reordered"]
+# On subsequent calls (mode "incremental"):
+# reordered = resp["reordered_contexts"]
 order = resp["scheduled_order"]
 request_ids = resp["request_ids"]  # pass as rid to SGLang
 ```
 
 ### Multi-turn
 
-Pass `incremental=True` after the first turn to extend the index instead of rebuilding:
+Just call `/build` each turn — ContextPilot auto-detects whether the index exists and uses incremental mode accordingly:
 
 ```python
 for turn, query in enumerate(queries):
@@ -105,7 +109,6 @@ for turn, query in enumerate(queries):
         query_data=[{"text": query}], user_id="user123", top_k=20)
     resp = requests.post("http://localhost:8765/build", json={
         "contexts": [results[0]["top_k_doc_id"]],
-        "incremental": turn > 0,
     }).json()
     rid = resp["request_ids"][0]
 ```

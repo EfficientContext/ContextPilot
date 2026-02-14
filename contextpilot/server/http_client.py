@@ -159,7 +159,6 @@ class ContextPilotIndexClient:
         use_gpu: bool = False,
         linkage_method: str = "average",
         initial_tokens_per_context: int = 0,
-        incremental: bool = False,
         deduplicate: bool = False,
         parent_request_ids: Optional[List[Optional[str]]] = None,
         hint_template: Optional[str] = None
@@ -167,7 +166,11 @@ class ContextPilotIndexClient:
         """
         Build a new index or incrementally update an existing one.
         
-        This is the main method for creating the live index.
+        Mode is auto-detected by the server:
+        - If no index exists: full (initial) build
+        - If an index exists: incremental (search/reorder/merge)
+        
+        Call reset() first to force a fresh initial build.
         
         Args:
             contexts: List of contexts (each is a list of document IDs)
@@ -175,7 +178,6 @@ class ContextPilotIndexClient:
             use_gpu: Use GPU for distance computation (default False)
             linkage_method: Clustering method (default "average")
             initial_tokens_per_context: Initial token count per context
-            incremental: Use incremental build (search/reorder/merge)
             deduplicate: Enable multi-turn deduplication
             parent_request_ids: Parent request IDs for deduplication
             hint_template: Custom template for reference hints
@@ -189,7 +191,6 @@ class ContextPilotIndexClient:
             "use_gpu": use_gpu,
             "linkage_method": linkage_method,
             "initial_tokens_per_context": initial_tokens_per_context,
-            "incremental": incremental,
             "deduplicate": deduplicate,
         }
         
@@ -251,41 +252,6 @@ class ContextPilotIndexClient:
             Dictionary with reset confirmation
         """
         return self._post("/reset", {})
-    
-    # =========================================================================
-    # Token Tracking (SGLang Integration)
-    # =========================================================================
-    
-    def update_tokens(
-        self,
-        request_id: str,
-        num_tokens: int
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Update token count for a request.
-        
-        THIS IS THE MAIN METHOD FOR SGLANG INTEGRATION.
-        
-        Call this when:
-        1. A request starts processing (with initial input tokens)
-        2. When generation completes (with total tokens: input + output)
-        
-        The method:
-        - Updates the token count for the given request_id
-        - Automatically triggers eviction if capacity is exceeded
-        - Returns eviction results if any nodes were evicted
-        
-        Args:
-            request_id: The request ID (from build or insert response)
-            num_tokens: Total number of tokens for this request
-            
-        Returns:
-            Dictionary with update result and any eviction info
-        """
-        return self._post("/update_tokens", {
-            "request_id": request_id,
-            "num_tokens": num_tokens
-        })
     
     def get_requests(self) -> Optional[Dict[str, Any]]:
         """Get all tracked request IDs."""
@@ -380,32 +346,7 @@ def evict_tokens(num_tokens: int, server_url: str = "http://localhost:8765"):
         return None
 
 
-def update_request_tokens(
-    request_id: str,
-    input_tokens: int,
-    output_tokens: int,
-    server_url: str = "http://localhost:8765"
-):
-    """
-    Simple function to update request tokens.
-    
-    For one-off calls without maintaining a client instance.
-    """
-    try:
-        response = requests.post(
-            f"{server_url}/update_request_tokens",
-            json={
-                "request_id": request_id,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens
-            },
-            timeout=1.0
-        )
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.warning(f"ContextPilot token update failed: {e}")
-        return None
+
 
 
 def schedule_batch(

@@ -5,7 +5,8 @@ This guide covers installing ContextPilot and its dependencies.
 ## Requirements
 
 - Python >= 3.10
-- An inference engine: SGLang (recommended), vLLM, or LMCache
+- CUDA 12.x (for GPU-accelerated distance computation)
+- An inference engine: [SGLang](https://github.com/sgl-project/sglang) (recommended) or any OpenAI-compatible server
 
 ## Install ContextPilot
 
@@ -15,54 +16,28 @@ cd ContextPilot
 pip install -e .
 ```
 
-## Install Inference Engine
+This installs the core dependencies:
 
-### SGLang (Recommended)
+| Package | Purpose |
+|---------|--------|
+| `fastapi[all]` | HTTP server |
+| `aiohttp` | Async inference engine proxy |
+| `scipy` | Hierarchical clustering |
+| `transformers` | Tokenizer / chat templates |
+| `cupy-cuda12x` | GPU distance computation |
+| `elasticsearch` | BM25 retriever (optional) |
+| `datasets` | Loading benchmark datasets |
 
-```bash
-pip install "sglang[all]"
-```
-
-See also: [SGLang Installation Guide](https://docs.sglang.ai/get_started/install.html)
-
-### vLLM
-
-```bash
-pip install vllm
-```
-
-See also: [vLLM Installation Guide](https://docs.vllm.ai/en/latest/getting_started/installation/)
-
-## Optional: Install FAISS
-
-FAISS is required for semantic search with embeddings.
+## Install an Inference Engine
 
 ```bash
-# GPU support (recommended)
-conda install conda-forge::faiss-gpu
-
-# CPU only
-conda install conda-forge::faiss-cpu
+pip install "sglang==0.5.6"
 ```
 
-## Docker
-
-For containerized deployment:
-
-```bash
-docker pull seanjiang01/contextpilot-sgl-v0.5.5:latest
-docker run -d --gpus all --name contextpilot seanjiang01/contextpilot-sgl-v0.5.5:latest
-docker exec -it contextpilot bash
-```
+For eviction sync with SGLang, set `CONTEXTPILOT_INDEX_URL` when launching (see [Online Usage Guide](../guides/online_usage.md#sglang-integration)).
 
 ## Verify Installation
 
-```python
-from contextpilot.pipeline import RAGPipeline
-print("ContextPilot installed successfully!")
+```bash
+python -c "import contextpilot; print('ContextPilot', contextpilot.__version__)"
 ```
-
-## Next Steps
-
-- [Quick Start](quickstart.md) - Run your first ContextPilot pipeline
-- [Offline Usage](../guides/offline_usage.md) - Batch processing examples

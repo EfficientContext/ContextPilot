@@ -6,7 +6,7 @@ Welcome to the ContextPilot documentation. This guide covers everything you need
 
 | Guide | Description |
 |-------|-------------|
-| [Installation](getting_started/installation.md) | System requirements, pip install, Docker, FAISS setup |
+| [Installation](getting_started/installation.md) | System requirements and pip install |
 | [Quick Start](getting_started/quickstart.md) | Your first ContextPilot pipeline in 5 minutes |
 
 ## User Guides
@@ -16,25 +16,16 @@ Welcome to the ContextPilot documentation. This guide covers everything you need
 | [Offline Usage](guides/offline_usage.md) | Batch processing without server |
 | [Online Usage](guides/online_usage.md) | Index server (stateless & stateful modes) |
 | [Multi-Turn Conversations](guides/multi_turn.md) | Context deduplication across turns (30-60% savings) |
-| [Benchmarking](guides/benchmarking.md) | Measure performance on your machine |
+| [mem0 Integration](guides/mem0.md) | LoCoMo benchmark with mem0 memory backend |
 
 ## Reference
 
 | Document | Description |
 |----------|-------------|
 | [API Reference](reference/api.md) | Pipeline, InferenceConfig, HTTP endpoints |
-| [Benchmarks](reference/benchmarks.md) | GPU vs CPU performance analysis |
+| [Benchmarks](reference/benchmarks.md) | GPU vs CPU performance analysis and methodology |
 
-## Additional Resources
-
-| Document | Description |
-|----------|-------------|
-| [Troubleshooting](troubleshooting.md) | Common issues and solutions |
-| [Pipeline API](PIPELINE_API.md) | Detailed pipeline internals |
-| [Batch Workflow](BATCH_WORKFLOW.md) | Batch processing workflow details |
 
 ## Quick Links
 
-- [GitHub Repository](https://github.com/SecretSettler/ContextPilot)
-- [arXiv Paper](https://arxiv.org/abs/2511.03475)
 - [Examples](../examples/)

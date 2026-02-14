@@ -59,12 +59,17 @@ def run_ttft(prompt, model, max_tokens=512, rid=None):
     return asyncio.run(_stream_ttft(prompt, model, max_tokens, rid=rid))
 
 
-def build_prompt(question, doc_ids, corpus_map):
+def build_prompt(question, doc_ids, corpus_map, original_order=None):
     docs = [corpus_map.get(str(d), {}).get("text", f"[memory {d}]") for d in doc_ids]
     ctx = "\n".join(f"[{i+1}] {d}" for i, d in enumerate(docs))
+    hint = ""
+    if original_order and list(original_order) != list(doc_ids):
+        pos = {d: i + 1 for i, d in enumerate(doc_ids)}
+        reading = ", ".join(f"[{pos[d]}]" for d in original_order if d in pos)
+        hint = f"\nPlease read the memories in order: {reading}"
     return (f"Memories:\n{ctx}\n\n"
             f"Based on the memories above, concisely answer the following "
-            f"question in as few words as possible.\nQuestion: {question}\nAnswer:")
+            f"question in as few words as possible.{hint}\nQuestion: {question}\nAnswer:")
 
 
 def llm_judge(question, prediction, ground_truth):
@@ -155,7 +160,8 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
                 prefix_match += 1
 
         # Build prompt and measure TTFT
-        prompt = build_prompt(qa["question"], reordered_ids, cmap)
+        prompt = build_prompt(qa["question"], reordered_ids, cmap,
+                              original_order=doc_ids if optimize else None)
         out = run_ttft(prompt, model, MAX_GEN, rid=rid)
         gt = str(qa["answer"])
         # Skip turn 0 — no prior context, so baseline and optimized are identical

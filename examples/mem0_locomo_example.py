@@ -34,14 +34,10 @@ LOCOMO_CACHE = Path(__file__).resolve().parent.parent / "tests" / ".locomo_cache
 
 CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "50"))
-MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "1024"))
+MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "50"))
 TOP_K_LIST = [int(k) for k in os.environ.get("LOCOMO_TOP_K", "20,50").split(",")]
 
-
-# ---------------------------------------------------------------------------
-# Reused helpers
-# ---------------------------------------------------------------------------
 async def _stream_ttft(prompt, model, max_tokens=512, rid=None):
     payload = {"model": model, "prompt": prompt, "max_tokens": max_tokens,
                "temperature": 0.0, "stream": True}
@@ -146,9 +142,10 @@ def run_benchmark(results, request_ids, label, corpus_map, qa_pairs, model, max_
             score, _ = llm_judge(qa["question"], answer, gt)
             out.update(f1=f1, judge_score=score)
             if i < 5:
-                print(f"  Q{qid}: {qa['question'][:80]}")
-                print(f"    Pred: {answer[:150]}  |  Gold: {gt}")
-                print(f"    F1={f1:.3f} Judge={score:.1f}")
+                print(f"Q{qid}: {qa['question'][:80]}")
+                print(f"Pred: {answer[:500]}")
+                print(f"Ground Truth: {gt}")
+                print(f"F1={f1:.3f} Judge={score:.1f}")
         else:
             out.update(f1=0.0, judge_score=-1)
         outputs.append(out)
@@ -164,6 +161,8 @@ def run_benchmark(results, request_ids, label, corpus_map, qa_pairs, model, max_
     print(f"\n[{label}] {len(ok)}/{len(outputs)} ok  "
           f"TTFT={avg_ttft:.4f}s  F1={avg_f1:.4f}  Judge={avg_j:.3f}")
     return {"ttft": avg_ttft, "f1": avg_f1, "judge": avg_j, "n": len(ok)}
+
+
 if __name__ == "__main__":
     assert os.environ.get("OPENAI_API_KEY"), "OPENAI_API_KEY not set"
     assert requests.get(f"{SGLANG_URL}/health", timeout=3).status_code == 200, \

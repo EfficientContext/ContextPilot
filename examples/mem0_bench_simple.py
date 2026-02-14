@@ -1,24 +1,21 @@
 """
 A/B Comparison: Baseline vs ContextPilot — Prefill Latency, Cache Hit Rate, Answer Quality
 
-Runs the SAME set of mem0-retrieved requests twice, **one at a time** (batch_size=1):
-  A) Baseline:      Original retrieval order, original query order, direct to SGLang
-  B) ContextPilot:  Reordered memories + scheduled send order (from /build), direct to SGLang
+Simulates a realistic **per-request** flow where each request arrives one at a time:
+  1. A query comes in
+  2. Retrieve relevant memories from mem0
+  3. Build prompt & send to SGLang
+  4. Next query arrives...
 
-Both runs send directly to SGLang — the only variables are:
-  1) Send order:   Baseline sends queries 0→7 in order.
-                   ContextPilot sends in scheduled_order (optimized for prefix reuse).
-  2) Memory order: Baseline uses mem0's retrieval order within each prompt.
-                   ContextPilot uses reordered_contexts from /build (shared prefixes first).
+  A) Baseline:      retrieve → build prompt (original retrieval order) → send to SGLang
+  B) ContextPilot:  retrieve → /build incremental (reorder memories) → build prompt → send to SGLang
 
-Between runs, SGLang's radix cache is flushed for a fair comparison.
-Batch size = 1 ensures each request can benefit from the previous request's cached KV states.
+Both runs use the SAME arrival order and send directly to SGLang.
+The only variable is **within-prompt memory ordering**: ContextPilot's incremental
+/build reorders each request's memories so that shared content with previous requests
+appears at the front (prefix), maximizing radix cache reuse.
 
-Metrics compared:
-  - Per-request cached_tokens (radix cache hits)
-  - Total prefill tokens (prompt_tokens - cached_tokens = actual prefill work)
-  - Cumulative wall-clock time
-  - Answer quality (side-by-side)
+Between runs, SGLang's radix cache and ContextPilot's index are both flushed.
 
 SETUP:
   # Terminal 1: SGLang with cache report + LPM
@@ -49,7 +46,7 @@ from contextpilot.retriever import Mem0Retriever
 
 SGLANG_URL = os.environ.get("SGLANG_URL", "http://localhost:30000")
 CONTEXTPILOT_URL = os.environ.get("CONTEXTPILOT_URL", "http://localhost:8765")
-TOP_K = 10
+TOP_K = 5
 MAX_TOKENS = 150
 
 
@@ -189,33 +186,13 @@ def extract_metrics(resp: dict) -> dict:
     }
 
 
-def run_sequential(prompts: List[str], send_order: List[int], label: str) -> tuple:
-    """
-    Send prompts one at a time in the given order.
-    Returns (metrics_in_original_order, wall_time).
-    """
-    n = len(prompts)
-    metrics = [None] * n
-    t0 = time.time()
-    for step, orig_idx in enumerate(send_order):
-        p = prompts[orig_idx]
-        print(f"    [{step+1}/{n}] Sending query {orig_idx} ...", end=" ", flush=True)
-        resp = send_one(p)
-        m = extract_metrics(resp)
-        metrics[orig_idx] = m
-        print(f"prompt={m['prompt_tokens']:>4d}  cached={m['cached_tokens']:>4d}  "
-              f"prefill={m['prefill_tokens']:>4d}  latency={m['latency']:.2f}s")
-    wall_time = time.time() - t0
-    return metrics, wall_time
-
-
 # =============================================================================
 # Main
 # =============================================================================
 
 def main():
     print("=" * 80)
-    print(" A/B COMPARISON: Baseline vs ContextPilot  (batch_size=1, sequential)")
+    print(" A/B COMPARISON: Baseline vs ContextPilot  (per-request, sequential)")
     print(" Prefill Latency | Cache Hit Rate | Answer Quality")
     print("=" * 80)
 
@@ -230,14 +207,14 @@ def main():
 
     try:
         r = requests.get(f"{CONTEXTPILOT_URL}/health", timeout=3).json()
-        print(f"  ContextPilot: {r['status']}")
+        print(f"  ContextPilot: {r.get('status', 'unknown')}")
     except Exception as e:
         print(f"  ContextPilot: NOT RUNNING — {e}")
         sys.exit(1)
 
-    # ---- Step 1: Populate mem0 ----
+    # ---- Step 0: Populate mem0 (shared setup) ----
     print(f"\n{'─' * 80}")
-    print("STEP 1: Populate mem0 & retrieve memories")
+    print("STEP 0: Populate mem0 with past conversations")
     print(f"{'─' * 80}")
 
     retriever = Mem0Retriever(
@@ -263,119 +240,127 @@ def main():
     time.sleep(1)
     corpus = retriever.load_corpus_from_memories(user_id=user_id, agent_id=agent_id, limit=200)
     corpus_map = retriever.get_corpus_map()
-    print(f"  {len(corpus)} memories extracted")
+    print(f"  {len(corpus)} memories in corpus")
 
-    # Retrieve contexts for all queries
-    contexts = []
-    for i, q in enumerate(AGENT_QUERIES):
+    n_queries = len(AGENT_QUERIES)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RUN A: Baseline — per-request: retrieve → build prompt → send
+    # ══════════════════════════════════════════════════════════════════════════
+    print(f"\n{'─' * 80}")
+    print("RUN A: BASELINE — per-request: retrieve → prompt (original order) → SGLang")
+    print(f"{'─' * 80}")
+
+    print("  Flushing SGLang radix cache...")
+    if not flush_sglang_cache():
+        print("  WARNING: cache flush failed")
+    time.sleep(1)
+
+    baseline_metrics = []
+    baseline_contexts = []   # save for overlap stats
+    t0_baseline = time.time()
+
+    for i, query in enumerate(AGENT_QUERIES):
+        # 1. Retrieve
         results = retriever.search_queries(
-            query_data=[{"qid": i, "text": q}],
+            query_data=[{"qid": i, "text": query}],
             user_id=user_id, agent_id=agent_id, top_k=TOP_K,
         )
-        contexts.append(results[0]["top_k_doc_id"])
+        doc_ids = results[0]["top_k_doc_id"]
+        baseline_contexts.append(doc_ids)
 
-    # Build prompts in ORIGINAL retrieval order
-    baseline_prompts = []
-    for i, q in enumerate(AGENT_QUERIES):
-        mem_texts = [corpus_map.get(str(d), {}).get("text", f"[doc {d}]") for d in contexts[i]]
-        baseline_prompts.append(build_prompt(q, mem_texts))
+        # 2. Build prompt (original retrieval order)
+        mem_texts = [corpus_map.get(str(d), {}).get("text", f"[doc {d}]") for d in doc_ids]
+        prompt = build_prompt(query, mem_texts)
 
-    print(f"  {len(AGENT_QUERIES)} queries x top-{TOP_K} memories retrieved")
+        # 3. Send to SGLang
+        print(f"    [{i+1}/{n_queries}] Q{i}: retrieve {len(doc_ids)} memories → send ...", end=" ", flush=True)
+        resp = send_one(prompt)
+        m = extract_metrics(resp)
+        baseline_metrics.append(m)
+        print(f"prompt={m['prompt_tokens']:>4d}  cached={m['cached_tokens']:>4d}  "
+              f"prefill={m['prefill_tokens']:>4d}  latency={m['latency']:.2f}s")
 
-    # Show overlap stats
-    all_docs = [d for c in contexts for d in c]
+    baseline_wall = time.time() - t0_baseline
+    print(f"\n  Completed in {baseline_wall:.2f}s")
+
+    # Overlap stats (from saved contexts)
+    all_docs = [d for c in baseline_contexts for d in c]
     unique_docs = set(all_docs)
-    overlap_pct = (len(all_docs) - len(unique_docs)) / len(all_docs)
+    overlap_pct = (len(all_docs) - len(unique_docs)) / len(all_docs) if all_docs else 0
     print(f"  Retrieval redundancy: {overlap_pct:.0%} "
           f"({len(all_docs)} total refs, {len(unique_docs)} unique docs)")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # RUN A: Baseline — original order, one at a time
+    # RUN B: ContextPilot — per-request: retrieve → /build incremental → prompt → send
     # ══════════════════════════════════════════════════════════════════════════
     print(f"\n{'─' * 80}")
-    print("RUN A: BASELINE — original order, original memory arrangement")
+    print("RUN B: CONTEXTPILOT — per-request: retrieve → /build incremental → prompt → SGLang")
     print(f"{'─' * 80}")
 
     print("  Flushing SGLang radix cache...")
     if not flush_sglang_cache():
         print("  WARNING: cache flush failed")
-    time.sleep(1)
-
-    original_order = list(range(len(AGENT_QUERIES)))
-    print(f"  Sending {len(baseline_prompts)} requests sequentially (batch_size=1):")
-    baseline_metrics, baseline_wall = run_sequential(
-        baseline_prompts, original_order, label="baseline"
-    )
-
-    print(f"\n  Completed in {baseline_wall:.2f}s")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # BUILD: ContextPilot index to get optimal order + reordered memories
-    # ══════════════════════════════════════════════════════════════════════════
-    print(f"\n{'─' * 80}")
-    print("BUILD: ContextPilot /build — compute optimal send order & memory arrangement")
-    print(f"{'─' * 80}")
-
+    # Reset ContextPilot index so incremental builds start fresh
     requests.post(f"{CONTEXTPILOT_URL}/reset", json={})
-    build_resp = requests.post(f"{CONTEXTPILOT_URL}/build", json={
-        "contexts": contexts,
-        "initial_tokens_per_context": 0,
-        "alpha": 0.005,
-        "use_gpu": False,
-        "linkage_method": "average",
-    }, timeout=30).json()
-
-    request_ids = build_resp["request_ids"]
-    scheduled_order = build_resp.get("scheduled_order", original_order)
-    scheduled_reordered = build_resp.get("scheduled_reordered", None)
-
-    print(f"  Request IDs: {request_ids}")
-    print(f"  Original order:  {original_order}")
-    print(f"  Scheduled order: {scheduled_order}")
-    if scheduled_reordered:
-        for i, (orig, reord) in enumerate(zip(contexts, scheduled_reordered)):
-            if orig != reord:
-                print(f"    Query {i}: memory order changed")
-
-    # Build ContextPilot prompts with reordered memories
-    cp_prompts = []
-    for i in range(len(AGENT_QUERIES)):
-        if scheduled_reordered and len(scheduled_reordered) == len(contexts):
-            # Use reordered doc IDs for this query
-            doc_ids = scheduled_reordered[i]
-        else:
-            # Fallback: same as baseline
-            doc_ids = contexts[i]
-        mem_texts = [corpus_map.get(str(d), {}).get("text", f"[doc {d}]") for d in doc_ids]
-        cp_prompts.append(build_prompt(AGENT_QUERIES[i], mem_texts))
-
-    # Verify prompts are non-empty
-    for i, p in enumerate(cp_prompts):
-        if len(p) < 50:
-            print(f"  WARNING: query {i} prompt suspiciously short ({len(p)} chars)")
-
-    # Show what changed
-    same_count = sum(1 for i in range(len(contexts))
-                     if not scheduled_reordered or contexts[i] == scheduled_reordered[i])
-    print(f"  Memory reordering: {len(contexts) - same_count}/{len(contexts)} queries have different memory order")
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # RUN B: ContextPilot — scheduled order, reordered memories, one at a time
-    # ══════════════════════════════════════════════════════════════════════════
-    print(f"\n{'─' * 80}")
-    print("RUN B: CONTEXTPILOT — scheduled order, reordered memories")
-    print(f"{'─' * 80}")
-
-    print("  Flushing SGLang radix cache...")
-    if not flush_sglang_cache():
-        print("  WARNING: cache flush failed")
     time.sleep(1)
 
-    print(f"  Sending {len(cp_prompts)} requests sequentially in scheduled order (batch_size=1):")
-    cp_metrics, cp_wall = run_sequential(
-        cp_prompts, scheduled_order, label="contextpilot"
-    )
+    cp_metrics = []
+    cp_contexts_original = []
+    cp_contexts_reordered = []
+    t0_cp = time.time()
 
+    for i, query in enumerate(AGENT_QUERIES):
+        # 1. Retrieve (same as baseline — same query, same mem0 state)
+        results = retriever.search_queries(
+            query_data=[{"qid": i, "text": query}],
+            user_id=user_id, agent_id=agent_id, top_k=TOP_K,
+        )
+        doc_ids = results[0]["top_k_doc_id"]
+        cp_contexts_original.append(doc_ids)
+
+        # 2. Incremental /build — reorder this request's memories to maximize prefix sharing
+        build_resp = requests.post(f"{CONTEXTPILOT_URL}/build", json={
+            "contexts": [doc_ids],  # single request
+            "incremental": True,
+            "initial_tokens_per_context": 0,
+            "alpha": 0.005,
+            "use_gpu": False,
+            "linkage_method": "average",
+        }, timeout=30).json()
+
+        # Get reordered memories from ContextPilot
+        mode = build_resp.get("mode", "?")
+        reordered = None
+        if mode == "incremental":
+            rc = build_resp.get("reordered_contexts")
+            if rc and len(rc) == 1:
+                reordered = rc[0]
+        else:
+            # Initial build (first request)
+            sr = build_resp.get("scheduled_reordered")
+            if sr and len(sr) == 1:
+                reordered = sr[0]
+
+        if reordered is None:
+            reordered = doc_ids  # fallback
+        cp_contexts_reordered.append(reordered)
+
+        # 3. Build prompt with reordered memories
+        mem_texts = [corpus_map.get(str(d), {}).get("text", f"[doc {d}]") for d in reordered]
+        prompt = build_prompt(query, mem_texts)
+
+        # 4. Send to SGLang
+        changed = "reordered" if reordered != doc_ids else "same"
+        print(f"    [{i+1}/{n_queries}] Q{i}: retrieve → /build({mode}) [{changed}] → send ...",
+              end=" ", flush=True)
+        resp = send_one(prompt)
+        m = extract_metrics(resp)
+        cp_metrics.append(m)
+        print(f"prompt={m['prompt_tokens']:>4d}  cached={m['cached_tokens']:>4d}  "
+              f"prefill={m['prefill_tokens']:>4d}  latency={m['latency']:.2f}s")
+
+    cp_wall = time.time() - t0_cp
     print(f"\n  Completed in {cp_wall:.2f}s")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -459,22 +444,21 @@ def main():
     print(" SUMMARY")
     print(f"{'=' * 80}")
     print(f"""
-  Mode:               Sequential (batch_size=1)
-  Queries:            {len(AGENT_QUERIES)}
+  Mode:               Per-request sequential (realistic online flow)
+  Queries:            {n_queries}
   Memories per query: {TOP_K}
   Retrieval overlap:  {overlap_pct:.0%}
 
-  Baseline send order:      {original_order}
-  ContextPilot send order:  {scheduled_order}
+  Flow A (Baseline):      retrieve → prompt(original order) → SGLang
+  Flow B (ContextPilot):  retrieve → /build(incremental) → prompt(reordered) → SGLang
 
   Cache hit rate:     {b_hit_rate:.1f}% (baseline) -> {c_hit_rate:.1f}% (ContextPilot)
   Prefill saved:      {prefill_saved} tokens ({prefill_pct:.1f}% reduction)
   Wall time:          {baseline_wall:.2f}s -> {cp_wall:.2f}s
 
-  ContextPilot reorders memories WITHIN each prompt so that shared content
-  appears at the front (prefix), and schedules the SEND ORDER so that requests
-  with the most shared prefixes are sent consecutively. This maximizes radix
-  cache reuse — each request benefits from KV states cached by previous ones.
+  ContextPilot's incremental /build reorders each request's memories so that
+  content shared with previously-seen requests appears at the front (prefix).
+  This maximizes SGLang's radix cache reuse across sequential requests.
 """)
     print("=" * 80)
 

@@ -16,10 +16,10 @@ LOCOMO_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/l
 LOCOMO_CACHE = Path(__file__).resolve().parent.parent / "tests" / ".locomo_cache" / "locomo10.json"
 
 CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
-MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "50"))
+MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "200"))
-TOP_K_LIST = [int(k) for k in os.environ.get("LOCOMO_TOP_K", "20,50").split(",")]
+TOP_K_LIST = [int(k) for k in os.environ.get("LOCOMO_TOP_K", "50,100").split(",")]
 BENCH_MODE = os.environ.get("BENCH_MODE", "both")  # baseline, optimized, both
 BENCH_USER_ID = os.environ.get("BENCH_USER_ID", "")
 
@@ -179,7 +179,6 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k, optimize, cp_avai
                 print(f"Ground Truth: {gt}")
                 print(f"F1={f1:.3f} Judge={score:.1f}")
 
-        print(f"  T{idx:>2d}: TTFT={out['ttft']:.4f}s  prefix={prefix_match}/{len(reordered_ids)}")
 
         prev_doc_ids.append(doc_ids)
         prev_reordered = reordered_ids
@@ -293,3 +292,6 @@ if __name__ == "__main__":
                 print(f"\nCleaned up memories for {user_id}")
             except Exception as e:
                 print(f"\nCleanup warning: {e}")
+        # Force cleanup before Python shutdown to avoid Qdrant __del__ traceback
+        del retriever
+        import gc; gc.collect()

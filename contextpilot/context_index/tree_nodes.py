@@ -106,7 +106,7 @@ class NodeManager:
             return canonical_node
         else:
             # New content
-            node = ClusterNode(node_id, prompt_content, ordered_doc_ids=prompt_content)
+            node = ClusterNode(node_id, prompt_content)
             self.cluster_nodes[node_id] = node
             self.unique_nodes[node_id] = node
             self.content_to_node_id[content_key] = node_id

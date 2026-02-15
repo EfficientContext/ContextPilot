@@ -136,12 +136,68 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
                         └─────────────────┘
 ```
 
-### Start the Server
+### SGLang Integration
+
+Stateful mode requires patching SGLang so its radix cache notifies ContextPilot on eviction.
+
+#### Install the SGLang Patch
 
 ```bash
+# Automatic (recommended)
+bash patches/sglang/apply_patch.sh
+
+# Or manually:
+SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
+
+# Backup originals
+cp $SGLANG_PATH/srt/mem_cache/radix_cache.py $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak
+cp $SGLANG_PATH/srt/mem_cache/common.py $SGLANG_PATH/srt/mem_cache/common.py.bak
+cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak
+
+# Copy patched files
+cp patches/sglang/*.py $SGLANG_PATH/srt/mem_cache/
+```
+
+The patch adds an eviction callback to `RadixCache` that POSTs evicted `request_ids` to the ContextPilot server. Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
+
+#### How It Works
+
+When `CONTEXTPILOT_INDEX_URL` is set, SGLang integrates with ContextPilot at eviction time:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Eviction Sync Flow                              │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Cache Full → RadixCache.evict() → Callback invoked                 │
+│                                      │                              │
+│                                      ▼                              │
+│                     POST /evict {"request_ids": ["rid1", "rid2"]}   │
+│                                      │                              │
+│                                      ▼                              │
+│                     ContextPilot removes evicted requests from index│
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Components:**
+
+1. **Request ID Tracking**: Each request has a unique `request_id` (e.g., `contextpilot_abc123`)
+2. **Eviction Callback**: When the engine evicts cache entries, it notifies ContextPilot
+3. **Index Sync**: ContextPilot removes evicted requests from its live index
+
+### Start the Servers
+
+```bash
+# Terminal 1: Start ContextPilot server
 python -m contextpilot.server.http_server \
     --port 8765 \
     --infer-api-url http://localhost:30000
+
+# Terminal 2: Start SGLang with ContextPilot integration enabled
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+    --model-path Qwen/Qwen3-4B \
+    --port 30000
 ```
 
 ### Step 1: Build the Index
@@ -183,7 +239,7 @@ print(result["choices"][0]["text"])
 
 ### Step 3: Eviction Sync
 
-When using an inference engine with ContextPilot integration (e.g. SGLang with the `CONTEXTPILOT_INDEX_URL` env var), eviction sync is **automatic**. The engine's cache calls the `/evict` endpoint with evicted `request_ids` via a callback.
+When using SGLang with the `CONTEXTPILOT_INDEX_URL` env var, eviction sync is **automatic**. The engine's cache calls the `/evict` endpoint with evicted `request_ids` via the callback.
 
 If you need manual eviction (e.g., for testing), use the HTTP API directly:
 
@@ -201,72 +257,6 @@ result = client.evict(["contextpilot_abc123", "contextpilot_def456"])
 print(f"Removed {result['removed_count']} requests")
 print(f"Cleared {result['conversations_cleared']} conversations")
 ```
-
----
-
-## SGLang Integration
-
-Stateful mode requires patching SGLang so its radix cache notifies ContextPilot on eviction.
-
-### Install the SGLang Patch
-
-```bash
-# Automatic (recommended)
-bash patches/sglang/apply_patch.sh
-
-# Or manually:
-SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
-
-# Backup originals
-cp $SGLANG_PATH/srt/mem_cache/radix_cache.py $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak
-cp $SGLANG_PATH/srt/mem_cache/common.py $SGLANG_PATH/srt/mem_cache/common.py.bak
-cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak
-
-# Copy patched files
-cp patches/sglang/*.py $SGLANG_PATH/srt/mem_cache/
-```
-
-The patch adds an eviction callback to `RadixCache` that POSTs evicted `request_ids` to the ContextPilot server. Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
-
-### Start SGLang with ContextPilot
-
-```bash
-# Start ContextPilot server first
-python -m contextpilot.server.http_server \
-    --port 8765 \
-    --infer-api-url http://localhost:30000
-
-# Start SGLang with ContextPilot integration enabled
-CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
-    --model-path Qwen/Qwen3-4B \
-    --port 30000
-```
-
-### How It Works
-
-When `CONTEXTPILOT_INDEX_URL` is set, SGLang integrates with ContextPilot at eviction time:
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Eviction Sync Flow                              │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  Cache Full → RadixCache.evict() → Callback invoked                 │
-│                                      │                              │
-│                                      ▼                              │
-│                     POST /evict {"request_ids": ["rid1", "rid2"]}   │
-│                                      │                              │
-│                                      ▼                              │
-│                     ContextPilot removes evicted requests from index│
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-**Key Components:**
-
-1. **Request ID Tracking**: Each request has a unique `request_id` (e.g., `contextpilot_abc123`)
-2. **Eviction Callback**: When the engine evicts cache entries, it notifies ContextPilot
-3. **Index Sync**: ContextPilot removes evicted requests from its live index
 
 ---
 

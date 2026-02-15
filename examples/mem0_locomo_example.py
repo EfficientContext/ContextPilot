@@ -17,7 +17,8 @@ CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
-TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,50,100")
+TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "5")
+REPLICATE_MEMORIES = int(os.environ.get("LOCOMO_REPLICATE", "150"))
 
 
 async def _stream_ttft(prompt, model, max_tokens=512):
@@ -185,10 +186,10 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
         if idx < 5:
             print(f"  Q{idx}: {qa['question']}")
-            print(f"    original:  {doc_ids}{'...' if len(doc_ids) > 15 else ''}")
-            print(f"    reordered: {reordered_ids}{'...' if len(reordered_ids) > 15 else ''}")
+            print(f"    original:  {doc_ids})
+            print(f"    reordered: {reordered_ids})
             if prev_reordered:
-                print(f"    prev:      {prev_reordered}{'...' if len(prev_reordered) > 15 else ''}")
+                print(f"    prev:      {prev_reordered})
             print(f"    prefix_match={prefix_match}/{len(reordered_ids)}"
                   f" ttft={out['ttft']:.4f}s f1={f1:.3f} judge={score:.1f}")
 
@@ -214,9 +215,10 @@ def ingest_conversation(conv_data, retriever, user_id):
         turns = conv[f"session_{n}"]
         msgs = [{"role": "user" if t["speaker"] == conv["speaker_a"] else "assistant",
                  "content": t["text"]} for t in turns]
-        retriever.add_memory(msgs, user_id=user_id)
+        for _ in range(REPLICATE_MEMORIES):
+            retriever.add_memory(msgs, user_id=user_id)
         n += 1
-    print(f"  ingested {n-1} sessions, waiting for indexing ...")
+    print(f"  ingested {n-1} sessions x{REPLICATE_MEMORIES} replicas, waiting for indexing ...")
     time.sleep(5)
     all_memories = retriever.memory.get_all(user_id=user_id)
     n_memories = len(all_memories.get("results", []))

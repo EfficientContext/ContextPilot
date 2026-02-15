@@ -49,6 +49,15 @@ python examples/mem0_locomo_example.py
 | `LOCOMO_NUM_TURNS` | `150` | Multi-turn conversation length |
 | `LOCOMO_TOP_K` | `100` | Top-k memories to retrieve |
 
+## Results
+
+LoCoMo conv 0, k=100, 100 memories, 150 turns:
+
+| mode | ttft | ttft_delta | prefix | f1 | judge |
+|---|---|---|---|---|---|
+| baseline | 0.1141s | - | 0.3% | 0.089 | 0.442 |
+| reorder | 0.0634s | +44.5% | 12.5% | 0.085 | 0.443 |
+
 ## General usage
 
 ### Store and retrieve memories

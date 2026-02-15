@@ -17,7 +17,7 @@ CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
-TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "50,75,100")
+TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,50,100")
 
 
 async def _stream_ttft(prompt, model, max_tokens=512):
@@ -86,7 +86,7 @@ def llm_judge(question, prediction, ground_truth):
 def cp_build(contexts, incremental=False):
     r = requests.post(f"{CONTEXTPILOT_URL}/build", json={
         "contexts": contexts, "use_gpu": False, "linkage_method": "average",
-        "alpha": 0.005, "incremental": incremental,
+        "alpha": 0.0005,
     }, timeout=30)
     r.raise_for_status()
     return r.json()
@@ -120,7 +120,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
     """Run multi-turn benchmark: baseline vs reorder.
 
     Args:
-        use_reorder: Reorder docs via ContextPilot /schedule for prefix sharing.
+        use_reorder: Reorder docs via ContextPilot /build for prefix sharing.
     """
     label = "reorder" if use_reorder else "baseline"
     print(f"\n--- {label} ({NUM_TURNS} turns, k={top_k}) ---")

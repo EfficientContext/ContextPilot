@@ -86,8 +86,7 @@ More [detailed installation instructions](docs/getting_started/installation.md) 
 **Python API** — reorder contexts locally in 3 lines:
 
 ```python
-from contextpilot.context_index import build_context_index
-from contextpilot.context_ordering import InterContextScheduler
+import contextpilot as cp
 
 # Each list = one query's retrieved doc IDs
 contexts = [
@@ -96,8 +95,8 @@ contexts = [
     [2, 3, 1, 4],    # query 2 (overlaps with query 0)
 ]
 
-index = build_context_index(contexts, use_gpu=False)
-reordered, _, order, _ = InterContextScheduler().schedule_contexts(index)
+index = cp.build_context_index(contexts, use_gpu=False)
+reordered, _, order, _ = cp.InterContextScheduler().schedule_contexts(index)
 # reordered: [[1,2,3,5], [1,2,3,4], [10,11,12]]
 # order:     [0, 2, 1]  — queries 0 & 2 grouped for prefix sharing
 ```

@@ -264,6 +264,7 @@ class LiveContextIndex(ContextIndex):
                 if matched_node_id in self.metadata and self.metadata[matched_node_id].doc_ids:
                     node_docs = self.metadata[matched_node_id].doc_ids
                 elif matched_node and hasattr(matched_node, 'doc_ids') and matched_node.doc_ids:
+                    logger.warning(f"Node {matched_node_id}: falling back to ClusterNode.doc_ids (may be sorted, not sent order)")
                     node_docs = matched_node.doc_ids
                 
                 if node_docs:
@@ -496,13 +497,14 @@ class LiveContextIndex(ContextIndex):
         new_node_id = self.next_node_id
         self.next_node_id += 1
         
-        # Copy node
+        source_doc_ids = source_node.doc_ids if hasattr(source_node, 'doc_ids') else []
         new_node = ClusterNode(
             node_id=new_node_id,
-            content=source_node.doc_ids if hasattr(source_node, 'doc_ids') else [],
+            content=source_doc_ids,
             children=[],
             parent=parent_id,
-            original_indices=set(source_node.original_indices) if hasattr(source_node, 'original_indices') else set()
+            original_indices=set(source_node.original_indices) if hasattr(source_node, 'original_indices') else set(),
+            ordered_doc_ids=source_doc_ids
         )
         
         self.nodes[new_node_id] = new_node
@@ -868,6 +870,7 @@ class LiveContextIndex(ContextIndex):
             if node_meta and node_meta.doc_ids:
                 docs = node_meta.doc_ids
             elif hasattr(node, 'doc_ids') and node.doc_ids:
+                logger.warning(f"Node {node_id}: falling back to ClusterNode.doc_ids (may be sorted, not sent order)")
                 docs = node.doc_ids
             else:
                 docs = None
@@ -1055,13 +1058,13 @@ class LiveContextIndex(ContextIndex):
         # Auto-generate request_id using UUID
         request_id = f"req-{uuid.uuid4().hex[:12]}"
         
-        # Create new leaf node
         new_node = ClusterNode(
             node_id=self.next_node_id,
             content=context,
             children=[],
             parent=parent_node.node_id,
-            original_indices={self.next_node_id}
+            original_indices={self.next_node_id},
+            ordered_doc_ids=context
         )
         
         self.nodes[self.next_node_id] = new_node
@@ -1109,13 +1112,13 @@ class LiveContextIndex(ContextIndex):
             # Parent's search path is the leaf's search path without the last element
             parent_search_path = search_path[:-1] if search_path else []
         
-        # Create new leaf node as sibling of matched leaf
         new_leaf = ClusterNode(
             node_id=self.next_node_id,
             content=context,
             children=[],
             parent=parent_node.node_id,
-            original_indices={self.next_node_id}
+            original_indices={self.next_node_id},
+            ordered_doc_ids=context
         )
         
         self.nodes[self.next_node_id] = new_leaf

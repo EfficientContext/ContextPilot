@@ -9,11 +9,12 @@ It handles node creation, deduplication, and tree structure maintenance.
 class ClusterNode:
     """Represents a node in the clustering tree."""
     
-    def __init__(self, node_id, content, original_indices=None, 
-                 distance=0.0, children=None, parent=None, frequency=1):
+    def __init__(self, node_id, content, original_indices=None,
+                 distance=0.0, children=None, parent=None, frequency=1,
+                 ordered_doc_ids=None):
         self.node_id = node_id
         self.content = set(content) if not isinstance(content, set) else content
-        self.doc_ids = sorted(list(self.content))
+        self.doc_ids = list(ordered_doc_ids) if ordered_doc_ids is not None else sorted(list(self.content))
         self.original_indices = original_indices or {node_id}
         self.distance = distance
         self.children = children or []

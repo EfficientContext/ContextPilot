@@ -36,11 +36,15 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 
 ### System Performance
 
+<div align="center">
 <img src="assets/deepseek_r1_results.png" alt="Benchmark Results" width="600"/>
+</div>
 
 ContextPilot on DeepSeek-R1 maintains accuracy compared to SGLang, achieving 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA.
 
 ### Accuracy on MT-RAG Benchmark
+
+<div align="center">
 
 | Method | Qwen3-4B | Llama3.1-8B | Qwen3-30B-A3B |
 |--------|----------|-------------|-----------|
@@ -48,6 +52,8 @@ ContextPilot on DeepSeek-R1 maintains accuracy compared to SGLang, achieving 64.
 | CacheBlend | 50.33 | 56.52 | X |
 | RadixCache | 62.56 | **68.46** | 75.12 |
 | **ContextPilot** | **64.27** | 68.12 | **75.81** |
+
+</div>
 
 ContextPilot delivers **4-13x** improvements in cache hit rates and **1.5-3.5x** reductions in prefill latency for large-batch RAG workloads, while maintaining or improving accuracy.
 

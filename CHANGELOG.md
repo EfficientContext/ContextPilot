@@ -5,6 +5,25 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-02-15
+
+### Added
+- Lexicographic tiebreaker in `InterContextScheduler` for deterministic ordering among equal-length paths
+- SGLang patch installation instructions in online usage guide
+- Dedicated PageIndex integration guide (`docs/guides/pageindex.md`)
+- PyPI badge in README
+- `PageIndexRetriever`-based end-to-end example (`pageindex_e2e_example.py`)
+
+### Changed
+- `/schedule` endpoint now accepts `List[List[str]]` contexts with automatic string-to-ID mapping
+- Removed `incremental` field from `/build` — auto-detected based on existing index state
+- Made server and documentation engine-agnostic (no longer SGLang-specific)
+- Center-aligned benchmark image and table in README
+
+### Fixed
+- `/deduplicate` endpoint tests aligned with server schema (`parent_request_ids` plural)
+- Documentation cleanup: fixed broken links, removed stale endpoint references
+
 ## [0.3.0] - 2026-01-30
 
 ### Added

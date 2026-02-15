@@ -81,6 +81,59 @@ pip install -e .
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
+### Quick Start
+
+**Python API** — reorder contexts locally in 3 lines:
+
+```python
+from contextpilot.context_index import build_context_index
+from contextpilot.context_ordering import InterContextScheduler
+
+# Each list = one query's retrieved doc IDs
+contexts = [
+    [5, 1, 3, 2],   # query 0
+    [10, 11, 12],    # query 1
+    [2, 3, 1, 4],    # query 2 (overlaps with query 0)
+]
+
+index = build_context_index(contexts, use_gpu=False)
+reordered, _, order, _ = InterContextScheduler().schedule_contexts(index)
+# reordered: [[1,2,3,5], [1,2,3,4], [10,11,12]]
+# order:     [0, 2, 1]  — queries 0 & 2 grouped for prefix sharing
+```
+
+**HTTP Server** — stateless scheduling over REST:
+
+```bash
+python -m contextpilot.server.http_server --port 8765 --stateless
+
+curl -X POST http://localhost:8765/schedule \
+  -H "Content-Type: application/json" \
+  -d '{"contexts": [[5,1,3,2], [10,11,12], [2,3,1,4]]}'
+```
+
+**Stateful mode** — incremental index with multi-session prefix reuse:
+
+```bash
+# Start stateful server
+python -m contextpilot.server.http_server --port 8765
+
+# Turn 1: build index (cold start, preserves original order)
+curl -X POST http://localhost:8765/build \
+  -H "Content-Type: application/json" \
+  -d '{"contexts": [[5,1,3,2,4,6]]}'
+
+# Turn 2: incremental build (reorders to match Turn 1's prefix)
+curl -X POST http://localhost:8765/build \
+  -H "Content-Type: application/json" \
+  -d '{"contexts": [[3,6,2,5,1,4]]}'
+# → reordered to [5,1,3,2,4,6] — 100% prefix cache hit
+```
+
+> **Note:** Stateful mode requires the [SGLang eviction patch](docs/guides/online_usage.md#sglang-integration) to sync KV cache evictions back to the ContextPilot index. Set `CONTEXTPILOT_INDEX_URL` on your inference engine to enable this.
+
+See the [quickstart guide](docs/getting_started/quickstart.md) and [examples](examples/) for more.
+
 ## Documentation
 
 Check out the ContextPilot [documentation](docs/README.md) for comprehensive guides.

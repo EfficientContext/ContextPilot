@@ -15,6 +15,7 @@ Welcome to the ContextPilot documentation. This guide covers everything you need
 |-------|-------------|
 | [Offline Usage](guides/offline_usage.md) | Batch processing without server |
 | [Online Usage](guides/online_usage.md) | Index server (stateless & stateful modes) |
+| [SGLang Patch](guides/online_usage.md#sglang-integration) | **Required for stateful mode** — eviction callback for KV cache sync |
 | [Multi-Turn Conversations](guides/multi_turn.md) | Context deduplication across turns (30-60% savings) |
 | [PageIndex Integration](guides/pageindex.md) | Tree-structured documents → ContextPilot scheduling |
 | [mem0 Integration](guides/mem0.md) | LoCoMo benchmark with mem0 memory backend |

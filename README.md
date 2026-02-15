@@ -36,7 +36,7 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 
 ### System Performance
 
-<img src="assets/deepseek_r1_results.png" alt="Benchmark Results" width="500"/>
+<img src="assets/deepseek_r1_results.png" alt="Benchmark Results" width="600"/>
 
 ContextPilot on DeepSeek-R1 maintains accuracy compared to SGLang, achieving 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA.
 

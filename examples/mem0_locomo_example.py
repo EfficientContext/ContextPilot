@@ -185,10 +185,10 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
         if idx < 5:
             print(f"  Q{idx}: {qa['question']}")
-            print(f"    original:  {doc_ids}{'...' if len(doc_ids) > 15 else ''}")
-            print(f"    reordered: {reordered_ids}{'...' if len(reordered_ids) > 15 else ''}")
+            print(f"    original:  {doc_ids})
+            print(f"    reordered: {reordered_ids})
             if prev_reordered:
-                print(f"    prev:      {prev_reordered}{'...' if len(prev_reordered) > 15 else ''}")
+                print(f"    prev:      {prev_reordered})
             print(f"    prefix_match={prefix_match}/{len(reordered_ids)}"
                   f" ttft={out['ttft']:.4f}s f1={f1:.3f} judge={score:.1f}")
 

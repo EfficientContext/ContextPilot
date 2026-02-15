@@ -28,11 +28,11 @@ class ContextPilotIndexClient:
     Example usage in SGLang:
         # In scheduler initialization:
         self.contextpilot_client = ContextPilotIndexClient("http://localhost:8765")
-        
-        # In eviction code:
-        def evict_tokens(self, num_tokens):
-            self.tree_cache.evict(num_tokens)
-            self.contextpilot_client.evict(num_tokens)  # Sync with index
+
+        # In eviction callback:
+        def on_cache_evict(self, evicted_request_ids):
+            # Sync eviction with ContextPilot index
+            self.contextpilot_client.evict(evicted_request_ids)
     """
     
     def __init__(
@@ -92,19 +92,23 @@ class ContextPilotIndexClient:
             logger.warning(f"ContextPilot index request failed: {e}")
             return None
     
-    def evict(self, num_tokens: int) -> Optional[Dict[str, Any]]:
+    def evict(self, request_ids: List[str]) -> Optional[Dict[str, Any]]:
         """
-        Evict tokens from the index.
-        
+        Evict requests from the index.
+
         THIS IS THE MAIN METHOD THAT SGLANG SHOULD CALL FOR EVICTION SYNC.
-        
+
         Args:
-            num_tokens: Number of tokens to evict (same as SGLang's eviction)
-        
+            request_ids: List of request IDs to evict (from SGLang's cache eviction)
+
         Returns:
-            Dictionary with eviction results, or None if request failed
+            Dictionary with eviction results:
+            - removed_count: Number of requests successfully removed
+            - not_found: List of request IDs that were not in the index
+            - conversations_cleared: Number of conversation chains cleared
+            Returns None if request failed
         """
-        return self._post("/evict", {"num_tokens": num_tokens})
+        return self._post("/evict", {"request_ids": request_ids})
     
     def search(
         self, 
@@ -327,16 +331,26 @@ class ContextPilotIndexClient:
 
 # Convenience functions for simple usage
 
-def evict_tokens(num_tokens: int, server_url: str = "http://localhost:8765"):
+def evict_requests(
+    request_ids: List[str],
+    server_url: str = "http://localhost:8765"
+) -> Optional[Dict[str, Any]]:
     """
-    Simple function to evict tokens.
-    
+    Simple function to evict requests from the index.
+
     For one-off calls without maintaining a client instance.
+
+    Args:
+        request_ids: List of request IDs to evict
+        server_url: ContextPilot server URL
+
+    Returns:
+        Dictionary with removed_count, not_found, conversations_cleared
     """
     try:
         response = requests.post(
             f"{server_url}/evict",
-            json={"num_tokens": num_tokens},
+            json={"request_ids": request_ids},
             timeout=1.0
         )
         response.raise_for_status()

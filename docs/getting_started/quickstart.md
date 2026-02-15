@@ -58,11 +58,16 @@ contexts = [
 
 # --- Step A: Build the index ---
 build = requests.post(f"{CP}/build", json={"contexts": contexts}).json()
-print(build["mode"])         # "initial"
+print(build["mode"])         # "initial" (first build) or "incremental" (subsequent)
 print(build["request_ids"])  # one ID per context
 
 # ContextPilot reorders contexts so shared docs come first → cache reuse
-reordered = build["scheduled_reordered"]  # e.g. [[0, 1, 2], [0, 1, 5], [0, 4, 3]]
+# NOTE: Field name differs between modes!
+if build["mode"] == "initial":
+    reordered = build["scheduled_reordered"]  # Initial build
+else:
+    reordered = build["reordered_contexts"]   # Incremental update
+# e.g. [[0, 1, 2], [0, 1, 5], [0, 4, 3]]
 
 # --- Step B: Construct prompts using reordered doc order ---
 # The original order reflects retrieval relevance (rank 0 = most relevant).
@@ -104,9 +109,10 @@ build2 = requests.post(f"{CP}/build", json={
     "contexts": [[0, 1, 3]],  # new query reuses docs 0, 1
 }).json()
 
-print(build2["mode"])           # "incremental"
+print(build2["mode"])           # "incremental" (index already exists)
 print(build2["matched_count"])  # docs already in the index
 
+# Incremental mode uses "reordered_contexts" field
 reordered2 = build2["reordered_contexts"]
 prompt2 = make_prompt("How do plants produce and consume energy?",
                       reordered_ids=reordered2[0],
@@ -143,7 +149,55 @@ print(dedup["reference_hints"])    # hints like "See Doc 0 from previous turn"
 
 Without deduplication, the prompt would repeat docs 0 and 1 — wasting tokens. With it, only doc 5 is included, plus short reference hints for the repeated docs.
 
-## Step 6: Stats & Reset
+## Step 6: String Contexts (Alternative)
+
+Instead of integer doc IDs, you can send **document text directly** as strings. ContextPilot automatically maps strings to internal IDs:
+
+```python
+# Option 1: Integer doc IDs (shown in previous examples)
+contexts_int = [[0, 1, 2], [0, 1, 5], [3, 4, 0]]
+
+# Option 2: String documents (ContextPilot handles ID mapping internally)
+contexts_str = [
+    [
+        "Photosynthesis converts sunlight into chemical energy.",
+        "Chlorophyll absorbs light in blue and red wavelengths.",
+        "The Calvin cycle fixes CO2 into glucose."
+    ],
+    [
+        "Photosynthesis converts sunlight into chemical energy.",  # same text = reused
+        "Chlorophyll absorbs light in blue and red wavelengths.",
+        "Stomata regulate gas exchange in leaves."
+    ],
+    [
+        "Mitochondria generate ATP through respiration.",
+        "Plant cells contain both chloroplasts and mitochondria.",
+        "Photosynthesis converts sunlight into chemical energy."  # shared doc
+    ]
+]
+
+# Build with string contexts (works exactly the same!)
+build_str = requests.post(f"{CP}/build", json={"contexts": contexts_str}).json()
+print(build_str["input_type"])  # "string" (auto-detected)
+
+# Server automatically:
+# 1. Maps identical strings to the same internal ID
+# 2. Reorders for prefix sharing (just like with integers)
+# 3. Returns request_ids for inference tracking
+
+# Use the reordered contexts for prompts (same workflow as integers)
+if build_str["mode"] == "initial":
+    reordered_str = build_str["scheduled_reordered"]
+else:
+    reordered_str = build_str["reordered_contexts"]
+```
+
+**When to use strings vs integers:**
+- **Integers**: When you have a pre-indexed corpus with doc IDs
+- **Strings**: When processing dynamic content or documents not in a fixed corpus
+- **Both work identically** — choose based on your data source
+
+## Step 7: Stats & Reset
 
 ```python
 stats = requests.get(f"{CP}/stats").json()
@@ -156,13 +210,13 @@ requests.post(f"{CP}/reset", json={})  # clear index
 
 ```
 ┌─────────┐                     ┌──────────────┐                ┌─────────────┐
-│  Your    │  1. POST /build     │              │                │  Inference  │
-│  App     │────────────────────→│  ContextPilot │                │  Engine     │
-│          │  ←── request_ids ──│  :8765        │                │  :30000     │
-│          │                     │              │                │             │
-│          │  2. /v1/completions │              │   /v1/compl.   │             │
-│          │────────────────────→│              │──────────────→ │             │
-│          │  ←── response ──────│              │ ←── response ──│             │
+│  Your   │  1. POST /build     │              │                │  Inference  │
+│  App    │────────────────────→│ ContextPilot │                │  Engine     │
+│         │  ←── request_ids ── │ :8765        │                │  :30000     │
+│         │                     │              │                │             │
+│         │  2. /v1/completions │              │   /v1/compl.   │             │
+│         │────────────────────→│              │──────────────→ │             │
+│         │  ←── response ──────│              │ ←── response ──│             │
 └─────────┘                     └──────────────┘                └─────────────┘
 ```
 

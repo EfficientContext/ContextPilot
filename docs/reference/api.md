@@ -157,15 +157,46 @@ config = InferenceConfig(
 
 ContextPilot provides an HTTP server for live index management with inference engine integration.
 
+### Root Endpoint
+
+```
+GET /
+```
+
+Root health check endpoint with basic server information.
+
+**Response:**
+```json
+{
+    "status": "ready",
+    "mode": "stateful",
+    "index_initialized": true,
+    "timestamp": "2025-02-15T10:30:00Z"
+}
+```
+
 ### Health Check
 
 ```
 GET /health
 ```
 
+Detailed health check with index statistics.
+
 **Response:**
 ```json
-{"status": "ok", "mode": "stateless"}
+{
+    "status": "ready",
+    "mode": "stateful",
+    "eviction_enabled": true,
+    "current_tokens": 12500,
+    "utilization": 0.45,
+    "index_stats": {
+        "total_nodes": 42,
+        "leaf_nodes": 20,
+        "total_docs": 150
+    }
+}
 ```
 
 ### Schedule (Stateless)
@@ -176,7 +207,7 @@ POST /schedule
 
 Compute optimal scheduling without maintaining state.
 
-**Request:**
+**Request (with integer doc IDs):**
 ```json
 {
     "contexts": [[1, 2, 3], [2, 3, 4]],
@@ -185,6 +216,21 @@ Compute optimal scheduling without maintaining state.
     "linkage_method": "average"
 }
 ```
+
+**Request (with string documents):**
+```json
+{
+    "contexts": [
+        ["Document text A", "Document text B", "Document text C"],
+        ["Document text B", "Document text C", "Document text D"]
+    ],
+    "alpha": 0.005,
+    "use_gpu": false,
+    "linkage_method": "average"
+}
+```
+
+The server auto-detects input type and handles string-to-ID mapping internally.
 
 **Response:**
 ```json
@@ -208,9 +254,15 @@ Compute optimal scheduling without maintaining state.
 POST /build
 ```
 
-Build the index or incrementally update an existing one. Auto-detects mode: empty index → cold start, existing index → incremental search. Call `POST /reset` to force cold start. Supports multi-turn deduplication.
+Build the index or incrementally update an existing one. Auto-detects mode: empty index → initial build, existing index → incremental update. Call `POST /reset` to force initial build. Supports multi-turn deduplication.
 
-**Request:**
+**Important:** Response field names differ between modes:
+- **Initial mode**: Returns `scheduled_reordered` (reordered contexts)
+- **Incremental mode**: Returns `reordered_contexts` (reordered contexts)
+
+Both contain the same information (optimally reordered document IDs), just with different field names for historical reasons.
+
+**Request (integer doc IDs):**
 ```json
 {
     "contexts": [[1, 2, 3], [2, 3, 4]],
@@ -223,6 +275,19 @@ Build the index or incrementally update an existing one. Auto-detects mode: empt
     "hint_template": "Refer to Doc {doc_id} from Turn {turn_number}"
 }
 ```
+
+**Request (string documents):**
+```json
+{
+    "contexts": [
+        ["Full text of doc A", "Full text of doc B"],
+        ["Full text of doc B", "Full text of doc C"]
+    ],
+    "alpha": 0.005
+}
+```
+
+Identical strings are automatically mapped to the same internal ID.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -395,14 +460,111 @@ Reset the index and conversation tracker. Clears all state and frees memory.
 GET /stats
 ```
 
+Get detailed index statistics.
+
 **Response:**
 ```json
 {
+    "index_stats": {
+        "total_nodes": 256,
+        "leaf_nodes": 128,
+        "total_docs": 1500,
+        "unique_docs": 450,
+        "tree_depth": 8
+    },
     "total_tokens": 50000,
     "num_contexts": 100,
     "cache_utilization": 0.75
 }
 ```
+
+### Get Requests (Stateful)
+
+```
+GET /requests
+```
+
+Get all tracked request IDs in the index.
+
+**Response:**
+```json
+{
+    "request_ids": [
+        "contextpilot_abc123",
+        "contextpilot_def456",
+        "contextpilot_ghi789"
+    ],
+    "count": 3
+}
+```
+
+### Search Context (Stateful)
+
+```
+POST /search
+```
+
+Search for a context in the index and return its location.
+
+**Request:**
+```json
+{
+    "context": [1, 2, 3, 4],
+    "update_access": true
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `context` | List[int] | Required | Context to search for |
+| `update_access` | bool | `true` | Update access time for LRU tracking |
+
+**Response:**
+```json
+{
+    "status": "success",
+    "search_path": [0, 1, 5, 12],
+    "node_id": 12,
+    "prefix_length": 3,
+    "message": "Context found with prefix length 3"
+}
+```
+
+### Insert Context (Stateful)
+
+```
+POST /insert
+```
+
+Insert a new context into the index at a specific location.
+
+**Request:**
+```json
+{
+    "context": [1, 2, 3, 4],
+    "search_path": [0, 1, 5],
+    "total_tokens": 256
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `context` | List[int] | Required | Context to insert |
+| `search_path` | List[int] | Required | Path in tree where to insert |
+| `total_tokens` | int | `0` | Initial token count for this context |
+
+**Response:**
+```json
+{
+    "status": "success",
+    "node_id": 42,
+    "search_path": [0, 1, 5, 42],
+    "request_id": "contextpilot_xyz789",
+    "message": "Context inserted successfully"
+}
+```
+
+**Note:** The `request_id` is auto-generated and can be used for token tracking with the inference engine.
 
 ---
 
@@ -415,14 +577,22 @@ from contextpilot.server.http_client import ContextPilotIndexClient
 
 client = ContextPilotIndexClient("http://localhost:8765", timeout=1.0)
 
-# Stateless
+# Stateless mode
 result = client.schedule(contexts, alpha=0.005, use_gpu=False)
 
-# Stateful
+# Stateful mode
 client.build(contexts, alpha=0.005, use_gpu=False, deduplicate=True)
 client.deduplicate(contexts, parent_request_ids, hint_template=None)
-client.evict(request_ids)
+client.evict(request_ids)  # Evict specific requests
+client.reset()  # Clear index and conversation tracker
+
+# Queries
+client.search(context, update_access=True)
+client.insert(context, search_path, total_tokens=0)
+client.get_stats()
+client.get_requests()
 client.health()
+client.is_ready()
 
 client.close()
 ```
@@ -432,10 +602,12 @@ client.close()
 | Method | Description |
 |--------|-------------|
 | `schedule(contexts, alpha, use_gpu)` | Get optimal scheduling (stateless) |
-| `build(contexts, alpha, use_gpu, deduplicate, parent_request_ids)` | Build live index |
-| `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+) |
+| `build(contexts, alpha, use_gpu, deduplicate, parent_request_ids)` | Build live index (initial or incremental) |
+| `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+, lightweight) |
 | `evict(request_ids)` | Remove requests from index |
 | `reset()` | Reset index and conversation tracker |
+| `stats()` | Get index statistics |
+| `get_requests()` | Get all tracked request IDs |
 | `health()` | Health check |
 | `is_ready()` | Check if server is ready |
 | `close()` | Close connection |

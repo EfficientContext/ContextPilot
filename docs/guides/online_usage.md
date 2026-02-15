@@ -185,12 +185,21 @@ print(result["choices"][0]["text"])
 
 When using an inference engine with ContextPilot integration (e.g. SGLang with the `CONTEXTPILOT_INDEX_URL` env var), eviction sync is **automatic**. The engine's cache calls the `/evict` endpoint with evicted `request_ids` via a callback.
 
-If you need manual eviction (e.g., for testing), use:
+If you need manual eviction (e.g., for testing), use the HTTP API directly:
 
 ```python
+# Direct HTTP request
 requests.post("http://localhost:8765/evict", json={
-    "request_ids": ["request_id_1", "request_id_2"]
+    "request_ids": ["contextpilot_abc123", "contextpilot_def456"]
 })
+
+# Or using the Python client
+from contextpilot.server.http_client import ContextPilotIndexClient
+
+client = ContextPilotIndexClient("http://localhost:8765")
+result = client.evict(["contextpilot_abc123", "contextpilot_def456"])
+print(f"Removed {result['removed_count']} requests")
+print(f"Cleared {result['conversations_cleared']} conversations")
 ```
 
 ---

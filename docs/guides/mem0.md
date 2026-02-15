@@ -10,19 +10,23 @@ This example measures TTFT and answer accuracy (token-F1, LLM judge) with and wi
 ## Setup
 
 ```bash
-pip install contextpilot
-pip install "sglang==0.5.6"
-bash patches/sglang/apply_patch.sh 
+pip install -r requirements.txt
+pip install mem0ai openai tqdm
+pip install "sglang[all]==0.5.6"
+bash patches/sglang/apply_patch.sh
 ```
 
 ## Start servers
 
 ```bash
-CONTEXTPILOT_INDEX_URL=http://localhost:8765 \
-    python -m sglang.launch_server --model <model> --port 30000
+python -m contextpilot.server.http_server --port 8765
+```
 
-# ContextPilot is optional, but to track the cache hit metrics you'll need the server
-python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
+In a separate terminal:
+
+```bash
+export RAGBOOST_INDEX_URL=http://localhost:8765
+python -m sglang.launch_server --model <model> --port 30000
 ```
 
 ## Run
@@ -40,10 +44,10 @@ python examples/mem0_locomo_example.py
 | `CONTEXTPILOT_URL` | `http://localhost:8765` | ContextPilot server endpoint |
 | `JUDGE_MODEL` | `gpt-4.1-2025-04-14` | OpenAI model for LLM judge |
 | `LOCOMO_CONV_INDEX` | `0` | Which LoCoMo conversation to use |
-| `LOCOMO_MAX_QA` | `50` | Max QA pairs to evaluate |
-| `LOCOMO_MAX_TOKENS` | `1024` | Max generation tokens |
-| `LOCOMO_NUM_TURNS` | `50` | Multi-turn conversation length |
-| `LOCOMO_TOP_K` | `20,50` | Comma-separated top-k values to sweep |
+| `LOCOMO_MAX_QA` | `150` | Max QA pairs to evaluate |
+| `LOCOMO_MAX_TOKENS` | `32` | Max generation tokens |
+| `LOCOMO_NUM_TURNS` | `150` | Multi-turn conversation length |
+| `LOCOMO_TOP_K` | `100` | Top-k memories to retrieve |
 
 ## General usage
 
@@ -89,14 +93,12 @@ import requests
 requests.post("http://localhost:8765/reset")
 resp = requests.post("http://localhost:8765/build", json={
     "contexts": contexts,
+    "use_gpu": False,
+    "linkage_method": "average",
+    "alpha": 0.005,
 }).json()
 
-# After /reset the mode is "initial":
-reordered = resp["scheduled_reordered"]
-# On subsequent calls (mode "incremental"):
-# reordered = resp["reordered_contexts"]
-order = resp["scheduled_order"]
-request_ids = resp["request_ids"]  # pass as rid to SGLang
+reordered = resp["reordered_contexts"]  # reordered doc ID lists
 ```
 
 ### Multi-turn
@@ -109,6 +111,10 @@ for turn, query in enumerate(queries):
         query_data=[{"text": query}], user_id="user123", top_k=20)
     resp = requests.post("http://localhost:8765/build", json={
         "contexts": [results[0]["top_k_doc_id"]],
+        "use_gpu": False,
+        "linkage_method": "average",
+        "alpha": 0.005,
+        "incremental": turn > 0,
     }).json()
-    rid = resp["request_ids"][0]
+    reordered_ids = resp["reordered_contexts"][0]
 ```

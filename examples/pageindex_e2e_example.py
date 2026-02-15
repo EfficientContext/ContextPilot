@@ -1,520 +1,495 @@
 #!/usr/bin/env python3
 """
 PageIndex + ContextPilot End-to-End Example
+============================================
 
-This example demonstrates the complete workflow of using PageIndex for
-document retrieval with ContextPilot optimization for efficient LLM inference.
+Demonstrates the complete workflow using a real PageIndex tree
+(Walt Disney Q1 FY25 Earnings Report) with ContextPilot
+optimization for efficient LLM inference.
 
-The workflow:
-1. Load a PageIndex tree structure (pre-built from PDF)
-2. Execute tree search for multiple queries
-3. Build a SHARED ContextPilot index for all retrieved contexts
-4. Reorder contexts for optimal LLM inference
-5. Generate answers using the optimized context order
+Key insight: When multiple queries retrieve overlapping document nodes,
+ContextPilot reorders documents within each context so shared documents
+form the longest possible common prefix. A radix-tree KV cache can then
+serve those prefix tokens from cache instead of recomputing them.
 
-Key benefit: ContextPilot identifies overlapping contexts across queries
-and builds an optimized shared index, reducing redundant computation
-and improving LLM cache utilization.
+Workflow:
+    1. Load a PageIndex tree (pre-built from PDF via PageIndex)
+    2. Use PageIndexRetriever for LLM tree search (or simulated queries in demo mode)
+    3. Feed contexts (lists of node IDs) to ContextPilot
+    4. ContextPilot clusters, reorders within-context, and schedules
+    5. Measure prefix sharing improvement (LCP metric)
+
+Run:
+    python examples/pageindex_e2e_example.py                         # demo (no API)
+    python examples/pageindex_e2e_example.py --tree tree.json        # demo with custom tree
+    python examples/pageindex_e2e_example.py --tree tree.json -q "query"  # full LLM pipeline
+
+Tree data:
+    The repo includes a pre-built tree at examples/data/disney_q1_fy25_tree.json
+    (41 nodes from the Walt Disney Q1 FY25 earnings report).
+    Generate your own with PageIndex:
+        pip install pageindex  # cloud API SDK
+        # See https://github.com/yinsicheng/PageIndex for usage
 """
 
 import json
 import os
-import asyncio
+import time
+import random
+from collections import Counter
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 # ContextPilot imports
 from contextpilot.context_index import build_context_index
 from contextpilot.context_ordering import InterContextScheduler
 
-# Optional: OpenAI for actual LLM calls
-try:
-    from openai import AsyncOpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
 
 # ============================================================================
-# Helper Functions
+# Helper: Tree Utilities
 # ============================================================================
 
 def flatten_tree(structure) -> List[Dict[str, Any]]:
-    """Flatten a PageIndex tree structure to a list of nodes."""
+    """Flatten a PageIndex tree to a list of nodes."""
     results = []
-    
     def traverse(node):
         if isinstance(node, dict):
             results.append(node)
-            for child in node.get('nodes', []):
+            for child in node.get("nodes", []):
                 traverse(child)
         elif isinstance(node, list):
             for item in node:
                 traverse(item)
-    
     traverse(structure)
     return results
 
 
-def get_node_by_id(tree_structure: Dict[str, Any], node_ids: List[str]) -> List[Dict[str, Any]]:
-    """Get node contents by their IDs."""
-    structure = tree_structure.get('structure', tree_structure)
-    nodes = flatten_tree(structure)
-    node_map = {n.get('node_id'): n for n in nodes if n.get('node_id')}
-    
-    return [
-        {
-            'node_id': nid,
-            'title': node_map[nid].get('title', ''),
-            'text': node_map[nid].get('text', ''),
-            'summary': node_map[nid].get('summary', ''),
-        }
-        for nid in node_ids if nid in node_map
-    ]
-
-
-def remove_text_field(structure):
-    """Remove 'text' field from tree for search (keep only structure and summaries)."""
-    def clean(node):
-        if isinstance(node, dict):
-            return {
-                k: ([clean(c) for c in v] if k in ['nodes', 'children'] else v)
-                for k, v in node.items() if k != 'text'
-            }
-        elif isinstance(node, list):
-            return [clean(item) for item in node]
-        return node
-    return clean(structure)
-
-
 # ============================================================================
-# PageIndex Tree Search (LLM-based)
+# ContextPilot: Build + Schedule + Measure
 # ============================================================================
 
-async def tree_search(
-    query: str,
-    tree_structure: Dict[str, Any],
-    client: "AsyncOpenAI",
-    model: str = "gpt-4o",
-    top_k: int = 5
-) -> List[str]:
+def longest_common_prefix(a: List[int], b: List[int]) -> int:
+    """Count matching tokens from the start of two lists."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def measure_prefix_sharing(
+    order: List[int],
+    reordered_contexts: List[List[int]],
+) -> Tuple[int, int]:
     """
-    Use LLM to search the tree structure and find relevant nodes.
-    
-    This is the core of PageIndex's reasoning-based retrieval:
-    instead of vector similarity, we use LLM reasoning to navigate
-    the document hierarchy.
+    Compute total prefix tokens reusable from KV cache.
+
+    For each consecutive pair in execution order, count how many tokens
+    at the start of the current context match the previous one
+    (= KV cache hits in a radix-tree cache).
+
+    Returns (total_reused, total_new).
     """
-    structure = tree_structure.get('structure', tree_structure)
-    tree_for_search = remove_text_field(structure)
-    
-    search_prompt = f"""You are given a question and a tree structure of a document.
-Each node contains a node_id, title, and summary.
-Find the nodes most likely to contain the answer.
-
-Question: {query}
-
-Document tree:
-{json.dumps(tree_for_search, indent=2)}
-
-Reply in JSON format:
-{{
-    "thinking": "<your reasoning>",
-    "node_list": ["node_id_1", "node_id_2", ...]
-}}
-Return at most {top_k} nodes. Only output the JSON."""
-
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": search_prompt}],
-        temperature=0.0,
-    )
-    
-    result = response.choices[0].message.content.strip()
-    
-    # Parse response (handle markdown code blocks)
-    if result.startswith('```'):
-        lines = result.split('\n')[1:-1]
-        result = '\n'.join(lines)
-    
-    try:
-        parsed = json.loads(result)
-        return parsed.get('node_list', [])[:top_k]
-    except json.JSONDecodeError:
-        print(f"Warning: Failed to parse search result: {result[:100]}")
-        return []
+    total_reused = 0
+    total_new = 0
+    for i in range(len(order)):
+        ctx = reordered_contexts[i]
+        if i == 0:
+            lcp = 0
+        else:
+            lcp = longest_common_prefix(reordered_contexts[i - 1], ctx)
+        total_reused += lcp
+        total_new += len(ctx) - lcp
+    return total_reused, total_new
 
 
-# ============================================================================
-# ContextPilot Optimization
-# ============================================================================
-
-def build_shared_context_index(
-    contexts: List[Dict[str, Any]],
-    use_gpu: bool = False
-) -> tuple[Any, Dict[str, int], float]:
-    """
-    Build a shared ContextPilot index for all unique contexts.
-    
-    Returns:
-        - clustering_result: The clustering result for scheduling
-        - node_id_to_idx: Mapping from node_id to index
-        - overlap_ratio: Ratio of duplicated contexts
-    """
-    # Deduplicate by node_id
-    unique_contexts = {}
-    for ctx in contexts:
-        node_id = ctx.get('node_id')
-        if node_id and node_id not in unique_contexts:
-            unique_contexts[node_id] = ctx
-    
-    unique_list = list(unique_contexts.values())
-    node_id_to_idx = {ctx['node_id']: i for i, ctx in enumerate(unique_list)}
-    
-    # Calculate overlap
-    overlap_ratio = 1 - (len(unique_list) / len(contexts)) if contexts else 0
-    
-    print(f"📊 Context Analysis:")
-    print(f"   Total retrieved: {len(contexts)}")
-    print(f"   Unique contexts: {len(unique_list)}")
-    print(f"   Overlap ratio: {overlap_ratio*100:.1f}%")
-    
-    # Convert to token lists for ContextPilot
-    # In practice, use a proper tokenizer; here we use character count as proxy
-    context_tokens = []
-    for ctx in unique_list:
-        text = ctx.get('text', '') or ctx.get('summary', '')
-        tokens = list(range(len(text)))
-        context_tokens.append(tokens)
-    
-    # Build index (only once for all queries!)
-    print(f"\n🔧 Building ContextPilot index...")
-    clustering_result = build_context_index(
-        contexts=context_tokens,
-        use_gpu=use_gpu,
-        alpha=0.001
-    )
-    
-    return clustering_result, node_id_to_idx, overlap_ratio
-
-
-def reorder_contexts(
-    contexts: List[Dict[str, Any]],
-    clustering_result: Any,
-    node_id_to_idx: Dict[str, int]
-) -> List[Dict[str, Any]]:
-    """
-    Reorder contexts for a single query using the shared index.
-    
-    This optimizes context order for better LLM cache utilization
-    by grouping similar/overlapping contexts together.
-    """
-    if not contexts or clustering_result is None:
-        return contexts
-    
-    scheduler = InterContextScheduler()
-    scheduled = scheduler.schedule_contexts(clustering_result)
-    
-    if scheduled and len(scheduled) > 2:
-        # Get global ordering from scheduler
-        global_order = scheduled[2]
-        
-        # Map to local context indices
-        local_indices = set(node_id_to_idx.get(ctx.get('node_id')) for ctx in contexts)
-        local_indices.discard(None)
-        
-        # Reorder based on global scheduling
-        idx_to_ctx = {node_id_to_idx.get(ctx.get('node_id')): ctx for ctx in contexts}
-        reordered = [idx_to_ctx[i] for i in global_order if i in local_indices and i in idx_to_ctx]
-        
-        # Add any missing (shouldn't happen)
-        seen = set(node_id_to_idx.get(ctx.get('node_id')) for ctx in reordered)
-        for ctx in contexts:
-            if node_id_to_idx.get(ctx.get('node_id')) not in seen:
-                reordered.append(ctx)
-        
-        return reordered if reordered else contexts
-    
-    return contexts
-
-
-# ============================================================================
-# Answer Generation
-# ============================================================================
-
-async def generate_answer(
-    query: str,
-    contexts: List[Dict[str, Any]],
-    client: "AsyncOpenAI",
-    model: str = "gpt-4o"
-) -> str:
-    """Generate an answer using the retrieved and optimized contexts."""
-    context_text = "\n\n".join([
-        f"[{ctx.get('title', 'Section')}]\n{ctx.get('text', ctx.get('summary', ''))}"
-        for ctx in contexts
-    ])
-    
-    prompt = f"""Answer the question based on the context provided.
-
-Question: {query}
-
-Context:
-{context_text}
-
-Provide a clear, concise answer based only on the context."""
-
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
-    )
-    
-    return response.choices[0].message.content
-
-
-# ============================================================================
-# Main End-to-End Pipeline
-# ============================================================================
-
-async def run_pageindex_with_contextpilot(
-    tree_structure: Dict[str, Any],
-    queries: List[str],
-    api_key: Optional[str] = None,
-    model: str = "gpt-4o",
-    top_k: int = 5,
-    use_gpu: bool = False
+def run_contextpilot(
+    contexts: List[List[int]],
+    query_labels: List[str],
+    use_gpu: bool = False,
+    alpha: float = 0.005,
 ) -> Dict[str, Any]:
     """
-    Run the complete PageIndex + ContextPilot pipeline.
-    
-    This demonstrates the optimal workflow:
-    1. Execute all tree searches first
-    2. Build ONE shared ContextPilot index
-    3. Reorder contexts for each query using the shared index
-    4. Generate answers
-    
+    Build a ContextPilot index and schedule contexts.
+
     Args:
-        tree_structure: PageIndex tree structure (from JSON)
-        queries: List of questions to answer
-        api_key: OpenAI API key (uses env var if not provided)
-        model: LLM model to use
-        top_k: Number of nodes to retrieve per query
-        use_gpu: Whether to use GPU for ContextPilot
-    
+        contexts: Each element is one query's document-ID list,
+                  e.g. [[2, 8, 9, 31], [2, 12, 14, 34], ...]
+        query_labels: Human-readable label per context (for display).
+        use_gpu: GPU acceleration for distance matrix.
+        alpha: Position weight in distance metric.
+
     Returns:
-        Dictionary with results and statistics
+        Dictionary with scheduled order, groups, reordered contexts,
+        and prefix-sharing metrics (scheduled vs naive vs random).
     """
-    if not OPENAI_AVAILABLE:
-        raise ImportError("OpenAI package required. Install with: pip install openai")
-    
-    api_key = api_key or os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OpenAI API key required. Set OPENAI_API_KEY environment variable.")
-    
-    client = AsyncOpenAI(api_key=api_key)
-    
-    print("=" * 60)
-    print("  PageIndex + ContextPilot End-to-End Pipeline")
-    print("=" * 60)
-    
-    # Phase 1: Tree Search for all queries
-    print(f"\n📍 Phase 1: Tree Search ({len(queries)} queries)")
-    print("-" * 40)
-    
-    search_results = []
-    all_contexts = []
-    
-    for i, query in enumerate(queries):
-        print(f"  🔍 Query {i+1}: {query[:50]}...")
-        
-        node_ids = await tree_search(query, tree_structure, client, model, top_k)
-        contexts = get_node_by_id(tree_structure, node_ids)
-        
-        print(f"     → Retrieved {len(node_ids)} nodes: {node_ids}")
-        
-        search_results.append({
-            'query': query,
-            'node_ids': node_ids,
-            'contexts': contexts
-        })
-        all_contexts.extend(contexts)
-    
-    # Phase 2: Build SHARED ContextPilot Index
-    print(f"\n📍 Phase 2: Build Shared ContextPilot Index")
-    print("-" * 40)
-    
-    clustering_result, node_id_to_idx, overlap_ratio = build_shared_context_index(
-        all_contexts, use_gpu=use_gpu
+    n = len(contexts)
+    total_docs = sum(len(c) for c in contexts)
+
+    # ── Document-level overlap ──
+    all_ids = [d for c in contexts for d in c]
+    unique_ids = set(all_ids)
+    overlap = {d: cnt for d, cnt in Counter(all_ids).items() if cnt > 1}
+    overlap_ratio = 1 - len(unique_ids) / len(all_ids) if all_ids else 0
+
+    print(f"  Contexts:       {n}")
+    print(f"  Total doc refs: {len(all_ids)}")
+    print(f"  Unique docs:    {len(unique_ids)}")
+    print(f"  Overlap ratio:  {overlap_ratio:.1%}")
+    if overlap:
+        print(f"  Shared docs:    {overlap}")
+
+    # ── Build index ──
+    t0 = time.time()
+    clustering_result = build_context_index(
+        contexts=contexts, use_gpu=use_gpu, alpha=alpha
     )
-    
-    # Phase 3: Generate Answers with Optimized Context Order
-    print(f"\n📍 Phase 3: Generate Answers")
-    print("-" * 40)
-    
-    answers = []
-    for i, sr in enumerate(search_results):
-        query = sr['query']
-        contexts = sr['contexts']
-        
-        # Reorder using shared index
-        optimized_contexts = reorder_contexts(contexts, clustering_result, node_id_to_idx)
-        
-        print(f"  💬 Query {i+1}: Generating answer...")
-        answer = await generate_answer(query, optimized_contexts, client, model)
-        
-        answers.append({
-            'query': query,
-            'node_ids': sr['node_ids'],
-            'answer': answer,
-            'num_contexts': len(contexts)
-        })
-        print(f"     ✓ Done")
-    
-    # Summary
-    print(f"\n{'=' * 60}")
-    print("  Summary")
-    print("=" * 60)
-    print(f"  Queries processed: {len(queries)}")
-    print(f"  Total contexts retrieved: {len(all_contexts)}")
-    print(f"  Unique contexts: {len(node_id_to_idx)}")
-    print(f"  Context overlap: {overlap_ratio*100:.1f}%")
-    print(f"  Index built: 1 time (shared)")
-    
+    build_time = time.time() - t0
+    print(f"\n  Build time:     {build_time:.3f}s")
+    print(f"  Tree nodes:     {clustering_result.stats['total_nodes']}")
+
+    # ── Schedule ──
+    t0 = time.time()
+    scheduler = InterContextScheduler()
+    sched_reordered, sched_originals, final_mapping, groups = (
+        scheduler.schedule_contexts(clustering_result)
+    )
+    schedule_time = time.time() - t0
+    print(f"  Schedule time:  {schedule_time:.6f}s")
+    print(f"  Groups:         {len(groups)}")
+
+    # ── Display scheduled order ──
+    print(f"\n  Scheduled execution order:")
+    for i, q_idx in enumerate(final_mapping):
+        label = query_labels[q_idx]
+        reordered = sched_reordered[i]
+        original = contexts[q_idx]
+        changed = reordered != original
+        lcp = 0
+        if i > 0:
+            lcp = longest_common_prefix(sched_reordered[i - 1], reordered)
+        bar = "█" * (lcp * 3) if lcp > 0 else ""
+        mark = " ← reordered" if changed else ""
+        print(
+            f"    [{q_idx}] {label:35s}  "
+            f"docs={reordered!s:28s}  LCP={lcp}  {bar}{mark}"
+        )
+
+    # ── Prefix sharing: scheduled ──
+    sched_reused, sched_new = measure_prefix_sharing(
+        final_mapping, sched_reordered
+    )
+
+    # ── Prefix sharing: naive (original order, no reordering) ──
+    naive_reused, naive_new = measure_prefix_sharing(
+        list(range(n)), contexts
+    )
+
+    # ── Prefix sharing: random baseline (avg 100 shuffles) ──
+    rng = random.Random(42)
+    rand_total = 0
+    for _ in range(100):
+        perm = list(range(n))
+        rng.shuffle(perm)
+        shuffled = [contexts[i] for i in perm]
+        r, _ = measure_prefix_sharing(perm, shuffled)
+        rand_total += r
+    rand_avg = rand_total / 100
+
+    # ── Summary ──
+    print(f"\n  Prefix sharing (Longest Common Prefix):")
+    print(f"    {'Method':<20s} {'Reused':>8s} {'New':>8s} {'% Saved':>8s} {'vs Random':>10s}")
+    print(f"    {'-'*20} {'-'*8} {'-'*8} {'-'*8} {'-'*10}")
+    for label, reused in [
+        ("ContextPilot", sched_reused),
+        ("Naive", naive_reused),
+        ("Random (avg)", rand_avg),
+    ]:
+        pct = reused / total_docs * 100 if total_docs else 0
+        vs_rand = (
+            f"+{(reused - rand_avg) / rand_avg * 100:.0f}%"
+            if rand_avg > 0
+            else "n/a"
+        )
+        if label == "Random (avg)":
+            vs_rand = "baseline"
+        print(
+            f"    {label:<20s} {reused:>8.0f} "
+            f"{total_docs - reused:>8.0f} {pct:>7.1f}% {vs_rand:>10s}"
+        )
+
     return {
-        'answers': answers,
-        'statistics': {
-            'num_queries': len(queries),
-            'total_contexts': len(all_contexts),
-            'unique_contexts': len(node_id_to_idx),
-            'overlap_ratio': overlap_ratio
-        }
+        "final_mapping": final_mapping,
+        "groups": groups,
+        "sched_reordered": sched_reordered,
+        "sched_originals": sched_originals,
+        "build_time": build_time,
+        "schedule_time": schedule_time,
+        "overlap_ratio": overlap_ratio,
+        "prefix_sharing": {
+            "scheduled": sched_reused,
+            "naive": naive_reused,
+            "random_avg": rand_avg,
+            "total_docs": total_docs,
+        },
     }
 
 
 # ============================================================================
-# Demo with Sample Data
+# Tree Loading
 # ============================================================================
 
-def create_sample_tree() -> Dict[str, Any]:
-    """Create a sample tree structure for demo purposes."""
-    return {
-        "doc_name": "sample_report.pdf",
-        "doc_description": "A sample quarterly report for demonstration.",
-        "structure": [
-            {
-                "title": "Executive Summary",
-                "node_id": "0001",
-                "summary": "Overview of Q4 performance showing 15% revenue growth.",
-                "text": "Q4 2024 was a strong quarter with 15% year-over-year revenue growth. Key highlights include successful product launches, expansion into new markets, and improved operational efficiency.",
-                "nodes": []
-            },
-            {
-                "title": "Financial Results",
-                "node_id": "0002",
-                "summary": "Detailed financial metrics and performance indicators.",
-                "text": "Revenue reached $500M, up from $435M last year. Operating income increased 20% to $75M. Net income was $60M with EPS of $2.50.",
-                "nodes": [
-                    {
-                        "title": "Revenue Breakdown",
-                        "node_id": "0003",
-                        "summary": "Revenue by segment and region.",
-                        "text": "Product revenue: $350M (70%). Services revenue: $150M (30%). North America: 60%, Europe: 25%, Asia: 15%.",
-                        "nodes": []
-                    },
-                    {
-                        "title": "Cost Analysis",
-                        "node_id": "0004",
-                        "summary": "Cost structure and margins.",
-                        "text": "Gross margin improved to 45% from 42%. Operating expenses were $425M, with R&D at $100M and S&M at $200M.",
-                        "nodes": []
-                    }
-                ]
-            },
-            {
-                "title": "Business Highlights",
-                "node_id": "0005",
-                "summary": "Key achievements and milestones.",
-                "text": "Launched 3 new products. Acquired TechStartup Inc. Expanded to 5 new countries. Customer base grew 25% to 10,000 enterprise clients.",
-                "nodes": []
-            },
-            {
-                "title": "Outlook",
-                "node_id": "0006",
-                "summary": "Guidance for next quarter and full year.",
-                "text": "Q1 2025 revenue expected at $520-540M. Full year 2025 guidance: 12-15% growth. Investing heavily in AI capabilities.",
-                "nodes": []
-            }
-        ]
-    }
+# Default tree data bundled with the repo
+DEFAULT_TREE_PATH = os.path.join(
+    os.path.dirname(__file__), "data", "disney_q1_fy25_tree.json"
+)
 
 
-async def demo_without_api():
-    """Demo the workflow without making actual API calls."""
-    print("=" * 60)
-    print("  PageIndex + ContextPilot Demo (No API)")
-    print("=" * 60)
-    
-    tree = create_sample_tree()
-    
-    # Simulate search results (what LLM would return)
-    simulated_searches = [
-        {'query': 'What was the revenue growth?', 'nodes': ['0001', '0002', '0003']},
-        {'query': 'What are the cost margins?', 'nodes': ['0002', '0004']},
-        {'query': 'What is the outlook?', 'nodes': ['0001', '0006']},
-        {'query': 'What were the business achievements?', 'nodes': ['0005', '0001']},
+def load_tree(path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load a PageIndex tree JSON.
+
+    If no path is given, loads the bundled Disney Q1 FY25 tree
+    (41 nodes, generated from the actual SEC filing).
+
+    Generate your own tree with PageIndex:
+        pip install pageindex
+        # See https://github.com/yinsicheng/PageIndex
+    """
+    tree_path = path or DEFAULT_TREE_PATH
+    if not os.path.isfile(tree_path):
+        raise FileNotFoundError(
+            f"Tree file not found: {tree_path}\n"
+            f"Generate one with PageIndex: pip install pageindex\n"
+            f"See https://github.com/yinsicheng/PageIndex"
+        )
+    with open(tree_path) as f:
+        return json.load(f)
+
+
+def demo_disney(tree_path: Optional[str] = None):
+    """
+    Demo using a PageIndex tree (defaults to the bundled Disney tree).
+
+    Simulates 6 analyst queries with overlapping node retrieval.
+    Each context is a list of integer node IDs — exactly how a real
+    PageIndex pipeline would feed them to ContextPilot.
+    """
+    tree = load_tree(tree_path)
+    all_nodes = flatten_tree(tree["structure"])
+    node_map = {n["node_id"]: n for n in all_nodes if "node_id" in n}
+
+    print("=" * 70)
+    print("  PageIndex + ContextPilot Demo")
+    print(f"  Document: {tree['doc_name']}")
+    print(f"  Nodes: {len(all_nodes)}")
+    print("=" * 70)
+
+    # ── Simulated queries (what an LLM tree-search would return) ──
+    # Node IDs map to the bundled Disney tree (examples/data/disney_q1_fy25_tree.json).
+    # The tree uses zero-padded string IDs like "0001"; we convert to ints.
+    #
+    # Intentionally: doc order within each context is NOT pre-sorted,
+    # and queries with high overlap are NOT adjacent in the list.
+    # This lets the demo show both of ContextPilot's optimizations:
+    #   1. Intra-context reordering: move shared nodes to the front
+    #   2. Inter-context scheduling: run similar queries consecutively
+    queries = [
+        ("Revenue & EPS growth",        [8, 31, 2, 1]),       # shared 1,2 buried at end
+        ("FY2025 outlook & CapEx",      [29, 5, 6, 3]),       # no overlap — breaks naive streaks
+        ("Streaming (DTC) performance", [14, 12, 1, 10, 2]),  # shared 1,2,10 scattered
+        ("Theme parks performance",     [20, 10, 2, 1]),      # shared 1,2,10
+        ("Content licensing results",   [15, 12, 1, 2]),      # shared 1,2
+        ("ESPN & Sports results",       [17, 16, 2, 10, 1]),  # shared 1,2,10 scattered
     ]
-    
-    print(f"\n📊 Simulating {len(simulated_searches)} queries with overlap...")
-    
-    # Collect all contexts
-    all_contexts = []
-    for search in simulated_searches:
-        contexts = get_node_by_id(tree, search['nodes'])
-        all_contexts.extend(contexts)
-        print(f"  Query: {search['query'][:40]}...")
-        print(f"    → Nodes: {search['nodes']}")
-    
-    # Build shared index
-    print("\n🔧 Building ContextPilot index...")
-    clustering_result, node_id_to_idx, overlap_ratio = build_shared_context_index(
-        all_contexts, use_gpu=False
-    )
-    
-    print(f"\n✅ Demo complete!")
-    print(f"   Overlap ratio: {overlap_ratio*100:.1f}%")
-    print(f"   (In production, this means {overlap_ratio*100:.1f}% less redundant computation)")
+
+    # Validate node IDs against the loaded tree
+    valid_ids = {int(n["node_id"]) for n in all_nodes if "node_id" in n}
+    for label, nids in queries:
+        missing = [n for n in nids if n not in valid_ids]
+        if missing:
+            print(f"  Warning: query '{label}' has unknown node IDs: {missing}")
+
+    print(f"\n  Queries ({len(queries)}):")
+    for label, node_ids in queries:
+        titles = []
+        for n in node_ids:
+            nid_str = str(n).zfill(4)  # tree uses zero-padded IDs like "0001"
+            if nid_str in node_map:
+                titles.append(node_map[nid_str]["title"][:30])
+            elif str(n) in node_map:
+                titles.append(node_map[str(n)]["title"][:30])
+            else:
+                titles.append(f"?{n}")
+        print(f"    {label:35s} -> nodes {node_ids}  ({', '.join(titles)})")
+
+    # ── Run ContextPilot ──
+    contexts = [nids for _, nids in queries]
+    labels = [label for label, _ in queries]
+
+    print(f"\n{'─' * 70}")
+    print("  ContextPilot Analysis")
+    print(f"{'─' * 70}")
+
+    result = run_contextpilot(contexts, labels, use_gpu=False, alpha=0.005)
+
+    # ── Show reordering explanation ──
+    print(f"\n{'─' * 70}")
+    print("  What happened:")
+    print(f"{'─' * 70}")
+    print("  Notice that the original queries had shared nodes (1, 2, 10)")
+    print("  buried in the middle or end of each context. ContextPilot:")
+    print("    1. Reordered docs WITHIN each context → shared nodes moved to front")
+    print("    2. Scheduled queries so overlapping ones run consecutively")
+    print("  Both optimizations together maximize radix-tree KV cache reuse.")
+    print("  Compare with Naive (original order, no reordering) → 0 prefix reuse.")
+    print()
+    print("  Tree data:  examples/data/disney_q1_fy25_tree.json (41 nodes)")
+    print("  Generate:   pip install pageindex  (see https://github.com/yinsicheng/PageIndex)")
+
+    return result
 
 
 # ============================================================================
-# Main Entry Point
+# Full pipeline with PageIndexRetriever + ContextPilot
+# ============================================================================
+
+def run_pipeline(
+    tree_path: str,
+    queries: List[str],
+    model: str = "gpt-4o",
+    top_k: int = 5,
+    use_gpu: bool = False,
+) -> Dict[str, Any]:
+    """
+    Full pipeline: PageIndexRetriever tree-search -> ContextPilot -> answer generation.
+
+    Requires:
+        pip install openai
+        export OPENAI_API_KEY="your-key"
+    """
+    from contextpilot.retriever import PageIndexRetriever, PAGEINDEX_AVAILABLE
+
+    if not PAGEINDEX_AVAILABLE:
+        raise ImportError(
+            "PageIndexRetriever not available. Install openai: pip install openai"
+        )
+
+    # Phase 0: Load tree via PageIndexRetriever
+    retriever = PageIndexRetriever(model=model, verbose=True)
+    retriever.load_tree_structures([tree_path])
+
+    all_nodes = flatten_tree(
+        list(retriever.documents.values())[0].get("structure", {})
+    )
+    node_map = {n["node_id"]: n for n in all_nodes if "node_id" in n}
+
+    doc_name = list(retriever.documents.keys())[0]
+    print("=" * 70)
+    print(f"  PageIndex + ContextPilot Pipeline")
+    print(f"  Document: {doc_name}")
+    print(f"  Model: {model}")
+    print("=" * 70)
+
+    # Phase 1: Tree search via PageIndexRetriever
+    print(f"\n  Phase 1: Tree Search ({len(queries)} queries)")
+    query_data = [{"question": q} for q in queries]
+    search_results = retriever.search_queries(query_data=query_data, top_k=top_k)
+
+    for i, sr in enumerate(search_results):
+        print(f"    [{i}] {sr['text'][:50]:50s} -> {sr['top_k_doc_id']}")
+
+    # Convert chunk_ids to integer node IDs for ContextPilot
+    corpus_map = retriever.get_corpus_map()
+    contexts = []
+    for sr in search_results:
+        node_ids = []
+        for chunk_id in sr["top_k_doc_id"]:
+            item = corpus_map.get(chunk_id, {})
+            nid = item.get("node_id", "")
+            if nid:
+                node_ids.append(int(nid))
+        contexts.append(node_ids)
+
+    labels = [sr["text"][:35] for sr in search_results]
+
+    # Phase 2: ContextPilot optimization
+    print(f"\n  Phase 2: ContextPilot Optimization")
+    cp_result = run_contextpilot(contexts, labels, use_gpu=use_gpu)
+
+    # Phase 3: Generate answers using optimized order
+    print(f"\n  Phase 3: Answer Generation")
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError("pip install openai")
+
+    client = OpenAI()
+    answers = []
+    for i, q_idx in enumerate(cp_result["final_mapping"]):
+        sr = search_results[q_idx]
+        query = sr["text"]
+        reordered_ids = cp_result["sched_reordered"][i]
+
+        # Build context text from node summaries/text
+        context_parts = []
+        for nid in reordered_ids:
+            nid_str = str(nid).zfill(4)
+            node = node_map.get(nid_str) or node_map.get(str(nid))
+            if node:
+                text = node.get("text") or node.get("summary", "")
+                context_parts.append(f"[{node['title']}]\n{text}")
+
+        context_text = "\n\n".join(context_parts)
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "user", "content": (
+                    f"Answer based on the context.\n\n"
+                    f"Question: {query}\n\nContext:\n{context_text}"
+                )},
+            ],
+            temperature=0.0,
+        )
+        answer = response.choices[0].message.content
+        answers.append({"query": query, "answer": answer})
+        print(f"    [{q_idx}] {query[:50]}")
+        print(f"        -> {answer[:120]}...")
+
+    return {"answers": answers, "statistics": cp_result["prefix_sharing"]}
+
+
+# ============================================================================
+# CLI
 # ============================================================================
 
 if __name__ == "__main__":
     import argparse
-    
-    parser = argparse.ArgumentParser(description="PageIndex + ContextPilot E2E Example")
-    parser.add_argument("--tree", "-t", type=str, help="Path to PageIndex tree JSON")
-    parser.add_argument("--demo", action="store_true", help="Run demo without API")
-    parser.add_argument("--query", "-q", type=str, action="append", help="Query to run")
-    
+
+    parser = argparse.ArgumentParser(
+        description="PageIndex + ContextPilot E2E Example"
+    )
+    parser.add_argument(
+        "--tree", "-t", type=str,
+        help="Path to PageIndex tree JSON (default: bundled Disney tree)",
+    )
+    parser.add_argument(
+        "--query", "-q", type=str, action="append",
+        help="Query for LLM tree search + answer generation (repeatable)",
+    )
+    parser.add_argument("--model", default="gpt-4o", help="LLM model")
+    parser.add_argument("--top-k", type=int, default=5, help="Nodes per query")
+    parser.add_argument("--gpu", action="store_true", help="Use GPU")
     args = parser.parse_args()
-    
-    if args.demo:
-        asyncio.run(demo_without_api())
-    elif args.tree and args.query:
-        with open(args.tree) as f:
-            tree = json.load(f)
-        
-        results = asyncio.run(run_pageindex_with_contextpilot(
-            tree_structure=tree,
-            queries=args.query,
-            use_gpu=False
-        ))
-        
-        print("\n📝 Answers:")
-        for ans in results['answers']:
-            print(f"\nQ: {ans['query']}")
-            print(f"A: {ans['answer'][:200]}...")
+
+    if args.query:
+        # Full LLM pipeline: PageIndexRetriever tree search + ContextPilot + answer generation
+        run_pipeline(
+            args.tree or DEFAULT_TREE_PATH, args.query,
+            model=args.model, top_k=args.top_k, use_gpu=args.gpu,
+        )
     else:
-        # Run demo by default
-        asyncio.run(demo_without_api())
+        # Demo mode: simulated queries, no API key needed
+        demo_disney(args.tree)

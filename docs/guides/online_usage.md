@@ -124,15 +124,15 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
 
 ```
 ┌─────────────┐         ┌─────────────────────┐         ┌─────────────────┐
-│   Client    │ ──────► │  ContextPilot Index  │ ──────► │ Inference Engine│
-│             │         │  Server (8765)       │         │ (30000)         │
+│   Client    │ ──────► │  ContextPilot Index │ ──────► │ Inference Engine│
+│             │         │  Server (8765)      │         │ (30000)         │
 └─────────────┘         └─────────────────────┘         └─────────────────┘
                                │
                                ▼
                         ┌─────────────────┐
-                        │  LiveContextIndex│
-                        │  - Token tracking │
-                        │  - LRU eviction   │
+                        │ LiveContextIndex│
+                        │- Token tracking │
+                        │- LRU eviction   │
                         └─────────────────┘
 ```
 
@@ -197,7 +197,27 @@ requests.post("http://localhost:8765/evict", json={
 
 ## SGLang Integration
 
-ContextPilot integrates with SGLang via the `CONTEXTPILOT_INDEX_URL` environment variable. When set, SGLang automatically syncs evictions with ContextPilot.
+Stateful mode requires patching SGLang so its radix cache notifies ContextPilot on eviction.
+
+### Install the SGLang Patch
+
+```bash
+# Automatic (recommended)
+bash patches/sglang/apply_patch.sh
+
+# Or manually:
+SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
+
+# Backup originals
+cp $SGLANG_PATH/srt/mem_cache/radix_cache.py $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak
+cp $SGLANG_PATH/srt/mem_cache/common.py $SGLANG_PATH/srt/mem_cache/common.py.bak
+cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak
+
+# Copy patched files
+cp patches/sglang/*.py $SGLANG_PATH/srt/mem_cache/
+```
+
+The patch adds an eviction callback to `RadixCache` that POSTs evicted `request_ids` to the ContextPilot server. Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
 
 ### Start SGLang with ContextPilot
 
@@ -222,7 +242,7 @@ When `CONTEXTPILOT_INDEX_URL` is set, SGLang integrates with ContextPilot at evi
 │                     Eviction Sync Flow                              │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  Cache Full → RadixCache.evict() → Callback invoked                │
+│  Cache Full → RadixCache.evict() → Callback invoked                 │
 │                                      │                              │
 │                                      ▼                              │
 │                     POST /evict {"request_ids": ["rid1", "rid2"]}   │

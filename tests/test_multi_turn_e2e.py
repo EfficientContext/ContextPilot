@@ -137,43 +137,45 @@ class TestHTTPDeduplicateEndpoint:
         response = requests.post(
             f"{index_server_url}/deduplicate",
             json={
-                "request_id": "http_req_1",
-                "doc_ids": [10, 20, 30],
+                "contexts": [[10, 20, 30]],
+                "parent_request_ids": [None],
             }
         )
         
         assert response.status_code == 200
         data = response.json()
-        assert data.get("is_new_conversation") == True
-        assert data.get("new_docs") == [10, 20, 30]
+        result = data["results"][0]
+        assert result.get("is_new_conversation") == True
+        assert result.get("new_docs") == [10, 20, 30]
     
     def test_second_turn_deduplication(self, index_server_url, reset_server):
         """Test second turn performs deduplication."""
         # Turn 1
-        requests.post(
+        resp1 = requests.post(
             f"{index_server_url}/deduplicate",
             json={
-                "request_id": "http_req_1",
-                "doc_ids": [10, 20, 30],
+                "contexts": [[10, 20, 30]],
+                "parent_request_ids": [None],
             }
         )
+        turn1_request_id = resp1.json()["request_ids"][0]
         
         # Turn 2
         response = requests.post(
             f"{index_server_url}/deduplicate",
             json={
-                "request_id": "http_req_2",
-                "doc_ids": [20, 30, 40],
-                "parent_request_id": "http_req_1"
+                "contexts": [[20, 30, 40]],
+                "parent_request_ids": [turn1_request_id],
             }
         )
         
         assert response.status_code == 200
         data = response.json()
-        assert data.get("is_new_conversation") == False
-        assert data.get("new_docs") == [40]
-        assert set(data.get("overlapping_docs", [])) == {20, 30}
-        assert len(data.get("reference_hints", [])) == 2
+        result = data["results"][0]
+        assert result.get("is_new_conversation") == False
+        assert result.get("new_docs") == [40]
+        assert set(result.get("overlapping_docs", [])) == {20, 30}
+        assert len(result.get("reference_hints", [])) == 2
 
 
 @pytest.mark.integration
@@ -183,11 +185,11 @@ class TestHTTPMultiTurnChain:
     def test_five_turn_conversation(self, index_server_url, reset_server):
         """Test 5-turn conversation chain."""
         conversation = [
-            ("turn_1", [1, 2, 3, 4, 5], None),
-            ("turn_2", [3, 4, 5, 6, 7], "turn_1"),       # 3,4,5 overlap
-            ("turn_3", [5, 6, 7, 8, 9], "turn_2"),       # 5,6,7 overlap
-            ("turn_4", [1, 8, 9, 10, 11], "turn_3"),     # 1,8,9 overlap
-            ("turn_5", [10, 11, 12, 13, 14], "turn_4"),  # 10,11 overlap
+            ([1, 2, 3, 4, 5], None),
+            ([3, 4, 5, 6, 7], None),       # parent filled after turn 1
+            ([5, 6, 7, 8, 9], None),       # parent filled after turn 2
+            ([1, 8, 9, 10, 11], None),     # parent filled after turn 3
+            ([10, 11, 12, 13, 14], None),  # parent filled after turn 4
         ]
         
         expected_new = [
@@ -198,19 +200,21 @@ class TestHTTPMultiTurnChain:
             [12, 13, 14],     # Turn 5: 10,11 overlap
         ]
         
-        for i, (request_id, doc_ids, parent_id) in enumerate(conversation):
-            payload = {
-                "request_id": request_id,
-                "doc_ids": doc_ids,
-            }
-            if parent_id:
-                payload["parent_request_id"] = parent_id
-            
-            response = requests.post(f"{index_server_url}/deduplicate", json=payload)
+        prev_request_id = None
+        for i, (doc_ids, _) in enumerate(conversation):
+            response = requests.post(
+                f"{index_server_url}/deduplicate",
+                json={
+                    "contexts": [doc_ids],
+                    "parent_request_ids": [prev_request_id],
+                }
+            )
             
             assert response.status_code == 200
             data = response.json()
-            assert data.get("new_docs") == expected_new[i], f"Turn {i+1} mismatch"
+            result = data["results"][0]
+            assert result.get("new_docs") == expected_new[i], f"Turn {i+1} mismatch"
+            prev_request_id = data["request_ids"][0]
 
 
 @pytest.mark.integration
@@ -220,10 +224,11 @@ class TestHTTPResetEndpoint:
     def test_reset_clears_conversations(self, index_server_url, reset_server):
         """Test reset endpoint clears conversation data."""
         # Add some data
-        requests.post(f"{index_server_url}/deduplicate", json={
-            "request_id": "reset_test_1",
-            "doc_ids": [1, 2, 3],
+        resp1 = requests.post(f"{index_server_url}/deduplicate", json={
+            "contexts": [[1, 2, 3]],
+            "parent_request_ids": [None],
         })
+        turn1_request_id = resp1.json()["request_ids"][0]
         
         # Reset
         response = requests.post(f"{index_server_url}/reset", json={
@@ -234,11 +239,11 @@ class TestHTTPResetEndpoint:
         
         # Verify reset - should be new conversation
         response2 = requests.post(f"{index_server_url}/deduplicate", json={
-            "request_id": "after_reset",
-            "doc_ids": [1, 2, 3],
-            "parent_request_id": "reset_test_1"  # This should not exist anymore
+            "contexts": [[1, 2, 3]],
+            "parent_request_ids": [turn1_request_id],  # This should not exist anymore
         })
         
         data = response2.json()
+        result = data["results"][0]
         # After reset, parent doesn't exist, so treated as new conversation
-        assert data.get("is_new_conversation") == True
+        assert result.get("is_new_conversation") == True

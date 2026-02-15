@@ -195,3 +195,26 @@ class TestSortingWithinGroups:
         
         # Should be sorted: idx 1 (len 4), idx 2 (len 3), idx 0 (len 2)
         assert sorted_groups[0] == [1, 2, 0]
+
+    def test_sort_groups_lex_tiebreaker(self):
+        """Equal-length paths should be ordered lexicographically to maximize LCP."""
+        from contextpilot.context_ordering import InterContextScheduler
+
+        scheduler = InterContextScheduler()
+
+        # Four paths of equal length 4, two share prefix [1,1,0] and two share [1,1,1]
+        search_paths = [
+            [1, 1, 0, 2],  # idx 0  — group A
+            [1, 1, 1, 5],  # idx 1  — group B
+            [1, 1, 0, 7],  # idx 2  — group A
+            [1, 1, 1, 3],  # idx 3  — group B
+        ]
+
+        groups = {1: [0, 1, 2, 3]}
+
+        sorted_groups = scheduler._sort_groups_by_path_length(
+            groups, search_paths, contexts=[[]]
+        )
+
+        # Lex order: [1,1,0,2]=idx0, [1,1,0,7]=idx2, [1,1,1,3]=idx3, [1,1,1,5]=idx1
+        assert sorted_groups[0] == [0, 2, 3, 1]

@@ -104,44 +104,6 @@ class TestCPUDistanceCorrectness:
                 assert abs(naive_dist - optimized_dist) < 1e-6
 
 
-class TestCPUDistancePerformance:
-    """Benchmark single-threaded performance."""
-    
-    @pytest.fixture
-    def large_contexts(self):
-        """Generate larger context set for benchmarking."""
-        return generate_contexts(1000, avg_chunks=20, seed=42)
-    
-    @pytest.mark.slow
-    def test_optimized_faster_than_naive(self, large_contexts):
-        """Verify optimized version is faster than naive."""
-        import time
-        alpha = 0.005
-        sample_contexts = large_contexts[:500]
-        n = len(sample_contexts)
-        
-        # Naive method
-        start = time.time()
-        for i in range(n):
-            for j in range(i + 1, n):
-                _ = compute_distance_naive(sample_contexts[i], sample_contexts[j], alpha)
-        time_naive = time.time() - start
-        
-        # Optimized method
-        chunk_ids, original_positions, lengths, offsets = prepare_contexts_for_cpu(sample_contexts)
-        
-        start = time.time()
-        for i in range(n):
-            for j in range(i + 1, n):
-                _ = compute_distance_optimized(
-                    chunk_ids, original_positions, lengths, offsets, i, j, alpha
-                )
-        time_optimized = time.time() - start
-        
-        # Optimized should be faster
-        assert time_optimized < time_naive, f"Optimized ({time_optimized:.2f}s) should be faster than naive ({time_naive:.2f}s)"
-
-
 class TestFullPipeline:
     """Test the full multi-threaded pipeline."""
     

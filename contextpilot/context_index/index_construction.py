@@ -194,14 +194,37 @@ class ContextIndex:
             )
     
     def _handle_single_prompt(self, contexts: List[List[int]]) -> IndexResult:
-        """Handle case with less than 2 contexts."""
+        """Handle case with less than 2 contexts.
+        
+        Always creates an empty root node above the leaf(s) so that
+        leaf.is_root is never True.  This prevents the root-exclusion
+        guard in build_incremental from skipping legitimate matches.
+        """
         for i, prompt in enumerate(contexts):
             self.node_manager.create_leaf_node(i, prompt)
         
-        # Update search paths even for single nodes
+        # Wrap leaf node(s) under an empty root so that no leaf is the root.
+        # This mirrors the virtual-root logic in update_search_paths for forests,
+        # but applies it even for a single leaf.
+        leaf_ids = list(self.node_manager.unique_nodes.keys())
+        virtual_root_id = max(leaf_ids) + 1 if leaf_ids else 0
+        virtual_root = ClusterNode(
+            node_id=virtual_root_id,
+            content=set(),
+            original_indices=set(),
+            distance=0.0,
+            children=leaf_ids,
+            parent=None,
+            frequency=sum(self.node_manager.unique_nodes[nid].frequency for nid in leaf_ids)
+        )
+        self.node_manager.unique_nodes[virtual_root_id] = virtual_root
+        for nid in leaf_ids:
+            self.node_manager.unique_nodes[nid].parent = virtual_root_id
+        
+        # Update search paths (now a proper rooted tree)
         self.node_manager.update_search_paths()
         
-        # For single context, extract search paths (will be empty for root-only tree)
+        # For single context, extract search paths
         search_paths = self.context_orderer.extract_search_paths(
             self.node_manager.unique_nodes, len(contexts)
         )

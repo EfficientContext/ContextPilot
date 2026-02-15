@@ -42,9 +42,9 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 <img src="assets/deepseek_r1_results.png" alt="Benchmark Results" width="600"/>
 </div>
 
-ContextPilot on DeepSeek-R1 maintains accuracy compared to SGLang, achieving 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA.
+ContextPilot (Online Stateless) on DeepSeek-R1 maintains accuracy compared to SGLang, achieving 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA.
 
-### Accuracy on MT-RAG Benchmark
+### Accuracy on MT-RAG Benchmark (Online Scheduling)
 
 <div align="center">
 
@@ -75,7 +75,7 @@ pip install contextpilot
 
 Or install from source:
 ```bash
-git clone https://github.com/SecretSettler/ContextPilot.git
+git clone https://github.com/Edinburgh-AgenticAI/ContextPilot.git
 cd ContextPilot
 pip install -e .
 ```
@@ -84,55 +84,103 @@ More [detailed installation instructions](docs/getting_started/installation.md) 
 
 ### Quick Start
 
-**Python API** — reorder contexts locally in 3 lines:
+**Offline / Online Stateless** — build index & schedule in one shot:
 
 ```python
+from openai import OpenAI
 import contextpilot as cp
 
-# Each list = one query's retrieved doc IDs
-contexts = [
-    [5, 1, 3, 2],   # query 0
-    [10, 11, 12],    # query 1
-    [2, 3, 1, 4],    # query 2 (overlaps with query 0)
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="...") # Your inference engine URL and API key
+
+queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
+all_contexts = [
+    ["Doc about AI", "Doc about ML", "Doc about computing"],
+    ["Doc about neural nets", "Doc about deep learning"],
+    ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
 ]
 
-index = cp.build_context_index(contexts, use_gpu=False)
+# Build index and schedule for prefix sharing
+index = cp.build_context_index(all_contexts, use_gpu=False)
 reordered, _, order, _ = cp.InterContextScheduler().schedule_contexts(index)
-# reordered: [[1,2,3,5], [1,2,3,4], [10,11,12]]
-# order:     [0, 2, 1]  — queries 0 & 2 grouped for prefix sharing
+
+# Send in optimized order — shared prefixes hit KV cache
+for ctx, orig_idx in zip(reordered, order):
+    docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
+    # Importance ranking restores original retrieval order for the model
+    importance_ranking = ">".join(
+        str(ctx.index(doc) + 1) for doc in all_contexts[orig_idx] if doc in ctx
+    )
+    response = client.chat.completions.create(
+        model="Qwen/Qwen3-4B",
+        messages=[
+            {"role": "system", "content": (
+                f"Answer the question based on the provided documents.\n\n"
+                f"<documents>\n{docs_section}\n</documents>\n\n"
+                f"Read the documents in this importance ranking: {importance_ranking}\n"
+                f"Prioritize information from higher-ranked documents."
+            )},
+            {"role": "user", "content": queries[orig_idx]},
+        ],
+    )
+    print(f"Q: {queries[orig_idx]}\nA: {response.choices[0].message.content}\n")
 ```
 
-**HTTP Server** — stateless scheduling over REST:
+> For online stateless scheduling via HTTP server, see the [online usage guide](docs/guides/online_usage.md).
 
-```bash
-python -m contextpilot.server.http_server --port 8765 --stateless
+**Stateful** — `LiveContextIndex` tracks cached state:
 
-curl -X POST http://localhost:8765/schedule \
-  -H "Content-Type: application/json" \
-  -d '{"contexts": [[5,1,3,2], [10,11,12], [2,3,1,4]]}'
+```python
+from openai import OpenAI
+import contextpilot as cp
+
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="...")
+live = cp.LiveContextIndex(use_gpu=False)
+
+# Simulate multi-turn: each turn has batch_size=1
+turns = [
+    {
+        "query": "What is AI?",
+        "contexts": [["Doc about AI", "Doc about ML", "Doc about computing"]],
+    },
+    {
+        "query": "Compare supervised and unsupervised learning",
+        # 2 of 3 docs overlap with Turn 1 ("Doc about AI", "Doc about ML"), different order + 1 new doc
+        "contexts": [["Doc about ML", "Doc about clustering", "Doc about AI"]],
+    },
+]
+
+for turn_idx, turn in enumerate(turns):
+    contexts = turn["contexts"]
+    query = turn["query"]
+
+    # build_incremental handles both cold start and incremental turns
+    result = live.build_incremental(contexts)
+    reordered = result['reordered_contexts']
+    # Turn 2: reordered to ["Doc about AI", "Doc about ML", "Doc about clustering"]
+    #                        ^— shared prefix from Turn 1 —^    ^— new doc appended
+
+    ctx = reordered[0]
+    docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
+    importance_ranking = ">".join(
+        str(ctx.index(doc) + 1) for doc in contexts[0] if doc in ctx
+    )
+    response = client.chat.completions.create(
+        model="Qwen/Qwen3-4B",
+        messages=[
+            {"role": "system", "content": (
+                f"Answer the question based on the provided documents.\n\n"
+                f"<documents>\n{docs_section}\n</documents>\n\n"
+                f"Read the documents in this importance ranking: {importance_ranking}\n"
+                f"Prioritize information from higher-ranked documents."
+            )},
+            {"role": "user", "content": query},
+        ],
+    )
+    print(f"[Turn {turn_idx+1}] Q: {query}")
+    print(f"A: {response.choices[0].message.content}\n")
 ```
 
-**Stateful mode** — incremental index with multi-session prefix reuse:
-
-```bash
-# Start stateful server
-python -m contextpilot.server.http_server --port 8765
-
-# Turn 1: build index (cold start, preserves original order)
-curl -X POST http://localhost:8765/build \
-  -H "Content-Type: application/json" \
-  -d '{"contexts": [[5,1,3,2,4,6]]}'
-
-# Turn 2: incremental build (reorders to match Turn 1's prefix)
-curl -X POST http://localhost:8765/build \
-  -H "Content-Type: application/json" \
-  -d '{"contexts": [[3,6,2,5,1,4]]}'
-# → reordered to [5,1,3,2,4,6] — 100% prefix cache hit
-```
-
-> **Note:** Stateful mode requires the [SGLang eviction patch](docs/guides/online_usage.md#sglang-integration) to sync KV cache evictions back to the ContextPilot index. Set `CONTEXTPILOT_INDEX_URL` on your inference engine to enable this.
-
-See the [quickstart guide](docs/getting_started/quickstart.md) and [examples](examples/) for more.
+> **Note:** Stateful mode works without eviction sync — `LiveContextIndex` tracks the previous ordering and reorders new contexts to maximize prefix cache hits. For production deployments with limited storage size where the KV cache may evict entries, install the [SGLang eviction patch](docs/guides/online_usage.md#sglang-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md) for HTTP server setup.
 
 ## Documentation
 

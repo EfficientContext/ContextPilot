@@ -258,6 +258,7 @@ class LiveContextIndex(ContextIndex):
         
         for i, (context, (search_path, matched_node_id, overlap_count)) in enumerate(zip(contexts, search_results)):
             if overlap_count > 0 and matched_node_id >= 0 and matched_node_id != self.root_id:
+                # Has a meaningful match (not global root) - reorder context to start with matched node's prefix
                 matched_node = self.nodes.get(matched_node_id)
                 node_docs = None
                 if matched_node_id in self.metadata and self.metadata[matched_node_id].doc_ids:

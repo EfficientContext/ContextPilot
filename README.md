@@ -29,9 +29,10 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 
 ## Target Workloads
 
-1. **Trending Topic QA with Retrieval** — Search and generation for breaking news and hot topics beyond model knowledge
-2. **Closed-Domain Long-Context QA** — Retrieval-augmented QA over specialized corpora (novels, financial reports, legal documents)
-3. **Multi-Turn Conversations with Long-Term Memory** — Persistent context across sessions (e.g. [Mem0](https://github.com/mem0ai/mem0))
+1. **Trending Topic QA** — Search and generation for breaking news and hot topics beyond model knowledge
+2. **Closed-Domain Long-Context QA** — QA over specialized corpora (novels, financial reports, legal documents) with retrieval or in-context search
+3. **Large-Batch Long-Context Execution** — High-throughput inference where many requests share overlapping contexts; ContextPilot maximizes prefix reuse regardless of the search method
+4. **Multi-Turn Conversations with Long-Term Memory** — Persistent context reuse across turns (e.g. [Mem0](https://github.com/mem0ai/mem0))
 
 ## Benchmark and Performance
 

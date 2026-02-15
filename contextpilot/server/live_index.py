@@ -187,7 +187,7 @@ class LiveContextIndex(ContextIndex):
         # Step 3: Initialize live metadata (auto-generates request_ids)
         print("\n3. Initializing live metadata...")
         request_id_mapping, request_ids_ordered = self._initialize_live_metadata(
-            initial_tokens_per_context, 
+            initial_tokens_per_context,
             num_input_contexts=len(contexts)
         )
         
@@ -665,14 +665,14 @@ class LiveContextIndex(ContextIndex):
     def _initialize_live_metadata(self, initial_tokens_per_context: int, num_input_contexts: int = None) -> Tuple[Dict[str, int], List[str]]:
         """
         Initialize metadata for all nodes after static index is built.
-        
+
         Auto-generates request_id for each leaf node during construction.
         Returns both a mapping dict and an ordered list of request_ids.
-        
+
         Args:
             initial_tokens_per_context: Initial token count for each context
             num_input_contexts: Number of input contexts (for generating request_ids list)
-            
+
         Returns:
             Tuple of:
                 - Dictionary mapping request_id -> node_id for all leaf nodes
@@ -731,7 +731,6 @@ class LiveContextIndex(ContextIndex):
                 parent_tokens = self.metadata[node.parent].total_tokens
             extra_tokens = max(0, total_tokens - parent_tokens)
             
-            # Create metadata with auto-generated request_id for leaf nodes
             metadata = NodeMetadata(
                 node_id=node_id,
                 total_tokens=total_tokens,

@@ -504,6 +504,10 @@ class LiveContextIndex(ContextIndex):
             parent=parent_id,
             original_indices=set(source_node.original_indices) if hasattr(source_node, 'original_indices') else set()
         )
+        # ClusterNode.__init__ does doc_ids = sorted(content), losing the
+        # reordered order from fit_transform.  Restore the source order.
+        if hasattr(source_node, 'doc_ids') and source_node.doc_ids:
+            new_node.doc_ids = list(source_node.doc_ids)
         
         self.nodes[new_node_id] = new_node
         node_id_map[source_node_id] = new_node_id

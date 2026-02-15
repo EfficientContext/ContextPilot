@@ -38,6 +38,8 @@ from .context_ordering import (
     InterContextScheduler,
 )
 
+from .server.live_index import LiveContextIndex
+
 from .retriever import (
     BM25Retriever,
     FAISSRetriever,
@@ -63,6 +65,7 @@ __all__ = [
     'build_context_index',
     'IntraContextOrderer',
     'InterContextScheduler',
+    'LiveContextIndex',
     
     # Retrievers
     'BM25Retriever',

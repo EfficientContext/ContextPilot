@@ -201,7 +201,11 @@ class ContextIndex:
         guard in build_incremental from skipping legitimate matches.
         """
         for i, prompt in enumerate(contexts):
-            self.node_manager.create_leaf_node(i, prompt)
+            node = self.node_manager.create_leaf_node(i, prompt)
+            # ClusterNode.__init__ sets doc_ids = sorted(content).
+            # Override to preserve the original context order so that
+            # build_incremental can use it as a correct prefix for Turn 2.
+            node.doc_ids = list(prompt)
         
         # Wrap leaf node(s) under an empty root so that no leaf is the root.
         # This mirrors the virtual-root logic in update_search_paths for forests,

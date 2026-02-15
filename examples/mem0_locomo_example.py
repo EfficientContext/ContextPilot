@@ -17,7 +17,7 @@ CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
-TOP_K = int(os.environ.get("LOCOMO_TOP_K", "100"))
+TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "50,75,100")
 
 
 async def _stream_ttft(prompt, model, max_tokens=512):
@@ -266,37 +266,40 @@ if __name__ == "__main__":
 
     user_id = f"locomo_{CONV_INDEX}_{uuid.uuid4().hex[:6]}"
     n_memories = ingest_conversation(conv_data, retriever, user_id)
-    print(f"\n## top_k={TOP_K}")
+    top_k_values = [int(k) for k in TOP_K_LIST.split(",")]
 
     try:
-        # Run reorder first (clean cache), then baseline
-        results = {}
-        for use_reorder in [True, False]:
-            cp_reset()  # fresh tree for each mode
-            stats = run_multi_turn(
-                retriever, user_id, qa_pairs, model, TOP_K,
-                use_reorder=use_reorder, cp_available=cp_available)
-            results[stats["label"]] = stats
+        all_rows = []
+        for top_k in top_k_values:
+            print(f"\n## top_k={top_k}")
+            results = {}
+            for use_reorder in [True, False]:
+                cp_reset()  # fresh tree for each mode
+                stats = run_multi_turn(
+                    retriever, user_id, qa_pairs, model, top_k,
+                    use_reorder=use_reorder, cp_available=cp_available)
+                results[stats["label"]] = stats
 
-        base_ttft = results["baseline"]["ttft"]
+            base_ttft = results["baseline"]["ttft"]
+
+            for name in ["baseline", "reorder"]:
+                s = results[name]
+                delta = (base_ttft - s["ttft"]) / base_ttft * 100 if base_ttft else 0
+                all_rows.append({
+                    "k": top_k,
+                    "mode": name,
+                    "ttft": f"{s['ttft']:.4f}s",
+                    "ttft_delta": f"{delta:+.1f}%" if name != "baseline" else "-",
+                    "prefix": f"{s['prefix']:.1%}",
+                    "f1": f"{s['f1']:.3f}",
+                    "judge": f"{s['judge']:.3f}",
+                })
 
         # Summary table
         print(f"\n{'='*70}")
-        print(f"RESULTS (conv={CONV_INDEX}, k={TOP_K}, memories={n_memories}, turns={min(NUM_TURNS, len(qa_pairs))})")
+        print(f"RESULTS (conv={CONV_INDEX}, memories={n_memories}, turns={min(NUM_TURNS, len(qa_pairs))})")
         print(f"{'='*70}")
-        rows = []
-        for name in ["baseline", "reorder"]:
-            s = results[name]
-            delta = (base_ttft - s["ttft"]) / base_ttft * 100 if base_ttft else 0
-            rows.append({
-                "mode": name,
-                "ttft": f"{s['ttft']:.4f}s",
-                "ttft_delta": f"{delta:+.1f}%" if name != "baseline" else "-",
-                "prefix": f"{s['prefix']:.1%}",
-                "f1": f"{s['f1']:.3f}",
-                "judge": f"{s['judge']:.3f}",
-            })
-        print(pd.DataFrame(rows).to_string(index=False))
+        print(pd.DataFrame(all_rows).to_string(index=False))
 
     finally:
         try:

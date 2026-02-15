@@ -256,9 +256,11 @@ class LiveContextIndex(ContextIndex):
         # Use batch search for efficiency
         search_results = self.search_batch(contexts)
         
+        root_node = self.nodes.get(self.root_id)
+        root_is_leaf = root_node is not None and root_node.is_leaf
+
         for i, (context, (search_path, matched_node_id, overlap_count)) in enumerate(zip(contexts, search_results)):
-            if overlap_count > 0 and matched_node_id >= 0 and matched_node_id != self.root_id:
-                # Has a meaningful match (not global root) - reorder context to start with matched node's prefix
+            if overlap_count > 0 and matched_node_id >= 0 and (matched_node_id != self.root_id or root_is_leaf):
                 matched_node = self.nodes.get(matched_node_id)
                 node_docs = None
                 if matched_node_id in self.metadata and self.metadata[matched_node_id].doc_ids:
@@ -461,6 +463,7 @@ class LiveContextIndex(ContextIndex):
             if temp_leaf_id is not None and temp_leaf_id in node_id_map:
                 new_node_id = node_id_map[temp_leaf_id]
                 if new_node_id in self.metadata:
+                    self.metadata[new_node_id].doc_ids = context
                     req_id = self.metadata[new_node_id].request_id
                     search_path = self.metadata[new_node_id].search_path
                     request_ids.append(req_id)

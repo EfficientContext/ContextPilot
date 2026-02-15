@@ -17,8 +17,7 @@ CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
-TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "5")
-REPLICATE_MEMORIES = int(os.environ.get("LOCOMO_REPLICATE", "150"))
+TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,100")
 
 
 async def _stream_ttft(prompt, model, max_tokens=512):
@@ -215,10 +214,9 @@ def ingest_conversation(conv_data, retriever, user_id):
         turns = conv[f"session_{n}"]
         msgs = [{"role": "user" if t["speaker"] == conv["speaker_a"] else "assistant",
                  "content": t["text"]} for t in turns]
-        for _ in range(REPLICATE_MEMORIES):
-            retriever.add_memory(msgs, user_id=user_id)
+        retriever.add_memory(msgs, user_id=user_id)
         n += 1
-    print(f"  ingested {n-1} sessions x{REPLICATE_MEMORIES} replicas, waiting for indexing ...")
+    print(f"  ingested {n-1} sessions, waiting for indexing ...")
     time.sleep(5)
     all_memories = retriever.memory.get_all(user_id=user_id)
     n_memories = len(all_memories.get("results", []))

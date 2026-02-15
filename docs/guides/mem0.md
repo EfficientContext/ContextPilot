@@ -51,12 +51,14 @@ python examples/mem0_locomo_example.py
 
 ## Results
 
-LoCoMo conv 0, k=100, 100 memories, 150 turns:
+LoCoMo conv 0, 100 memories, 150 turns:
 
-| mode | ttft | ttft_delta | prefix | f1 | judge |
-|---|---|---|---|---|---|
-| baseline | 0.1141s | - | 0.3% | 0.089 | 0.442 |
-| reorder | 0.0634s | +44.5% | 12.5% | 0.085 | 0.443 |
+| k | mode | ttft | judge |
+|---|---|---|---|
+| 20 | baseline | 0.0397s | 0.440 |
+| 20 | reorder | 0.0334s | 0.457 |
+| 100 | baseline | 0.1002s | 0.437 |
+| 100 | reorder | 0.0823s | 0.452 |
 
 ## General usage
 

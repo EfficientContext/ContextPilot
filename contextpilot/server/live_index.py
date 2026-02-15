@@ -264,7 +264,6 @@ class LiveContextIndex(ContextIndex):
                 if matched_node_id in self.metadata and self.metadata[matched_node_id].doc_ids:
                     node_docs = self.metadata[matched_node_id].doc_ids
                 elif matched_node and hasattr(matched_node, 'doc_ids') and matched_node.doc_ids:
-                    logger.warning(f"Node {matched_node_id}: falling back to ClusterNode.doc_ids (may be sorted, not sent order)")
                     node_docs = matched_node.doc_ids
                 
                 if node_docs:
@@ -497,14 +496,13 @@ class LiveContextIndex(ContextIndex):
         new_node_id = self.next_node_id
         self.next_node_id += 1
         
-        source_doc_ids = source_node.doc_ids if hasattr(source_node, 'doc_ids') else []
+        # Copy node
         new_node = ClusterNode(
             node_id=new_node_id,
-            content=source_doc_ids,
+            content=source_node.doc_ids if hasattr(source_node, 'doc_ids') else [],
             children=[],
             parent=parent_id,
-            original_indices=set(source_node.original_indices) if hasattr(source_node, 'original_indices') else set(),
-            ordered_doc_ids=source_doc_ids
+            original_indices=set(source_node.original_indices) if hasattr(source_node, 'original_indices') else set()
         )
         
         self.nodes[new_node_id] = new_node
@@ -682,6 +680,9 @@ class LiveContextIndex(ContextIndex):
             raise RuntimeError("Must call fit_transform() before initializing metadata")
         
         unique_nodes = self.initial_result.unique_nodes
+        # Reordered contexts preserve the actual order used for cache prefix sharing.
+        # node.doc_ids is sorted (from ClusterNode.__init__) and loses ordering info.
+        reordered_contexts = self.initial_result.reordered_contexts
         request_id_mapping = {}  # request_id -> node_id
         
         # Set up node aliases
@@ -732,13 +733,25 @@ class LiveContextIndex(ContextIndex):
             extra_tokens = max(0, total_tokens - parent_tokens)
             
             # Create metadata with auto-generated request_id for leaf nodes
+            # For leaf nodes, use the reordered context order (not node.doc_ids which is sorted).
+            # node.doc_ids comes from ClusterNode.__init__ which does sorted(content),
+            # losing the intra-context reordering that maximizes prefix sharing.
+            if is_leaf and hasattr(node, 'original_indices') and node.original_indices:
+                first_orig_idx = min(node.original_indices)
+                if reordered_contexts and first_orig_idx < len(reordered_contexts):
+                    leaf_doc_ids = reordered_contexts[first_orig_idx]
+                else:
+                    leaf_doc_ids = node.doc_ids if hasattr(node, 'doc_ids') else None
+            else:
+                leaf_doc_ids = node.doc_ids if hasattr(node, 'doc_ids') else None
+            
             metadata = NodeMetadata(
                 node_id=node_id,
                 total_tokens=total_tokens,
                 extra_tokens=extra_tokens,
                 search_path=search_path,
                 is_leaf=is_leaf,
-                doc_ids=node.doc_ids if hasattr(node, 'doc_ids') else None,
+                doc_ids=leaf_doc_ids,
                 request_id=request_id
             )
             
@@ -870,7 +883,6 @@ class LiveContextIndex(ContextIndex):
             if node_meta and node_meta.doc_ids:
                 docs = node_meta.doc_ids
             elif hasattr(node, 'doc_ids') and node.doc_ids:
-                logger.warning(f"Node {node_id}: falling back to ClusterNode.doc_ids (may be sorted, not sent order)")
                 docs = node.doc_ids
             else:
                 docs = None
@@ -1058,13 +1070,13 @@ class LiveContextIndex(ContextIndex):
         # Auto-generate request_id using UUID
         request_id = f"req-{uuid.uuid4().hex[:12]}"
         
+        # Create new leaf node
         new_node = ClusterNode(
             node_id=self.next_node_id,
             content=context,
             children=[],
             parent=parent_node.node_id,
-            original_indices={self.next_node_id},
-            ordered_doc_ids=context
+            original_indices={self.next_node_id}
         )
         
         self.nodes[self.next_node_id] = new_node
@@ -1112,13 +1124,13 @@ class LiveContextIndex(ContextIndex):
             # Parent's search path is the leaf's search path without the last element
             parent_search_path = search_path[:-1] if search_path else []
         
+        # Create new leaf node as sibling of matched leaf
         new_leaf = ClusterNode(
             node_id=self.next_node_id,
             content=context,
             children=[],
             parent=parent_node.node_id,
-            original_indices={self.next_node_id},
-            ordered_doc_ids=context
+            original_indices={self.next_node_id}
         )
         
         self.nodes[self.next_node_id] = new_leaf

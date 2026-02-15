@@ -95,7 +95,7 @@ Best for production systems where you need fine-grained control and maximum effi
 │           ├─ Register in conversation tracker                       │
 │           └─ Return request_id (for linking turns)                  │
 │                                                                     │
-│  Turn 2+: POST /deduplicate  ← Lightweight! No index ops           │
+│  Turn 2+: POST /deduplicate  ← Lightweight! No index ops            │
 │           ├─ Look up conversation history by parent_request_id      │
 │           ├─ Find overlapping documents                             │
 │           ├─ Generate reference hints                               │
@@ -326,4 +326,3 @@ Simply don't use the `/deduplicate` endpoint - process documents directly.
 ## Next Steps
 
 - [API Reference](../reference/api.md) - Full API documentation including HTTP endpoints
-- [Troubleshooting](../troubleshooting.md) - Common issues

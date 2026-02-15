@@ -267,7 +267,7 @@ class RadixCache(BasePrefixCache):
         self.kv_event_queue = []
 
         # Eviction callback: called when requests' extra tokens are fully evicted
-        # Auto-created from RAGBOOST_INDEX_URL in CacheInitParams.__post_init__ if not provided
+        # Auto-created from CONTEXTPILOT_INDEX_URL in CacheInitParams.__post_init__ if not provided
         self.eviction_callback = params.eviction_callback
 
         # Request tracking: maps request_id to the deepest node where it has extra tokens

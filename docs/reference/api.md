@@ -155,7 +155,25 @@ config = InferenceConfig(
 
 ## HTTP Server Endpoints
 
-ContextPilot provides an HTTP server for live index management with SGLang integration.
+ContextPilot provides an HTTP server for live index management with inference engine integration.
+
+### Root Endpoint
+
+```
+GET /
+```
+
+Root health check endpoint with basic server information.
+
+**Response:**
+```json
+{
+    "status": "ready",
+    "mode": "stateful",
+    "index_initialized": true,
+    "timestamp": "2025-02-15T10:30:00Z"
+}
+```
 
 ### Health Check
 
@@ -163,9 +181,22 @@ ContextPilot provides an HTTP server for live index management with SGLang integ
 GET /health
 ```
 
+Detailed health check with index statistics.
+
 **Response:**
 ```json
-{"status": "ok", "mode": "stateless"}
+{
+    "status": "ready",
+    "mode": "stateful",
+    "eviction_enabled": true,
+    "current_tokens": 12500,
+    "utilization": 0.45,
+    "index_stats": {
+        "total_nodes": 42,
+        "leaf_nodes": 20,
+        "total_docs": 150
+    }
+}
 ```
 
 ### Schedule (Stateless)
@@ -176,7 +207,7 @@ POST /schedule
 
 Compute optimal scheduling without maintaining state.
 
-**Request:**
+**Request (with integer doc IDs):**
 ```json
 {
     "contexts": [[1, 2, 3], [2, 3, 4]],
@@ -186,12 +217,34 @@ Compute optimal scheduling without maintaining state.
 }
 ```
 
+**Request (with string documents):**
+```json
+{
+    "contexts": [
+        ["Document text A", "Document text B", "Document text C"],
+        ["Document text B", "Document text C", "Document text D"]
+    ],
+    "alpha": 0.005,
+    "use_gpu": false,
+    "linkage_method": "average"
+}
+```
+
+The server auto-detects input type and handles string-to-ID mapping internally.
+
 **Response:**
 ```json
 {
-    "original_indices": [0, 1],
+    "status": "success",
+    "message": "Batch scheduled successfully (stateless mode)",
+    "mode": "stateless",
+    "input_type": "integer",
+    "num_contexts": 2,
     "num_groups": 1,
-    "scheduling_time": 0.05
+    "scheduled_contexts": [[2, 3, 1], [2, 3, 4]],
+    "original_indices": [0, 1],
+    "groups": [...],
+    "stats": {...}
 }
 ```
 
@@ -201,9 +254,15 @@ Compute optimal scheduling without maintaining state.
 POST /build
 ```
 
-Build a new index or incrementally update an existing one. Supports multi-turn deduplication.
+Build the index or incrementally update an existing one. Auto-detects mode: empty index → initial build, existing index → incremental update. Call `POST /reset` to force initial build. Supports multi-turn deduplication.
 
-**Request:**
+**Important:** Response field names differ between modes:
+- **Initial mode**: Returns `scheduled_reordered` (reordered contexts)
+- **Incremental mode**: Returns `reordered_contexts` (reordered contexts)
+
+Both contain the same information (optimally reordered document IDs), just with different field names for historical reasons.
+
+**Request (integer doc IDs):**
 ```json
 {
     "contexts": [[1, 2, 3], [2, 3, 4]],
@@ -211,12 +270,24 @@ Build a new index or incrementally update an existing one. Supports multi-turn d
     "alpha": 0.005,
     "use_gpu": false,
     "linkage_method": "average",
-    "incremental": false,
     "deduplicate": false,
     "parent_request_ids": [null, null],
     "hint_template": "Refer to Doc {doc_id} from Turn {turn_number}"
 }
 ```
+
+**Request (string documents):**
+```json
+{
+    "contexts": [
+        ["Full text of doc A", "Full text of doc B"],
+        ["Full text of doc B", "Full text of doc C"]
+    ],
+    "alpha": 0.005
+}
+```
+
+Identical strings are automatically mapped to the same internal ID.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -225,19 +296,42 @@ Build a new index or incrementally update an existing one. Supports multi-turn d
 | `alpha` | float | `0.005` | Distance computation parameter |
 | `use_gpu` | bool | `false` | Use GPU for distance computation |
 | `linkage_method` | str | `"average"` | Clustering method |
-| `incremental` | bool | `false` | Use incremental build (search/reorder/merge) |
 | `deduplicate` | bool | `false` | Enable multi-turn deduplication |
 | `parent_request_ids` | List[str\|null] | `null` | Parent request IDs for deduplication |
 | `hint_template` | str | `null` | Custom template for reference hints |
 
-**Response (without deduplication):**
+**Response (initial build):**
 ```json
 {
     "status": "success",
     "message": "Index built successfully",
     "mode": "initial",
+    "input_type": "integer",
     "num_contexts": 2,
+    "matched_count": 0,
+    "inserted_count": 2,
+    "request_id_mapping": {...},
     "request_ids": ["contextpilot_abc123", "contextpilot_def456"],
+    "scheduled_reordered": [[2, 3, 1], [2, 3, 4]],
+    "scheduled_order": [0, 1],
+    "stats": {...}
+}
+```
+
+**Response (incremental build — index already exists):**
+```json
+{
+    "status": "success",
+    "message": "Incremental build completed",
+    "mode": "incremental",
+    "input_type": "integer",
+    "num_contexts": 1,
+    "matched_count": 1,
+    "merged_count": 0,
+    "request_ids": ["contextpilot_ghi789"],
+    "reordered_contexts": [[2, 3, 5]],
+    "scheduled_order": [0],
+    "groups": [...],
     "stats": {...}
 }
 ```
@@ -320,20 +414,6 @@ This is a lightweight endpoint designed for **Turn 2+** in multi-turn conversati
 }
 ```
 
-### Update Tokens (Stateful)
-
-```
-POST /update_tokens
-```
-
-**Request:**
-```json
-{
-    "request_id": "req-abc",
-    "num_tokens": 1500
-}
-```
-
 ### Evict (Stateful)
 
 ```
@@ -380,14 +460,111 @@ Reset the index and conversation tracker. Clears all state and frees memory.
 GET /stats
 ```
 
+Get detailed index statistics.
+
 **Response:**
 ```json
 {
+    "index_stats": {
+        "total_nodes": 256,
+        "leaf_nodes": 128,
+        "total_docs": 1500,
+        "unique_docs": 450,
+        "tree_depth": 8
+    },
     "total_tokens": 50000,
     "num_contexts": 100,
     "cache_utilization": 0.75
 }
 ```
+
+### Get Requests (Stateful)
+
+```
+GET /requests
+```
+
+Get all tracked request IDs in the index.
+
+**Response:**
+```json
+{
+    "request_ids": [
+        "contextpilot_abc123",
+        "contextpilot_def456",
+        "contextpilot_ghi789"
+    ],
+    "count": 3
+}
+```
+
+### Search Context (Stateful)
+
+```
+POST /search
+```
+
+Search for a context in the index and return its location.
+
+**Request:**
+```json
+{
+    "context": [1, 2, 3, 4],
+    "update_access": true
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `context` | List[int] | Required | Context to search for |
+| `update_access` | bool | `true` | Update access time for LRU tracking |
+
+**Response:**
+```json
+{
+    "status": "success",
+    "search_path": [0, 1, 5, 12],
+    "node_id": 12,
+    "prefix_length": 3,
+    "message": "Context found with prefix length 3"
+}
+```
+
+### Insert Context (Stateful)
+
+```
+POST /insert
+```
+
+Insert a new context into the index at a specific location.
+
+**Request:**
+```json
+{
+    "context": [1, 2, 3, 4],
+    "search_path": [0, 1, 5],
+    "total_tokens": 256
+}
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `context` | List[int] | Required | Context to insert |
+| `search_path` | List[int] | Required | Path in tree where to insert |
+| `total_tokens` | int | `0` | Initial token count for this context |
+
+**Response:**
+```json
+{
+    "status": "success",
+    "node_id": 42,
+    "search_path": [0, 1, 5, 42],
+    "request_id": "contextpilot_xyz789",
+    "message": "Context inserted successfully"
+}
+```
+
+**Note:** The `request_id` is auto-generated and can be used for token tracking with the inference engine.
 
 ---
 
@@ -400,15 +577,22 @@ from contextpilot.server.http_client import ContextPilotIndexClient
 
 client = ContextPilotIndexClient("http://localhost:8765", timeout=1.0)
 
-# Stateless
+# Stateless mode
 result = client.schedule(contexts, alpha=0.005, use_gpu=False)
 
-# Stateful
+# Stateful mode
 client.build(contexts, alpha=0.005, use_gpu=False, deduplicate=True)
 client.deduplicate(contexts, parent_request_ids, hint_template=None)
-client.evict(request_ids)
-client.update_tokens(request_id, num_tokens)
+client.evict(request_ids)  # Evict specific requests
+client.reset()  # Clear index and conversation tracker
+
+# Queries
+client.search(context, update_access=True)
+client.insert(context, search_path, total_tokens=0)
+client.get_stats()
+client.get_requests()
 client.health()
+client.is_ready()
 
 client.close()
 ```
@@ -418,12 +602,12 @@ client.close()
 | Method | Description |
 |--------|-------------|
 | `schedule(contexts, alpha, use_gpu)` | Get optimal scheduling (stateless) |
-| `build(contexts, alpha, use_gpu, deduplicate, parent_request_ids)` | Build live index |
-| `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+) |
+| `build(contexts, alpha, use_gpu, deduplicate, parent_request_ids)` | Build live index (initial or incremental) |
+| `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+, lightweight) |
 | `evict(request_ids)` | Remove requests from index |
-| `update_tokens(request_id, num_tokens)` | Update token count |
-| `touch(request_id)` | Update LRU access time |
 | `reset()` | Reset index and conversation tracker |
+| `stats()` | Get index statistics |
+| `get_requests()` | Get all tracked request IDs |
 | `health()` | Health check |
 | `is_ready()` | Check if server is ready |
 | `close()` | Close connection |

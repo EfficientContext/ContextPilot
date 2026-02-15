@@ -6,7 +6,7 @@ with automatic KV cache management.
 
 SETUP:
 1. Start SGLang (with ContextPilot patch):
-   RAGBOOST_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+   CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
        --model-path Qwen/Qwen2.5-7B-Instruct --port 30000
 
 2. Start ContextPilot server:
@@ -34,7 +34,7 @@ def check_server():
         print(f"✗ Server not running: {e}")
         print("\nPlease start the servers first:")
         print("  # Terminal 1: Start SGLang with ContextPilot patch")
-        print("  RAGBOOST_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \\")
+        print("  CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \\")
         print("      --model-path Qwen/Qwen2.5-7B-Instruct --port 30000")
         print()
         print("  # Terminal 2: Start ContextPilot server")
@@ -159,7 +159,8 @@ def main():
     
     # Show reordering
     print("--- Reordered Contexts ---")
-    for i, (rid, ctx) in enumerate(zip(request_ids[:3], build_result["reordered_contexts"][:3])):
+    reordered = build_result.get("reordered_contexts") or build_result.get("scheduled_reordered", [])
+    for i, (rid, ctx) in enumerate(zip(request_ids[:3], reordered[:3])):
         print(f"  {rid}: {ctx}")
     if len(request_ids) > 3:
         print(f"  ... and {len(request_ids) - 3} more")

@@ -13,7 +13,7 @@ For example, if Query A retrieves docs `[5, 1, 8, 2]` and Query B retrieves `[2,
 - Query A: `[1, 2, 5, 8]` (shared IDs first)
 - Query B: `[1, 2, 5, 9]` (same prefix `[1, 2, 5]`!)
 
-This creates identical prefixes that SGLang can cache and reuse.
+This creates identical prefixes that the inference engine can cache and reuse.
 
 ## Prerequisites
 

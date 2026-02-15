@@ -26,12 +26,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ContextPilot integration settings
-# Set RAGBOOST_INDEX_URL environment variable to enable sync with ContextPilot index
-RAGBOOST_INDEX_URL = os.environ.get("RAGBOOST_INDEX_URL")
-_contextpilot_enabled = RAGBOOST_INDEX_URL is not None
+# Set CONTEXTPILOT_INDEX_URL environment variable to enable sync with ContextPilot index
+CONTEXTPILOT_INDEX_URL = os.environ.get("CONTEXTPILOT_INDEX_URL")
+_contextpilot_enabled = CONTEXTPILOT_INDEX_URL is not None
 
 if _contextpilot_enabled:
-    logger.info(f"ContextPilot integration enabled: {RAGBOOST_INDEX_URL}")
+    logger.info(f"ContextPilot integration enabled: {CONTEXTPILOT_INDEX_URL}")
 
 @triton.jit
 def write_req_to_token_pool_triton(
@@ -271,7 +271,7 @@ def create_contextpilot_eviction_callback():
     whose extra tokens have been fully evicted from the KV cache.
     
     Returns:
-        Callback function if RAGBOOST_INDEX_URL is set, None otherwise
+        Callback function if CONTEXTPILOT_INDEX_URL is set, None otherwise
     """
     if not _contextpilot_enabled:
         return None
@@ -294,7 +294,7 @@ def create_contextpilot_eviction_callback():
         try:
             logger.info(f"[ContextPilot] Syncing eviction: {len(filtered_ids)} requests")
             requests.post(
-                f"{RAGBOOST_INDEX_URL}/evict",
+                f"{CONTEXTPILOT_INDEX_URL}/evict",
                 json={"request_ids": list(filtered_ids)},
                 timeout=1.0
             )

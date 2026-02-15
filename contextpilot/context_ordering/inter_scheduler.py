@@ -4,7 +4,7 @@ Inter-Context Scheduler (ContextPilot Paper Algorithm)
 This module implements the scheduling algorithm described in the ContextPilot paper:
 1. Reuses search paths obtained during context ordering (no redundant tree lookups)
 2. Groups contexts by the first element of their search path, naturally separating cache regions
-3. Sorts contexts within each group by path length in descending order
+3. Sorts contexts within each group by path length descending, with lexicographic tiebreaker
 
 This avoids the O(N log M) tree rescanning overhead of existing methods.
 """
@@ -20,7 +20,7 @@ class InterContextScheduler:
     This scheduler:
     - Reuses search paths obtained during context ordering (no redundant tree lookups)
     - Groups contexts by the first element of their search path
-    - Sorts contexts within each group by path length descending
+    - Sorts contexts within each group by path length descending, lex tiebreaker
     
     Time complexity: O(N) grouping + O(N log N) sorting over N contexts
     (Independent of tree size M, unlike traditional O(N log M) + O(N log N) methods)
@@ -109,17 +109,19 @@ class InterContextScheduler:
         contexts: List[List[int]]
     ) -> List[List[int]]:
         """
-        Sort contexts within each group by path length in descending order.
+        Sort contexts within each group by path length descending,
+        with lexicographic tiebreaker for equal-length paths.
         
-        This ensures longer prefix matches execute before shorter ones,
-        maximizing cache reuse under tight KV budgets, as described in the paper.
+        Primary key (length descending): longer prefix matches first.
+        Secondary key (lexicographic): among equal-length paths, groups
+        contexts sharing deeper path prefixes adjacently to maximize LCP.
         
-        Total complexity: O(N log N) across all groups
+        Total complexity: O(N * L * log N) across all groups (L = tree depth)
         
         Args:
             groups_by_root: Groups of context indices by root prefix
             search_paths: Search paths for each context
-            contexts: Reordered contexts (unused in simplified version)
+            contexts: Reordered contexts (unused)
             
         Returns:
             List of sorted groups
@@ -127,10 +129,9 @@ class InterContextScheduler:
         sorted_groups = []
         
         for root_prefix, group_indices in groups_by_root.items():
-            # Sort by path length in descending order, with index as tiebreaker
             sorted_group = sorted(
                 group_indices,
-                key=lambda idx: (-len(search_paths[idx]), idx)
+                key=lambda idx: (-len(search_paths[idx]), search_paths[idx], idx)
             )
             sorted_groups.append(sorted_group)
         

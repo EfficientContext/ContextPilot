@@ -5,7 +5,7 @@ This example measures TTFT and answer accuracy (token-F1, LLM judge) with and wi
 * [Mem0](https://github.com/mem0ai/mem0) is an intelligent memory layer that facilitates memory storage and retrieval for agents.
 * [Locomo](https://github.com/snap-research/locomo) is a long conversation benchmark used to test memory retrieval. 
 
-![mem0_locomo_diagram](./images/mem0_locomo.png)
+![mem0_locomo_diagram](../images/mem0_locomo.png)
 
 ## Setup
 
@@ -103,7 +103,7 @@ reordered = resp["reordered_contexts"]  # reordered doc ID lists
 
 ### Multi-turn
 
-Pass `incremental=True` after the first turn to extend the index instead of rebuilding:
+Just call `/build` each turn — ContextPilot auto-detects whether the index exists and uses incremental mode accordingly:
 
 ```python
 for turn, query in enumerate(queries):

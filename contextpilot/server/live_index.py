@@ -680,6 +680,9 @@ class LiveContextIndex(ContextIndex):
             raise RuntimeError("Must call fit_transform() before initializing metadata")
         
         unique_nodes = self.initial_result.unique_nodes
+        # Reordered contexts preserve the actual order used for cache prefix sharing.
+        # node.doc_ids is sorted (from ClusterNode.__init__) and loses ordering info.
+        reordered_contexts = self.initial_result.reordered_contexts
         request_id_mapping = {}  # request_id -> node_id
         
         # Set up node aliases
@@ -730,13 +733,25 @@ class LiveContextIndex(ContextIndex):
             extra_tokens = max(0, total_tokens - parent_tokens)
             
             # Create metadata with auto-generated request_id for leaf nodes
+            # For leaf nodes, use the reordered context order (not node.doc_ids which is sorted).
+            # node.doc_ids comes from ClusterNode.__init__ which does sorted(content),
+            # losing the intra-context reordering that maximizes prefix sharing.
+            if is_leaf and hasattr(node, 'original_indices') and node.original_indices:
+                first_orig_idx = min(node.original_indices)
+                if reordered_contexts and first_orig_idx < len(reordered_contexts):
+                    leaf_doc_ids = reordered_contexts[first_orig_idx]
+                else:
+                    leaf_doc_ids = node.doc_ids if hasattr(node, 'doc_ids') else None
+            else:
+                leaf_doc_ids = node.doc_ids if hasattr(node, 'doc_ids') else None
+            
             metadata = NodeMetadata(
                 node_id=node_id,
                 total_tokens=total_tokens,
                 extra_tokens=extra_tokens,
                 search_path=search_path,
                 is_leaf=is_leaf,
-                doc_ids=node.doc_ids if hasattr(node, 'doc_ids') else None,
+                doc_ids=leaf_doc_ids,
                 request_id=request_id
             )
             

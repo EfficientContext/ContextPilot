@@ -17,7 +17,7 @@ CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
-TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,50,100")
+TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,100")
 
 
 async def _stream_ttft(prompt, model, max_tokens=512):

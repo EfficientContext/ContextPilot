@@ -399,6 +399,7 @@ async def build_index(request: BuildIndexRequest):
             "inserted_count": len(request.contexts),
             "request_id_mapping": request_id_mapping,
             "request_ids": request_ids,
+            "reordered_contexts": result.get('scheduled_reordered'),
             "stats": _index.get_stats(),
         }
         

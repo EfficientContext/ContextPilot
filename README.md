@@ -15,8 +15,9 @@
 
 ## News
 
+- [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.
-- [2026/01] Code is released! 
+- [2025/12] ContextPilot v0.2.0 released.
 
 ## About
 

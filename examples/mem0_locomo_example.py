@@ -116,7 +116,6 @@ def strip_thinking(text):
 
 
 def build_context_str(doc_ids, corpus_map):
-    """Build context string from doc IDs and corpus map."""
     parts = []
     for did in doc_ids:
         entry = corpus_map.get(str(did), {})
@@ -127,11 +126,7 @@ def build_context_str(doc_ids, corpus_map):
 
 def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
                    use_reorder=False, cp_available=False):
-    """Run multi-turn benchmark: baseline vs reorder.
-
-    Args:
-        use_reorder: Reorder docs via ContextPilot /build for prefix sharing.
-    """
+    """Run multi-turn benchmark: baseline vs reorder."""
     label = "reorder" if use_reorder else "baseline"
     print(f"\n--- {label} ({NUM_TURNS} turns, k={top_k}) ---")
 

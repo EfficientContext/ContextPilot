@@ -92,6 +92,16 @@ def cp_build(contexts, incremental=False):
     return r.json()
 
 
+def cp_search(context):
+    r = requests.post(
+        f"{CONTEXTPILOT_URL}/search",
+        json={"context": context, "update_access": False},
+        timeout=10,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 def cp_reset():
     try:
         requests.post(f"{CONTEXTPILOT_URL}/reset", timeout=5)
@@ -125,7 +135,6 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
     label = "reorder" if use_reorder else "baseline"
     print(f"\n--- {label} ({NUM_TURNS} turns, k={top_k}) ---")
 
-    prev_reordered = []
     ttfts, prefix_matches, f1s, judges = [], [], [], []
 
     for idx in range(min(NUM_TURNS, len(qa_pairs))):
@@ -140,6 +149,19 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         doc_ids = s[0]["top_k_doc_id"]
 
         reordered_ids = doc_ids
+        server_prefix_len, server_has_prefix, server_node_id = 0, False, -1
+
+        # Query server's prefix match (same logic used by incremental build search).
+        # Only valid for turn>=1, since turn 0 has no existing index.
+        if use_reorder and cp_available and idx > 0:
+            try:
+                sr = cp_search(doc_ids)
+                server_prefix_len = int(sr.get("prefix_length", 0) or 0)
+                server_has_prefix = bool(sr.get("has_prefix", False))
+                server_node_id = int(sr.get("node_id", -1) or -1)
+            except Exception as e:
+                if idx < 5:
+                    print(f"    /search FAILED: {e}")
 
         # Reorder via ContextPilot /build
         if use_reorder and cp_available:
@@ -156,14 +178,6 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         # Build context string directly from corpus map
         context_str = build_context_str(reordered_ids, cmap)
 
-        # Prefix match (consecutive matching doc IDs from position 0)
-        prefix_match = 0
-        if prev_reordered:
-            for a, b in zip(reordered_ids, prev_reordered):
-                if a != b:
-                    break
-                prefix_match += 1
-
         # Build prompt and measure TTFT
         prompt = build_prompt(qa["question"], context_str)
         out = run_ttft(prompt, model, MAX_GEN)
@@ -171,7 +185,10 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
         if idx > 0:
             ttfts.append(out["ttft"])
-            prefix_matches.append(prefix_match / len(reordered_ids) if reordered_ids else 0)
+            if use_reorder and cp_available:
+                prefix_matches.append(server_prefix_len / len(doc_ids) if doc_ids else 0)
+            else:
+                prefix_matches.append(0.0)
 
         # Score answer
         f1, score = 0.0, -1.0
@@ -187,12 +204,12 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
             print(f"  Q{idx}: {qa['question']}")
             print(f"    original:  {doc_ids}")
             print(f"    reordered: {reordered_ids}")
-            if prev_reordered:
-                print(f"    prev:      {prev_reordered}")
-            print(f"    prefix_match={prefix_match}/{len(reordered_ids)}"
-                  f" ttft={out['ttft']:.4f}s f1={f1:.3f} judge={score:.1f}")
-
-        prev_reordered = reordered_ids
+            if use_reorder and cp_available and idx > 0:
+                print(
+                    f"    server_prefix={server_prefix_len}/{len(doc_ids)} "
+                    f"has_prefix={server_has_prefix} node={server_node_id}"
+                )
+            print(f"    ttft={out['ttft']:.4f}s f1={f1:.3f} judge={score:.1f}")
 
     avg = lambda xs: sum(xs) / len(xs) if xs else 0
     stats = {

@@ -209,17 +209,29 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
 def ingest_conversation(conv_data, retriever, user_id):
     conv = conv_data["conversation"]
-    n, total_turns = 1, 0
+    n, total_turns, add_calls = 1, 0, 0
     while f"session_{n}" in conv:
         turns = conv[f"session_{n}"]
+        messages = []
         for t in turns:
             role = "user" if t["speaker"] == conv["speaker_a"] else "assistant"
-            retriever.add_memory(t["text"], user_id=user_id)
+            messages.append({"role": role, "content": t["text"]})
             total_turns += 1
+        if messages:
+            # Let mem0's extraction/update pipeline compact overlapping facts.
+            retriever.add_memory(
+                messages,
+                user_id=user_id,
+                metadata={"source": "locomo", "session": n},
+            )
+            add_calls += 1
         n += 1
-    print(f"  ingested {total_turns} turns from {n-1} sessions, waiting for indexing ...")
+    print(
+        f"  ingested {total_turns} turns from {n-1} sessions "
+        f"via {add_calls} mem0 add() calls, waiting for indexing ..."
+    )
     time.sleep(5)
-    all_memories = retriever.memory.get_all(user_id=user_id)
+    all_memories = retriever.memory.get_all(user_id=user_id, limit=5000)
     n_memories = len(all_memories.get("results", []))
     print(f"  {n_memories} memories stored")
     return n_memories

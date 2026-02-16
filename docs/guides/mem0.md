@@ -47,7 +47,7 @@ python examples/mem0_locomo_example.py
 | `LOCOMO_MAX_QA` | `150` | Max QA pairs to evaluate |
 | `LOCOMO_MAX_TOKENS` | `32` | Max generation tokens |
 | `LOCOMO_NUM_TURNS` | `150` | Multi-turn conversation length |
-| `LOCOMO_TOP_K` | `100` | Top-k memories to retrieve |
+| `LOCOMO_TOP_K_LIST` | `20,100` | Comma-separated top-k values to benchmark |
 
 ## Results
 

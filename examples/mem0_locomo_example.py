@@ -138,7 +138,8 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
             query_data=[{"qid": idx, "text": qa["question"]}],
             user_id=user_id, top_k=top_k)
         cmap = retriever.get_corpus_map()
-        doc_ids = s[0]["top_k_doc_id"]
+        raw_ids = s[0]["top_k_doc_id"]
+        doc_ids = raw_ids * REPLICATE_MEMORIES if REPLICATE_MEMORIES > 1 else raw_ids
 
         reordered_ids = doc_ids
 
@@ -215,10 +216,9 @@ def ingest_conversation(conv_data, retriever, user_id):
         turns = conv[f"session_{n}"]
         msgs = [{"role": "user" if t["speaker"] == conv["speaker_a"] else "assistant",
                  "content": t["text"]} for t in turns]
-        for _ in range(REPLICATE_MEMORIES):
-            retriever.add_memory(msgs, user_id=user_id)
+        retriever.add_memory(msgs, user_id=user_id)
         n += 1
-    print(f"  ingested {n-1} sessions x{REPLICATE_MEMORIES} replicas, waiting for indexing ...")
+    print(f"  ingested {n-1} sessions, waiting for indexing ...")
     time.sleep(5)
     all_memories = retriever.memory.get_all(user_id=user_id)
     n_memories = len(all_memories.get("results", []))

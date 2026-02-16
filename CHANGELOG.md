@@ -5,6 +5,27 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-02-16
+
+### Added
+- `LiveContextIndex` exported from top-level package for convenient imports
+- Automatic string-to-integer context conversion in `ContextIndex` and `LiveContextIndex` — `List[List[str]]` inputs are now accepted natively
+- Leaf-node splitting in `LiveContextIndex.build_incremental()` for finer-grained prefix sharing
+- Sibling insertion mode when new contexts overlap but do not share a prefix with the matched node
+- Mem0 LoCoMo benchmark example (`mem0_locomo_example.py`)
+
+### Changed
+- Eviction API now accepts `request_ids: List[str]` instead of `num_tokens: int` for precise request-level eviction sync
+- `_handle_single_prompt` always creates an empty root above the leaf, preventing root-exclusion guard from skipping valid matches during incremental builds
+- Improved diagnostic logging in `build_incremental` (prefix/sibling mode, overlap ratios)
+
+### Fixed
+- `build_incremental` incorrectly matching against the global root node; root ID is now excluded
+- `reordered_contexts` output now correctly preserves the ordering used for cache prefix sharing (previously lost by `ClusterNode.__init__` sorting)
+- `doc_ids` ordering restored after `_clone_subtree` to maintain reordered context order
+- Batch size = 1 edge case in metric calculation
+- Various live-index insertion and search-path bugs
+
 ## [0.3.1] - 2026-02-15
 
 ### Added

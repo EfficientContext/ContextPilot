@@ -17,7 +17,7 @@ CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
-TOP_K = int(os.environ.get("LOCOMO_TOP_K", "100"))
+TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,100")
 
 
 async def _stream_ttft(prompt, model, max_tokens=512):
@@ -86,8 +86,18 @@ def llm_judge(question, prediction, ground_truth):
 def cp_build(contexts, incremental=False):
     r = requests.post(f"{CONTEXTPILOT_URL}/build", json={
         "contexts": contexts, "use_gpu": False, "linkage_method": "average",
-        "alpha": 0.005, "incremental": incremental,
+        "alpha": 0.0005,
     }, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def cp_search(context):
+    r = requests.post(
+        f"{CONTEXTPILOT_URL}/search",
+        json={"context": context, "update_access": False},
+        timeout=10,
+    )
     r.raise_for_status()
     return r.json()
 
@@ -106,7 +116,6 @@ def strip_thinking(text):
 
 
 def build_context_str(doc_ids, corpus_map):
-    """Build context string from doc IDs and corpus map."""
     parts = []
     for did in doc_ids:
         entry = corpus_map.get(str(did), {})
@@ -117,15 +126,10 @@ def build_context_str(doc_ids, corpus_map):
 
 def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
                    use_reorder=False, cp_available=False):
-    """Run multi-turn benchmark: baseline vs reorder.
-
-    Args:
-        use_reorder: Reorder docs via ContextPilot /schedule for prefix sharing.
-    """
+    """Run multi-turn benchmark: baseline vs reorder."""
     label = "reorder" if use_reorder else "baseline"
     print(f"\n--- {label} ({NUM_TURNS} turns, k={top_k}) ---")
 
-    prev_reordered = []
     ttfts, prefix_matches, f1s, judges = [], [], [], []
 
     for idx in range(min(NUM_TURNS, len(qa_pairs))):
@@ -140,6 +144,19 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         doc_ids = s[0]["top_k_doc_id"]
 
         reordered_ids = doc_ids
+        server_prefix_len, server_has_prefix, server_node_id = 0, False, -1
+
+        # Query server's prefix match (same logic used by incremental build search).
+        # Only valid for turn>=1, since turn 0 has no existing index.
+        if use_reorder and cp_available and idx > 0:
+            try:
+                sr = cp_search(doc_ids)
+                server_prefix_len = int(sr.get("prefix_length", 0) or 0)
+                server_has_prefix = bool(sr.get("has_prefix", False))
+                server_node_id = int(sr.get("node_id", -1) or -1)
+            except Exception as e:
+                if idx < 5:
+                    print(f"    /search FAILED: {e}")
 
         # Reorder via ContextPilot /build
         if use_reorder and cp_available:
@@ -156,14 +173,6 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         # Build context string directly from corpus map
         context_str = build_context_str(reordered_ids, cmap)
 
-        # Prefix match (consecutive matching doc IDs from position 0)
-        prefix_match = 0
-        if prev_reordered:
-            for a, b in zip(reordered_ids, prev_reordered):
-                if a != b:
-                    break
-                prefix_match += 1
-
         # Build prompt and measure TTFT
         prompt = build_prompt(qa["question"], context_str)
         out = run_ttft(prompt, model, MAX_GEN)
@@ -171,7 +180,10 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
         if idx > 0:
             ttfts.append(out["ttft"])
-            prefix_matches.append(prefix_match / len(reordered_ids) if reordered_ids else 0)
+            if use_reorder and cp_available:
+                prefix_matches.append(server_prefix_len / len(doc_ids) if doc_ids else 0)
+            else:
+                prefix_matches.append(0.0)
 
         # Score answer
         f1, score = 0.0, -1.0
@@ -185,14 +197,14 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
         if idx < 5:
             print(f"  Q{idx}: {qa['question']}")
-            print(f"    original:  {doc_ids[:15]}{'...' if len(doc_ids) > 15 else ''}")
-            print(f"    reordered: {reordered_ids[:15]}{'...' if len(reordered_ids) > 15 else ''}")
-            if prev_reordered:
-                print(f"    prev:      {prev_reordered[:15]}{'...' if len(prev_reordered) > 15 else ''}")
-            print(f"    prefix_match={prefix_match}/{len(reordered_ids)}"
-                  f" ttft={out['ttft']:.4f}s f1={f1:.3f} judge={score:.1f}")
-
-        prev_reordered = reordered_ids
+            print(f"    original:  {doc_ids}")
+            print(f"    reordered: {reordered_ids}")
+            if use_reorder and cp_available and idx > 0:
+                print(
+                    f"    server_prefix={server_prefix_len}/{len(doc_ids)} "
+                    f"has_prefix={server_has_prefix} node={server_node_id}"
+                )
+            print(f"    ttft={out['ttft']:.4f}s f1={f1:.3f} judge={score:.1f}")
 
     avg = lambda xs: sum(xs) / len(xs) if xs else 0
     stats = {
@@ -209,16 +221,29 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
 def ingest_conversation(conv_data, retriever, user_id):
     conv = conv_data["conversation"]
-    n = 1
+    n, total_turns, add_calls = 1, 0, 0
     while f"session_{n}" in conv:
         turns = conv[f"session_{n}"]
-        msgs = [{"role": "user" if t["speaker"] == conv["speaker_a"] else "assistant",
-                 "content": t["text"]} for t in turns]
-        retriever.add_memory(msgs, user_id=user_id)
+        messages = []
+        for t in turns:
+            role = "user" if t["speaker"] == conv["speaker_a"] else "assistant"
+            messages.append({"role": role, "content": t["text"]})
+            total_turns += 1
+        if messages:
+            # Let mem0's extraction/update pipeline compact overlapping facts.
+            retriever.add_memory(
+                messages,
+                user_id=user_id,
+                metadata={"source": "locomo", "session": n},
+            )
+            add_calls += 1
         n += 1
-    print(f"  ingested {n-1} sessions, waiting for indexing ...")
+    print(
+        f"  ingested {total_turns} turns from {n-1} sessions "
+        f"via {add_calls} mem0 add() calls, waiting for indexing ..."
+    )
     time.sleep(5)
-    all_memories = retriever.memory.get_all(user_id=user_id)
+    all_memories = retriever.memory.get_all(user_id=user_id, limit=5000)
     n_memories = len(all_memories.get("results", []))
     print(f"  {n_memories} memories stored")
     return n_memories
@@ -266,37 +291,40 @@ if __name__ == "__main__":
 
     user_id = f"locomo_{CONV_INDEX}_{uuid.uuid4().hex[:6]}"
     n_memories = ingest_conversation(conv_data, retriever, user_id)
-    print(f"\n## top_k={TOP_K}")
+    top_k_values = [int(k) for k in TOP_K_LIST.split(",")]
 
     try:
-        # Run reorder first (clean cache), then baseline
-        results = {}
-        for use_reorder in [True, False]:
-            cp_reset()  # fresh tree for each mode
-            stats = run_multi_turn(
-                retriever, user_id, qa_pairs, model, TOP_K,
-                use_reorder=use_reorder, cp_available=cp_available)
-            results[stats["label"]] = stats
+        all_rows = []
+        for top_k in top_k_values:
+            print(f"\n## top_k={top_k}")
+            results = {}
+            for use_reorder in [True, False]:
+                cp_reset()  # fresh tree for each mode
+                stats = run_multi_turn(
+                    retriever, user_id, qa_pairs, model, top_k,
+                    use_reorder=use_reorder, cp_available=cp_available)
+                results[stats["label"]] = stats
 
-        base_ttft = results["baseline"]["ttft"]
+            base_ttft = results["baseline"]["ttft"]
+
+            for name in ["baseline", "reorder"]:
+                s = results[name]
+                delta = (base_ttft - s["ttft"]) / base_ttft * 100 if base_ttft else 0
+                all_rows.append({
+                    "k": top_k,
+                    "mode": name,
+                    "ttft": f"{s['ttft']:.4f}s",
+                    "ttft_delta": f"{delta:+.1f}%" if name != "baseline" else "-",
+                    "prefix": f"{s['prefix']:.1%}",
+                    "f1": f"{s['f1']:.3f}",
+                    "judge": f"{s['judge']:.3f}",
+                })
 
         # Summary table
         print(f"\n{'='*70}")
-        print(f"RESULTS (conv={CONV_INDEX}, k={TOP_K}, memories={n_memories}, turns={min(NUM_TURNS, len(qa_pairs))})")
+        print(f"RESULTS (conv={CONV_INDEX}, memories={n_memories}, turns={min(NUM_TURNS, len(qa_pairs))})")
         print(f"{'='*70}")
-        rows = []
-        for name in ["baseline", "reorder"]:
-            s = results[name]
-            delta = (base_ttft - s["ttft"]) / base_ttft * 100 if base_ttft else 0
-            rows.append({
-                "mode": name,
-                "ttft": f"{s['ttft']:.4f}s",
-                "ttft_delta": f"{delta:+.1f}%" if name != "baseline" else "-",
-                "prefix": f"{s['prefix']:.1%}",
-                "f1": f"{s['f1']:.3f}",
-                "judge": f"{s['judge']:.3f}",
-            })
-        print(pd.DataFrame(rows).to_string(index=False))
+        print(pd.DataFrame(all_rows).to_string(index=False))
 
     finally:
         try:

@@ -10,7 +10,6 @@ This example measures TTFT and answer accuracy (token-F1, LLM judge) with and wi
 ## Setup
 
 ```bash
-pip install -r requirements.txt
 pip install mem0ai openai tqdm
 pip install "sglang[all]==0.5.6"
 bash patches/sglang/apply_patch.sh
@@ -47,7 +46,18 @@ python examples/mem0_locomo_example.py
 | `LOCOMO_MAX_QA` | `150` | Max QA pairs to evaluate |
 | `LOCOMO_MAX_TOKENS` | `32` | Max generation tokens |
 | `LOCOMO_NUM_TURNS` | `150` | Multi-turn conversation length |
-| `LOCOMO_TOP_K` | `100` | Top-k memories to retrieve |
+| `LOCOMO_TOP_K_LIST` | `20,100` | Comma-separated top-k values to benchmark |
+
+## Results
+
+LoCoMo conv 0, 102 memories, 150 turns:
+
+| k | mode | ttft | judge |
+|---|---|---|---|
+| 20 | baseline | 0.0377s | 0.440 |
+| 20 | reorder | 0.0351s | 0.460 |
+| 100 | baseline | 0.1012s | 0.437 |
+| 100 | reorder | 0.0554s | 0.420 |
 
 ## General usage
 
@@ -95,7 +105,7 @@ resp = requests.post("http://localhost:8765/build", json={
     "contexts": contexts,
     "use_gpu": False,
     "linkage_method": "average",
-    "alpha": 0.005,
+    "alpha": 0.001,
 }).json()
 
 reordered = resp["reordered_contexts"]  # reordered doc ID lists
@@ -103,7 +113,7 @@ reordered = resp["reordered_contexts"]  # reordered doc ID lists
 
 ### Multi-turn
 
-Just call `/build` each turn — ContextPilot auto-detects whether the index exists and uses incremental mode accordingly:
+Just call `/build` each turn — ContextPilot auto-detects whether the index exists and extends it incrementally:
 
 ```python
 for turn, query in enumerate(queries):
@@ -113,8 +123,7 @@ for turn, query in enumerate(queries):
         "contexts": [results[0]["top_k_doc_id"]],
         "use_gpu": False,
         "linkage_method": "average",
-        "alpha": 0.005,
-        "incremental": turn > 0,
+        "alpha": 0.0005,
     }).json()
     reordered_ids = resp["reordered_contexts"][0]
 ```

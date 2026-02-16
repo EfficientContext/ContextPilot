@@ -96,6 +96,12 @@ class ContextIndex:
         self.node_manager = NodeManager()
         self.context_orderer = IntraContextOrderer()
         
+        # String-to-int mapping (auto-populated when string inputs are given)
+        self._str_to_id: dict = {}
+        self._id_to_str: dict = {}
+        self._next_str_id: int = 0
+        self._is_string_input: bool = False
+        
         if self.use_gpu:
             print("Using GPU for distance computation")
         else:
@@ -104,16 +110,48 @@ class ContextIndex:
             else:
                 print("Using CPU for distance computation")
     
-    def fit_transform(self, contexts: List[List[int]]) -> IndexResult:
+    def _convert_to_int(self, contexts):
+        """Convert string contexts to integer IDs if needed."""
+        if not contexts or not contexts[0]:
+            return contexts
+        if isinstance(contexts[0][0], str):
+            self._is_string_input = True
+            converted = []
+            for ctx in contexts:
+                converted_ctx = []
+                for item in ctx:
+                    sid = self._str_to_id.get(item)
+                    if sid is None:
+                        sid = self._next_str_id
+                        self._str_to_id[item] = sid
+                        self._id_to_str[sid] = item
+                        self._next_str_id += 1
+                    converted_ctx.append(sid)
+                converted.append(converted_ctx)
+            return converted
+        return contexts
+    
+    def _convert_to_str(self, contexts):
+        """Convert integer contexts back to strings if input was strings."""
+        if not self._is_string_input or not contexts:
+            return contexts
+        # Skip if already converted (e.g. from fit_transform output)
+        if contexts[0] and isinstance(contexts[0][0], str):
+            return contexts
+        return [[self._id_to_str[i] for i in ctx] for ctx in contexts]
+    
+    def fit_transform(self, contexts) -> IndexResult:
         """
         Perform clustering and return results.
         
         Args:
-            contexts: List of contexts, where each prompt is a list of chunk IDs
+            contexts: List of contexts, where each context is a list of chunk IDs (int) or strings.
+                      String inputs are automatically converted to integer IDs.
             
         Returns:
             IndexResult object containing clustering results
         """
+        contexts = self._convert_to_int(contexts)
         n = len(contexts)
         
         if n < 2:
@@ -260,7 +298,7 @@ class ContextIndex:
 
 
 # Convenience function for backward compatibility
-def build_context_index(contexts: List[List[int]], 
+def build_context_index(contexts, 
                        linkage_method: str = "average",
                        use_gpu: bool = True,
                        alpha: float = 0.005,
@@ -270,7 +308,7 @@ def build_context_index(contexts: List[List[int]],
     Convenience function for building a context index.
     
     Args:
-        contexts: List of contexts, where each prompt is a list of chunk IDs
+        contexts: List of contexts, where each context is a list of chunk IDs (int) or strings
         linkage_method: Linkage method for hierarchical clustering
         use_gpu: Whether to use GPU for distance computation
         alpha: Weight for position term in distance calculation
@@ -287,4 +325,11 @@ def build_context_index(contexts: List[List[int]],
         num_workers=num_workers,
         batch_size=batch_size
     )
-    return indexer.fit_transform(contexts)
+    result = indexer.fit_transform(contexts)
+    # Convert back to strings at the API boundary if input was strings
+    if indexer._is_string_input:
+        result.reordered_contexts = indexer._convert_to_str(result.reordered_contexts)
+        result.original_contexts = indexer._convert_to_str(result.original_contexts)
+        result.reordered_prompts = result.reordered_contexts
+        result.original_prompts = result.original_contexts
+    return result

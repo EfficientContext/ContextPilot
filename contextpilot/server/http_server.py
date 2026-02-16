@@ -752,7 +752,7 @@ async def search(request: SearchRequest):
         )
 
     try:
-        search_path, node_id, prefix_length = _index.search(
+        search_path, node_id, prefix_length, has_prefix = _index.search(
             context=request.context, update_access=request.update_access
         )
 
@@ -761,6 +761,7 @@ async def search(request: SearchRequest):
             "search_path": search_path,
             "node_id": node_id,
             "prefix_length": prefix_length,
+            "has_prefix": has_prefix,
         }
 
     except Exception as e:

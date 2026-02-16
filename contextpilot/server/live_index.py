@@ -230,13 +230,17 @@ class LiveContextIndex(ContextIndex):
                 - scheduled_order: Optimized execution order
                 - groups: Execution groups for cache efficiency
         """
+        # Auto-convert string inputs to integer IDs
+        contexts = self._convert_to_int(contexts)
+        
         if not self.is_live:
             # First batch - do full build
             print("Index not live, performing full build...")
             result = self.build_and_schedule(contexts, initial_tokens_per_context)
+            reordered = result.get('scheduled_reordered', contexts)
             return {
                 'request_ids': result.get('request_ids', []),
-                'reordered_contexts': result.get('scheduled_reordered', contexts),
+                'reordered_contexts': self._convert_to_str(reordered),
                 'matched_count': 0,
                 'inserted_count': len(contexts),
                 'merged_count': 0,
@@ -256,9 +260,9 @@ class LiveContextIndex(ContextIndex):
         # Use batch search for efficiency
         search_results = self.search_batch(contexts)
         
-        for i, (context, (search_path, matched_node_id, overlap_count)) in enumerate(zip(contexts, search_results)):
+        for i, (context, (search_path, matched_node_id, overlap_count, has_prefix)) in enumerate(zip(contexts, search_results)):
             if overlap_count > 0 and matched_node_id >= 0 and matched_node_id != self.root_id:
-                # Has a meaningful match (not global root) - reorder context to start with matched node's prefix
+                # Has a meaningful match (not global root) - reorder context to share docs with matched node
                 matched_node = self.nodes.get(matched_node_id)
                 node_docs = None
                 if matched_node_id in self.metadata and self.metadata[matched_node_id].doc_ids:
@@ -268,12 +272,14 @@ class LiveContextIndex(ContextIndex):
                 
                 if node_docs:
                     reordered = self._reorder_with_prefix(context, node_docs)
-                    print(f"   Context {i}: matched node {matched_node_id} with overlap={overlap_count}")
+                    mode = "prefix→child" if has_prefix else "overlap→sibling"
+                    print(f"   Context {i}: matched node {matched_node_id} ({mode}) overlap={overlap_count}/{len(context)}")
                     print(f"      Original:  {context[:8]}{'...' if len(context) > 8 else ''}")
                     print(f"      Reordered: {reordered[:8]}{'...' if len(reordered) > 8 else ''}")
                 else:
                     reordered = context
-                matched_contexts.append((i, reordered, search_path))
+                    has_prefix = True  # default to child if no docs available
+                matched_contexts.append((i, reordered, search_path, has_prefix))
             else:
                 # No match - will build new index for these
                 unmatched_contexts.append((i, context))
@@ -287,11 +293,27 @@ class LiveContextIndex(ContextIndex):
         context_info = []  # For scheduling: (original_idx, request_id, search_path)
         
         # Step 2: Insert matched contexts into existing tree
+        # has_prefix=True  → split matched leaf, share prefix as internal node
+        # has_prefix=False → sibling of matched node (insert at parent level)
         print(f"\n2. Inserting {len(matched_contexts)} matched contexts...")
-        for orig_idx, reordered, search_path in matched_contexts:
-            new_node_id, new_search_path, request_id = self.insert(
-                reordered, search_path, initial_tokens_per_context
-            )
+        for orig_idx, reordered, search_path, has_prefix in matched_contexts:
+            matched_node = self.traverse(search_path)
+            if has_prefix and matched_node and matched_node.is_leaf:
+                # Split the leaf: intersection becomes new internal node
+                new_node_id, new_search_path, request_id = self._split_leaf_and_insert(
+                    reordered, matched_node, search_path, initial_tokens_per_context
+                )
+            elif has_prefix:
+                # Matched an internal node — insert as child
+                new_node_id, new_search_path, request_id = self.insert(
+                    reordered, search_path, initial_tokens_per_context
+                )
+            else:
+                # No prefix match → sibling (insert at parent level)
+                insert_path = search_path[:-1] if search_path else search_path
+                new_node_id, new_search_path, request_id = self.insert(
+                    reordered, insert_path, initial_tokens_per_context
+                )
             request_ids[orig_idx] = request_id
             reordered_contexts[orig_idx] = reordered
             context_info.append((orig_idx, request_id, new_search_path))
@@ -350,7 +372,7 @@ class LiveContextIndex(ContextIndex):
         
         return {
             'request_ids': request_ids,
-            'reordered_contexts': reordered_contexts,
+            'reordered_contexts': self._convert_to_str(reordered_contexts),
             'matched_count': len(matched_contexts),
             'inserted_count': len(contexts),
             'merged_count': merged_count,
@@ -903,58 +925,135 @@ class LiveContextIndex(ContextIndex):
         
         return node_ids, node_docs_list, node_id_to_path
     
-    def search_batch(self, contexts: List[List[int]]) -> List[Tuple[List[int], int, int]]:
+    def _get_node_docs(self, node_id: int) -> Optional[List[int]]:
+        """Get doc_ids for a node from metadata or node attributes."""
+        meta = self.metadata.get(node_id)
+        if meta and meta.doc_ids:
+            return meta.doc_ids
+        node = self.nodes.get(node_id)
+        if node and hasattr(node, 'doc_ids') and node.doc_ids:
+            return node.doc_ids
+        return None
+
+    def _search_single_hierarchical(self, context: List[int]) -> Tuple[List[int], int, int, bool]:
         """
-        Batch search for best matching nodes for multiple contexts.
+        Hierarchical top-down search for a single context.
         
-        Much faster than calling search() multiple times as it:
-        1. Collects all node docs once
-        2. Computes all distances in parallel using batch computation
-        3. Finds best match for each context
+        Algorithm:
+        1. Start at root's children
+        2. At each level, find the best matching child (overlap > 0, min distance)
+        3. If best child's docs[0] is in the query (has_prefix):
+           → descend into that child's children and repeat
+        4. If best child has overlap but docs[0] NOT in query (no prefix):
+           → stop, return this child as a sibling match (has_prefix=False)
+        5. If no children have overlap → no match
+        
+        Returns:
+            (search_path, matched_node_id, overlap_count, has_prefix)
+        """
+        context_set = set(context)
+        current_id = self.root_id
+        current_path: List[int] = []
+        
+        while True:
+            current_node = self.nodes.get(current_id)
+            if current_node is None or current_node.is_leaf or not current_node.children:
+                # Reached a leaf or node with no children — return current as match
+                docs = self._get_node_docs(current_id)
+                if docs and current_id != self.root_id:
+                    overlap = len(context_set & set(docs))
+                    has_prefix = docs[0] in context_set if overlap > 0 else False
+                    return (current_path, current_id, overlap, has_prefix)
+                return ([], -1, 0, False)
+            
+            # Collect children info for distance computation
+            child_ids = []
+            child_docs_list = []
+            child_indices = []  # index within parent.children
+            
+            for idx, child_id in enumerate(current_node.children):
+                docs = self._get_node_docs(child_id)
+                if docs:
+                    child_ids.append(child_id)
+                    child_docs_list.append(docs)
+                    child_indices.append(idx)
+            
+            if not child_ids:
+                return ([], -1, 0, False)
+            
+            # Compute distances from this context to all children at this level
+            distances = compute_distances_batch([context], child_docs_list, self.alpha)
+            
+            # Find best matching child with overlap > 0
+            best_j = -1
+            best_distance = float('inf')
+            best_overlap = 0
+            
+            for j, (child_id, docs) in enumerate(zip(child_ids, child_docs_list)):
+                overlap = len(context_set & set(docs))
+                if overlap == 0:
+                    continue
+                dist = distances[0, j]
+                if dist < best_distance:
+                    best_distance = dist
+                    best_overlap = overlap
+                    best_j = j
+            
+            if best_j < 0:
+                # No child has overlap at this level
+                if current_id != self.root_id:
+                    # We descended here because this node had prefix match.
+                    # Return it as the match — insert as child of this node.
+                    docs = self._get_node_docs(current_id)
+                    if docs:
+                        overlap = len(context_set & set(docs))
+                        return (current_path, current_id, overlap, True)
+                return ([], -1, 0, False)
+            
+            best_child_id = child_ids[best_j]
+            best_child_idx = child_indices[best_j]
+            best_docs = child_docs_list[best_j]
+            child_path = current_path + [best_child_idx]
+            
+            if best_docs[0] in context_set:
+                # has_prefix=True: descend into this child
+                best_child_node = self.nodes.get(best_child_id)
+                if best_child_node and not best_child_node.is_leaf and best_child_node.children:
+                    # Has children to explore — go deeper
+                    current_id = best_child_id
+                    current_path = child_path
+                    continue
+                else:
+                    # Leaf or no children — this is the match
+                    return (child_path, best_child_id, best_overlap, True)
+            else:
+                # has_prefix=False: stop here, insert as sibling
+                return (child_path, best_child_id, best_overlap, False)
+
+    def search_batch(self, contexts: List[List[int]]) -> List[Tuple[List[int], int, int, bool]]:
+        """
+        Batch search using hierarchical top-down traversal.
+        
+        For each context, traverses the tree from root downward:
+        - At each level, finds the best matching child (overlap > 0, min distance)
+        - If the child's first doc is in the query (has_prefix=True), descends deeper
+        - If overlap exists but first doc is NOT in query, stops (sibling match)
+        - If no overlap at a level, returns no match
         
         Args:
             contexts: List of query contexts
             
         Returns:
-            List of (search_path, matched_node_id, overlap_count) for each context
+            List of (search_path, matched_node_id, overlap_count, has_prefix)
+            for each context.  ``has_prefix`` is True when the matched node's
+            first doc exists in the query (KV-cache prefix reuse possible).
         """
         start_time = time.perf_counter()
         
         if self.root_id is None or not contexts:
-            return [([], -1, 0) for _ in contexts]
+            return [([], -1, 0, False) for _ in contexts]
         
-        # Collect all node docs
-        node_ids, node_docs_list, node_id_to_path = self._collect_all_node_docs()
-        
-        if not node_ids:
-            return [([], -1, 0) for _ in contexts]
-        
-        # Batch compute distances: (num_contexts x num_nodes)
-        distances = compute_distances_batch(contexts, node_docs_list, self.alpha)
-        
-        # For each context, find best matching node
-        results = []
-        for i, context in enumerate(contexts):
-            context_set = set(context)
-            best_node_idx = -1
-            best_distance = float('inf')
-            best_overlap = 0
-            
-            for j, (node_id, docs) in enumerate(zip(node_ids, node_docs_list)):
-                dist = distances[i, j]
-                overlap = len(context_set & set(docs))
-                
-                if overlap > 0 and dist < best_distance:
-                    best_distance = dist
-                    best_overlap = overlap
-                    best_node_idx = j
-            
-            if best_node_idx >= 0:
-                best_node_id = node_ids[best_node_idx]
-                best_path = node_id_to_path[best_node_id]
-                results.append((best_path, best_node_id, best_overlap))
-            else:
-                results.append(([], -1, 0))
+        results = [self._search_single_hierarchical(ctx) for ctx in contexts]
         
         # Update statistics
         elapsed_us = (time.perf_counter() - start_time) * 1_000_000
@@ -963,7 +1062,7 @@ class LiveContextIndex(ContextIndex):
         
         return results
     
-    def search(self, context: List[int], update_access: bool = True) -> Tuple[List[int], int, int]:
+    def search(self, context: List[int], update_access: bool = True) -> Tuple[List[int], int, int, bool]:
         """
         Search for best matching node for a single context.
         For multiple contexts, use search_batch() instead.
@@ -973,16 +1072,16 @@ class LiveContextIndex(ContextIndex):
             update_access: Whether to update LRU timestamp
             
         Returns:
-            Tuple of (search_path, matched_node_id, overlap_count)
+            Tuple of (search_path, matched_node_id, overlap_count, has_prefix)
         """
         results = self.search_batch([context])
-        search_path, node_id, overlap = results[0]
+        search_path, node_id, overlap, has_prefix = results[0]
         
         # Update access time
         if update_access and node_id >= 0 and node_id in self.metadata:
             self.metadata[node_id].update_access_time()
         
-        return (search_path, node_id, overlap)
+        return (search_path, node_id, overlap, has_prefix)
     
     def traverse(self, search_path: List[int]) -> Optional[ClusterNode]:
         """
@@ -1161,6 +1260,157 @@ class LiveContextIndex(ContextIndex):
         
         return (new_leaf_id, new_search_path, request_id)
     
+    def _split_leaf_and_insert(self, context: List[int], leaf_node: ClusterNode,
+                               search_path: List[int], total_tokens: int) -> Tuple[int, List[int], str]:
+        """
+        Split a matched leaf node and insert a new context.
+        
+        Creates a new internal node whose doc_ids is the contiguous shared
+        prefix between the existing leaf and the new context.  Both the
+        original leaf and the new leaf become children of this internal node.
+        
+        Before:
+            parent → leaf_A [a,b,c,d,e]
+        
+        After:
+            parent → new_internal [a,b,c]          (shared prefix)
+                      ├── leaf_A [a,b,c,d,e]       (original)
+                      └── leaf_B [a,b,c,x,y]       (new)
+        
+        Falls back to sibling insertion if no contiguous shared prefix.
+        
+        Args:
+            context: Reordered new context (already starts with matched prefix)
+            leaf_node: The matched leaf node to split
+            search_path: Search path to the matched leaf
+            total_tokens: Initial token count for the new context
+            
+        Returns:
+            Tuple of (new_leaf_id, new_search_path, request_id)
+        """
+        matched_docs = self._get_node_docs(leaf_node.node_id)
+        
+        if not matched_docs:
+            return self._insert_at_leaf(context, leaf_node, search_path, total_tokens)
+        
+        # Compute contiguous shared prefix
+        shared_prefix = []
+        for a, b in zip(matched_docs, context):
+            if a == b:
+                shared_prefix.append(a)
+            else:
+                break
+        
+        if not shared_prefix:
+            # No contiguous prefix — just insert as sibling
+            return self._insert_at_leaf(context, leaf_node, search_path, total_tokens)
+        
+        if shared_prefix == list(matched_docs) and set(matched_docs) == set(context):
+            # Identical docs — just insert as sibling
+            return self._insert_at_leaf(context, leaf_node, search_path, total_tokens)
+        
+        # --- Tree restructuring: split the leaf ---
+        
+        # 1. Identify parent
+        parent_id = leaf_node.parent
+        if parent_id is None:
+            parent_id = self.root_id
+        parent_node = self.nodes[parent_id]
+        parent_search_path = search_path[:-1] if search_path else []
+        
+        # Find leaf's index in parent.children
+        leaf_child_idx = parent_node.children.index(leaf_node.node_id)
+        
+        # 2. Create new internal node with shared prefix as doc_ids
+        new_internal_id = self.next_node_id
+        self.next_node_id += 1
+        
+        all_content = set(leaf_node.content) | set(context)
+        new_internal = ClusterNode(
+            node_id=new_internal_id,
+            content=all_content,
+            children=[leaf_node.node_id],  # original leaf as first child
+            parent=parent_id,
+            original_indices=set()
+        )
+        # Override sorted doc_ids with the actual shared prefix
+        new_internal.doc_ids = list(shared_prefix)
+        
+        self.nodes[new_internal_id] = new_internal
+        
+        # 3. Replace leaf in parent's children list with new internal node
+        parent_node.children[leaf_child_idx] = new_internal_id
+        
+        # 4. Update original leaf's parent pointer
+        leaf_node.parent = new_internal_id
+        
+        # 5. Create metadata for new internal node
+        parent_tokens = self.metadata[parent_id].total_tokens if parent_id in self.metadata else 0
+        leaf_meta = self.metadata.get(leaf_node.node_id)
+        leaf_total = leaf_meta.total_tokens if leaf_meta else 0
+        
+        # Estimate internal node tokens proportionally from shared prefix
+        if matched_docs and len(matched_docs) > 0:
+            prefix_ratio = len(shared_prefix) / len(matched_docs)
+            internal_tokens = int(parent_tokens + (leaf_total - parent_tokens) * prefix_ratio)
+        else:
+            internal_tokens = parent_tokens
+        
+        internal_path = parent_search_path + [leaf_child_idx]
+        
+        internal_meta = NodeMetadata(
+            node_id=new_internal_id,
+            total_tokens=internal_tokens,
+            extra_tokens=max(0, internal_tokens - parent_tokens),
+            search_path=internal_path,
+            doc_ids=list(shared_prefix),
+            is_leaf=False,
+            request_id=None
+        )
+        self.metadata[new_internal_id] = internal_meta
+        
+        # 6. Update original leaf's metadata (now child 0 of new internal)
+        if leaf_meta:
+            leaf_meta.extra_tokens = max(0, leaf_total - internal_tokens)
+            leaf_meta.search_path = internal_path + [0]
+        
+        # 7. Create new leaf for the inserted context
+        request_id = f"req-{uuid.uuid4().hex[:12]}"
+        
+        new_leaf_id = self.next_node_id
+        self.next_node_id += 1
+        
+        new_leaf = ClusterNode(
+            node_id=new_leaf_id,
+            content=context,
+            children=[],
+            parent=new_internal_id,
+            original_indices={new_leaf_id}
+        )
+        new_leaf.doc_ids = list(context)  # Preserve insertion order
+        
+        self.nodes[new_leaf_id] = new_leaf
+        new_internal.add_child(new_leaf_id)  # becomes child 1
+        
+        new_leaf_path = internal_path + [1]
+        
+        new_leaf_meta = NodeMetadata(
+            node_id=new_leaf_id,
+            total_tokens=total_tokens,
+            extra_tokens=max(0, total_tokens - internal_tokens),
+            search_path=new_leaf_path,
+            doc_ids=list(context),
+            is_leaf=True,
+            request_id=request_id
+        )
+        self.metadata[new_leaf_id] = new_leaf_meta
+        self._request_to_node[request_id] = new_leaf_id
+        
+        print(f"      Split: leaf {leaf_node.node_id} → internal {new_internal_id} "
+              f"(prefix={len(shared_prefix)}) + leaf {new_leaf_id}")
+        
+        return (new_leaf_id, new_leaf_path, request_id)
+
     def update_node(self, search_path: List[int], token_delta: int) -> bool:
         """
         Update a node's token count.

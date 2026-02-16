@@ -105,7 +105,7 @@ resp = requests.post("http://localhost:8765/build", json={
     "contexts": contexts,
     "use_gpu": False,
     "linkage_method": "average",
-    "alpha": 0.0005,
+    "alpha": 0.0001,
 }).json()
 
 reordered = resp["reordered_contexts"]  # reordered doc ID lists

@@ -188,7 +188,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
             print(f"    original:  {doc_ids}")
             print(f"    reordered: {reordered_ids}")
             if prev_reordered:
-                print(f"    prev:      {prev_reordered})
+                print(f"    prev:      {prev_reordered}")
             print(f"    prefix_match={prefix_match}/{len(reordered_ids)}"
                   f" ttft={out['ttft']:.4f}s f1={f1:.3f} judge={score:.1f}")
 
@@ -209,14 +209,15 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
 def ingest_conversation(conv_data, retriever, user_id):
     conv = conv_data["conversation"]
-    n = 1
+    n, total_turns = 1, 0
     while f"session_{n}" in conv:
         turns = conv[f"session_{n}"]
-        msgs = [{"role": "user" if t["speaker"] == conv["speaker_a"] else "assistant",
-                 "content": t["text"]} for t in turns]
-        retriever.add_memory(msgs, user_id=user_id)
+        for t in turns:
+            role = "user" if t["speaker"] == conv["speaker_a"] else "assistant"
+            retriever.add_memory(t["text"], user_id=user_id)
+            total_turns += 1
         n += 1
-    print(f"  ingested {n-1} sessions, waiting for indexing ...")
+    print(f"  ingested {total_turns} turns from {n-1} sessions, waiting for indexing ...")
     time.sleep(5)
     all_memories = retriever.memory.get_all(user_id=user_id)
     n_memories = len(all_memories.get("results", []))

@@ -106,8 +106,8 @@ queries = ["What are transformers?", "How do RNNs compare?", "Explain attention 
 for turn_idx, (query, mems) in enumerate(zip(queries, turn_memories)):
     # 1. Reorder for prefix sharing (handles cold start & incremental)
     # .reorder() returns (reordered_contexts, original_indices)
-    reordered, indices = cp_live.reorder([mems])
-    ctx = reordered[0]  # single context per turn
+    reordered_ctx, indices = cp_live.reorder([mems])
+    ctx = reordered_ctx[0]  # single context per turn
     # Turn 2: "GPT is based on transformers" ← moved to prefix (shared with turn 1)
     # Turn 3: "Transformers …", "GPT …"     ← both moved to prefix
 
@@ -152,11 +152,11 @@ all_contexts = [
 
 # One call: builds index, reorders docs for prefix sharing, and schedules execution order
 # .reorder() returns (reordered_contexts, original_indices)
-reordered, order = cp_batch.reorder(all_contexts)
+reordered_ctx, order = cp_batch.reorder(all_contexts)
 
 # Build all prompts in optimized order
 messages_batch = []
-for ctx, orig_idx in zip(reordered, order):
+for ctx, orig_idx in zip(reordered_ctx, order):
     docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
     importance_ranking = ">".join(
         str(ctx.index(doc) + 1) for doc in all_contexts[orig_idx] if doc in ctx

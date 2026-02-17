@@ -159,7 +159,7 @@ class ContextPilotIndexClient:
     def reorder(
         self,
         contexts: List[List],
-        alpha: float = 0.005,
+        alpha: float = 0.001,
         use_gpu: bool = False,
         linkage_method: str = "average",
         initial_tokens_per_context: int = 0,
@@ -175,7 +175,7 @@ class ContextPilotIndexClient:
 
         Args:
             contexts: List of contexts (each is a list of document IDs or strings)
-            alpha: Distance computation parameter (default 0.005)
+            alpha: Distance computation parameter (default 0.001)
             use_gpu: Use GPU for distance computation (default False)
             linkage_method: Linkage method for clustering (default "average")
             initial_tokens_per_context: Initial token count per context (stateful only)
@@ -213,7 +213,7 @@ class ContextPilotIndexClient:
     def reorder_raw(
         self,
         contexts: List[List],
-        alpha: float = 0.005,
+        alpha: float = 0.001,
         use_gpu: bool = False,
         linkage_method: str = "average",
         initial_tokens_per_context: int = 0,
@@ -247,7 +247,7 @@ class ContextPilotIndexClient:
     def build(
         self,
         contexts: List[List[int]],
-        alpha: float = 0.005,
+        alpha: float = 0.001,
         use_gpu: bool = False,
         linkage_method: str = "average",
         initial_tokens_per_context: int = 0,
@@ -270,7 +270,7 @@ class ContextPilotIndexClient:
     def schedule(
         self,
         contexts: List[List[int]],
-        alpha: float = 0.005,
+        alpha: float = 0.001,
         use_gpu: bool = False,
         linkage_method: str = "average"
     ) -> Optional[Dict[str, Any]]:
@@ -393,7 +393,7 @@ def evict_requests(
 def schedule_batch(
     contexts: List[List[int]],
     server_url: str = "http://localhost:8765",
-    alpha: float = 0.005,
+    alpha: float = 0.001,
     use_gpu: bool = False,
     linkage_method: str = "average",
     timeout: float = 30.0

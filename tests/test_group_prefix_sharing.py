@@ -119,7 +119,7 @@ class TestGroupPrefixSharing:
         ]
         
         # Build context index
-        clustering_result = build_context_index(contexts, use_gpu=False, alpha=0.005)
+        clustering_result = build_context_index(contexts, use_gpu=False, alpha=0.001)
         
         # Schedule contexts
         scheduler = InterContextScheduler()
@@ -151,7 +151,7 @@ class TestGroupPrefixSharing:
         ]
         
         # Build context index
-        clustering_result = build_context_index(contexts, use_gpu=False, alpha=0.005)
+        clustering_result = build_context_index(contexts, use_gpu=False, alpha=0.001)
         
         # Schedule contexts
         scheduler = InterContextScheduler()
@@ -186,7 +186,7 @@ class TestGroupPrefixSharing:
         contexts = [q['top_k_doc_id'] for q in queries]
         
         # Build context index
-        clustering_result = build_context_index(contexts, use_gpu=False, alpha=0.005)
+        clustering_result = build_context_index(contexts, use_gpu=False, alpha=0.001)
         
         # Schedule contexts
         scheduler = InterContextScheduler()

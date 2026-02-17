@@ -5,26 +5,40 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.2] - 2026-02-16
+## [0.3.3] - 2026-02-17
 
 ### Added
-- `cp.ContextPilot` — unified class for both stateful and stateless context reordering
-- Automatic string-to-integer context conversion — `List[List[str]]` inputs are now accepted natively
-- Leaf-node splitting in incremental build for finer-grained prefix sharing
-- Sibling insertion mode when new contexts overlap but do not share a prefix with the matched node
-- Mem0 LoCoMo benchmark example (`mem0_locomo_example.py`)
-- `.reorder()` method — unified one-call API for both stateful and stateless reordering
+- `cp.ContextPilot` — renamed from `LiveContextIndex`, now the single user-facing class for both stateful and stateless reordering
+- `.reorder()` method on `ContextPilot` — unified one-call API returning `(reordered_contexts, original_indices)` tuple
 - Unified `POST /reorder` HTTP endpoint that auto-dispatches between stateless and stateful modes
 - `client.reorder()` and `client.reorder_raw()` methods in `ContextPilotIndexClient`
 
 ### Changed
-- Eviction API now accepts `request_ids: List[str]` instead of `num_tokens: int` for precise request-level eviction sync
-- **Unified response keys**: All endpoints (`/reorder`, initial build, incremental build) now return consistent `reordered_contexts` and `original_indices` keys — removed inconsistent `scheduled_reordered`, `final_mapping`, `scheduled_order` aliases
-- Updated all examples to use `POST /reorder` endpoint and new response keys
+- **Renamed `LiveContextIndex` → `ContextPilot`** across all source, tests, server, docs, and examples
+- **Unified response keys**: All endpoints now return consistent `reordered_contexts` and `original_indices` — removed `scheduled_reordered`, `final_mapping`, `scheduled_order` aliases
+- Removed `build_context_index` and `InterContextScheduler` from public API (`__all__`) — they remain available via submodule imports for advanced use
+- Updated all examples to use `cp.ContextPilot` class and `POST /reorder` endpoint
+- Batch example (`stateless_batch_example.py`) now uses `asyncio.gather` for concurrent generation
+- `pageindex_e2e_example.py` and `offline/prepare_batch.py` rewritten to use public `cp.ContextPilot` API
+- Fixed stale `RAGBOOST_INDEX_URL` env var → `CONTEXTPILOT_INDEX_URL` in mem0 guide
+- Fixed dead doc links in `examples/offline/README.md`
+- Fixed SGLang version compatibility: `0.4.x` → `0.5.x` in patches README
 
 ### Deprecated
 - `POST /build` and `POST /schedule` endpoints — use `POST /reorder` instead
 - `client.build()` and `client.schedule()` — use `client.reorder()` / `client.reorder_raw()` instead
+
+## [0.3.2] - 2026-02-16
+
+### Added
+- `LiveContextIndex` exported from top-level package for convenient imports
+- Automatic string-to-integer context conversion — `List[List[str]]` inputs are now accepted natively
+- Leaf-node splitting in incremental build for finer-grained prefix sharing
+- Sibling insertion mode when new contexts overlap but do not share a prefix with the matched node
+- Mem0 LoCoMo benchmark example (`mem0_locomo_example.py`)
+
+### Changed
+- Eviction API now accepts `request_ids: List[str]` instead of `num_tokens: int` for precise request-level eviction sync
 - `_handle_single_prompt` always creates an empty root above the leaf, preventing root-exclusion guard from skipping valid matches during incremental builds
 - Improved diagnostic logging in `build_incremental` (prefix/sibling mode, overlap ratios)
 

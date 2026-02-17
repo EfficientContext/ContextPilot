@@ -109,7 +109,7 @@ class BuildIndexRequest(BaseModel):
     initial_tokens_per_context: int = Field(
         0, description="Initial token count per context"
     )
-    alpha: float = Field(0.005, description="Distance computation parameter")
+    alpha: float = Field(0.001, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
     linkage_method: str = Field("average", description="Linkage method for clustering")
     # Multi-turn deduplication fields
@@ -136,7 +136,7 @@ class ScheduleRequest(BaseModel):
         description="List of contexts. Each context is a list of items (int doc IDs OR string doc contents). "
                     "If strings are provided, identical strings are treated as the same document."
     )
-    alpha: float = Field(0.005, description="Distance computation parameter")
+    alpha: float = Field(0.001, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
     linkage_method: str = Field("average", description="Linkage method for clustering")
 
@@ -149,7 +149,7 @@ class ReorderRequest(BaseModel):
         description="List of contexts. Each context is a list of items (int doc IDs OR string doc contents). "
                     "If strings are provided, identical strings are treated as the same document."
     )
-    alpha: float = Field(0.005, description="Distance computation parameter")
+    alpha: float = Field(0.001, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
     linkage_method: str = Field("average", description="Linkage method for clustering")
     # Stateful-mode fields (ignored in stateless mode)

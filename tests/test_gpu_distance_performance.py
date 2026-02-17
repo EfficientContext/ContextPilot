@@ -62,7 +62,7 @@ class TestGPUDistancePerformance:
             topk_doc_ids,
             linkage_method='average',
             use_gpu=True,
-            alpha=0.005
+            alpha=0.001
         )
         gpu_time = time.perf_counter() - start
         
@@ -72,7 +72,7 @@ class TestGPUDistancePerformance:
             topk_doc_ids,
             linkage_method='average',
             use_gpu=False,
-            alpha=0.005
+            alpha=0.001
         )
         cpu_time = time.perf_counter() - start
         
@@ -97,7 +97,7 @@ class TestGPUDistancePerformance:
             topk_doc_ids,
             linkage_method='average',
             use_gpu=True,
-            alpha=0.005
+            alpha=0.001
         )
         gpu_time = time.perf_counter() - start
         
@@ -118,7 +118,7 @@ class TestGPUDistancePerformance:
             topk_doc_ids,
             linkage_method='average',
             use_gpu=True,
-            alpha=0.005
+            alpha=0.001
         )
         gpu_time = time.perf_counter() - start
         

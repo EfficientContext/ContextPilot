@@ -82,7 +82,7 @@ def example_with_function():
     result = schedule_batch(
         contexts=contexts,
         server_url="http://localhost:8765",
-        alpha=0.005,
+        alpha=0.001,
         use_gpu=False
     )
     
@@ -113,7 +113,7 @@ def example_direct_http():
         "http://localhost:8765/reorder",
         json={
             "contexts": contexts,
-            "alpha": 0.005,
+            "alpha": 0.001,
             "use_gpu": False,
             "linkage_method": "average"
         },

@@ -86,7 +86,7 @@ Answer:"""
 # ContextPilot Scheduling
 # ============================================================================
 
-def schedule_contexts(contexts: List[List[int]], alpha: float = 0.005) -> Optional[Dict]:
+def schedule_contexts(contexts: List[List[int]], alpha: float = 0.001) -> Optional[Dict]:
     """Call ContextPilot to get optimal reordering."""
     try:
         response = requests.post(

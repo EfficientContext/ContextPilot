@@ -125,6 +125,81 @@ pipeline.reset_all_conversations()
 
 ---
 
+## ContextPilot
+
+The core class for context reordering and multi-turn deduplication.
+
+### Constructor
+
+```python
+import contextpilot as cp
+
+engine = cp.ContextPilot(use_gpu=False)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `alpha` | float | `0.001` | Distance computation parameter |
+| `use_gpu` | bool | `False` | Use GPU for distance computation |
+| `linkage_method` | str | `"average"` | Clustering method |
+| `batch_size` | int | `128` | Batch size for distance computation |
+
+### Methods
+
+#### `reorder()`
+
+Reorder contexts for optimal KV-cache prefix sharing.
+
+```python
+reordered, indices = engine.reorder(
+    contexts,
+    conversation_id="user_42",  # optional, for multi-turn dedup
+)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `contexts` | List[List] | Required | List of contexts (doc IDs or strings) |
+| `initial_tokens_per_context` | int | `0` | Initial token budget per context |
+| `conversation_id` | str \| None | `None` | Conversation key for deduplication tracking |
+
+**Returns:** `(reordered_contexts, original_indices)` — a 2-tuple where `reordered_contexts[i]` corresponds to `contexts[original_indices[i]]`.
+
+#### `deduplicate()`
+
+Remove already-seen documents from follow-up conversation turns.
+
+> **`conversation_id` is required** — prevents cross-contamination between concurrent users.
+
+```python
+results = engine.deduplicate(
+    contexts,
+    conversation_id="user_42",       # REQUIRED
+    hint_template="See Doc {doc_id}", # optional
+)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `contexts` | List[List] | Required | List of contexts to deduplicate |
+| `conversation_id` | str | **Required** | Must match ID from a prior `.reorder()` call |
+| `hint_template` | str \| None | `None` | Custom hint template with `{doc_id}` placeholder |
+
+**Returns:** `List[Dict]` — one dict per context with keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `new_docs` | List | Documents not seen in prior turns |
+| `overlapping_docs` | List | Documents already sent |
+| `reference_hints` | List[str] | Hint strings for overlapping docs |
+| `deduplicated_docs` | List | Alias for `new_docs` |
+
+**Raises:**
+- `TypeError` if `conversation_id` is not provided
+- `ValueError` if `conversation_id` is empty or has no prior `.reorder()` history
+
+---
+
 ## InferenceConfig
 
 Configuration for LLM generation.
@@ -258,7 +333,7 @@ The response always includes `reordered_contexts` and `original_indices`.
 {
     "contexts": [[1, 2, 3], [2, 3, 4]],
     "initial_tokens_per_context": 0,
-    "alpha": 0.005,
+    "alpha": 0.001,
     "use_gpu": false,
     "linkage_method": "average",
     "deduplicate": false,
@@ -274,7 +349,7 @@ The response always includes `reordered_contexts` and `original_indices`.
         ["Full text of doc A", "Full text of doc B"],
         ["Full text of doc B", "Full text of doc C"]
     ],
-    "alpha": 0.005
+    "alpha": 0.001
 }
 ```
 
@@ -284,7 +359,7 @@ Identical strings are automatically mapped to the same internal ID.
 |-----------|------|---------|-------------|
 | `contexts` | List[List[int]] | Required | List of contexts (doc ID lists) |
 | `initial_tokens_per_context` | int | `0` | Initial token count per context |
-| `alpha` | float | `0.005` | Distance computation parameter |
+| `alpha` | float | `0.001` | Distance computation parameter |
 | `use_gpu` | bool | `false` | Use GPU for distance computation |
 | `linkage_method` | str | `"average"` | Clustering method |
 | `deduplicate` | bool | `false` | Enable multi-turn deduplication |

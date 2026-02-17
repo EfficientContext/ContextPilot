@@ -323,7 +323,7 @@ def main():
         build_resp = requests.post(f"{CONTEXTPILOT_URL}/reorder", json={
             "contexts": [doc_ids],  # single request
             "initial_tokens_per_context": 0,
-            "alpha": 0.005,
+            "alpha": 0.001,
             "use_gpu": False,
             "linkage_method": "average",
         }, timeout=30).json()

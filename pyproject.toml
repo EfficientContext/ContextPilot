@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "contextpilot"
-version = "0.3.2"
+version = "0.3.3"
 description = "Efficient Retrieval-Augmented Generation with Accuracy-Preserving Context Reuse"
 readme = "README.md"
 requires-python = ">=3.10"

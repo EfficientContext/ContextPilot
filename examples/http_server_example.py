@@ -66,7 +66,7 @@ def build_index():
             "contexts": contexts,
             "initial_tokens_per_context": 0,
             "use_gpu": False,
-            "alpha": 0.005,
+            "alpha": 0.001,
             "linkage_method": "average"
         },
         timeout=30.0
@@ -125,7 +125,7 @@ def stateless_schedule():
         f"{BASE_URL}/reorder",
         json={
             "contexts": contexts,
-            "alpha": 0.005,
+            "alpha": 0.001,
             "linkage_method": "average"
         },
         timeout=30.0

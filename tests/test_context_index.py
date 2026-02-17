@@ -24,7 +24,7 @@ class TestDistanceComputation:
         chunk_ids, orig_pos, lengths, offsets = prepare_contexts_for_cpu(contexts)
         
         dist = compute_distance_optimized(
-            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.005
+            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.001
         )
         
         assert dist == pytest.approx(0.0, abs=0.01)
@@ -40,7 +40,7 @@ class TestDistanceComputation:
         chunk_ids, orig_pos, lengths, offsets = prepare_contexts_for_cpu(contexts)
         
         dist = compute_distance_optimized(
-            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.005
+            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.001
         )
         
         assert dist == 1.0
@@ -56,7 +56,7 @@ class TestDistanceComputation:
         chunk_ids, orig_pos, lengths, offsets = prepare_contexts_for_cpu(contexts)
         
         dist = compute_distance_optimized(
-            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.005
+            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.001
         )
         
         assert 0.0 < dist < 1.0
@@ -72,7 +72,7 @@ class TestDistanceComputation:
         chunk_ids, orig_pos, lengths, offsets = prepare_contexts_for_cpu(contexts)
         
         dist = compute_distance_optimized(
-            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.005
+            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.001
         )
         
         assert dist == 1.0
@@ -88,10 +88,10 @@ class TestDistanceComputation:
         chunk_ids, orig_pos, lengths, offsets = prepare_contexts_for_cpu(contexts)
         
         dist_01 = compute_distance_optimized(
-            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.005
+            chunk_ids, orig_pos, lengths, offsets, 0, 1, alpha=0.001
         )
         dist_10 = compute_distance_optimized(
-            chunk_ids, orig_pos, lengths, offsets, 1, 0, alpha=0.005
+            chunk_ids, orig_pos, lengths, offsets, 1, 0, alpha=0.001
         )
         
         assert dist_01 == pytest.approx(dist_10, abs=1e-6)
@@ -131,7 +131,7 @@ class TestDistanceMatrixConstruction:
         contexts = [[i, i+1, i+2] for i in range(n)]
         
         dist_matrix = compute_distance_matrix_cpu_optimized(
-            contexts, alpha=0.005, num_workers=1
+            contexts, alpha=0.001, num_workers=1
         )
         
         expected_size = n * (n - 1) // 2
@@ -151,7 +151,7 @@ class TestDistanceMatrixConstruction:
         ]
         
         dist_matrix = compute_distance_matrix_cpu_optimized(
-            contexts, alpha=0.005, num_workers=1
+            contexts, alpha=0.001, num_workers=1
         )
         
         for dist in dist_matrix:

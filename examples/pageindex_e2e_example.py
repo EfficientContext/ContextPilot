@@ -107,7 +107,7 @@ def run_contextpilot(
     contexts: List[List[int]],
     query_labels: List[str],
     use_gpu: bool = False,
-    alpha: float = 0.005,
+    alpha: float = 0.001,
 ) -> Dict[str, Any]:
     """
     Build a ContextPilot index and schedule contexts.
@@ -316,7 +316,7 @@ def demo_disney(tree_path: Optional[str] = None):
     print("  ContextPilot Analysis")
     print(f"{'─' * 70}")
 
-    result = run_contextpilot(contexts, labels, use_gpu=False, alpha=0.005)
+    result = run_contextpilot(contexts, labels, use_gpu=False, alpha=0.001)
 
     # ── Show reordering explanation ──
     print(f"\n{'─' * 70}")

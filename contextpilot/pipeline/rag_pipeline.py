@@ -840,7 +840,7 @@ class RAGPipeline:
                     json={
                         "contexts": contexts,
                         "initial_tokens_per_context": 100,
-                        "alpha": 0.005,
+                        "alpha": 0.001,
                         "use_gpu": False,
                         "linkage_method": "average",
                         "incremental": incremental

@@ -113,9 +113,10 @@ for turn_idx, (query, mems) in enumerate(zip(queries, turn_memories)):
 
     # 2. Generate answer with reordered context
     docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
-    importance_ranking = ">".join(
-        str(ctx.index(doc) + 1) for doc in mems if doc in ctx
-    )
+    # Map original importance order (mems) → 1-based positions in reordered ctx
+    pos = {doc: i + 1 for i, doc in enumerate(ctx)}
+    importance_ranking = ">".join(str(pos[doc]) for doc in mems if doc in pos)
+    # System prompt = documents + importance ranking (after </documents>, doesn't affect prefix sharing)
     response = client.chat.completions.create(
         model="Qwen/Qwen3-4B",
         messages=[
@@ -158,9 +159,11 @@ reordered_ctx, order = cp_batch.reorder(all_contexts)
 messages_batch = []
 for ctx, orig_idx in zip(reordered_ctx, order):
     docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
+    pos = {doc: i + 1 for i, doc in enumerate(ctx)}
     importance_ranking = ">".join(
-        str(ctx.index(doc) + 1) for doc in all_contexts[orig_idx] if doc in ctx
+        str(pos[doc]) for doc in all_contexts[orig_idx] if doc in pos
     )
+    # System prompt = documents + importance ranking (after </documents>, doesn't affect prefix sharing)
     messages_batch.append({
         "model": "Qwen/Qwen3-4B",
         "messages": [

@@ -84,85 +84,35 @@ More [detailed installation instructions](docs/getting_started/installation.md) 
 
 ### Quick Start
 
-**Offline / Online Stateless** — build index & schedule in one shot:
-
-```python
-from openai import OpenAI
-import contextpilot as cp
-
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="...") # Your inference engine URL and API key
-
-queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
-all_contexts = [
-    ["Doc about AI", "Doc about ML", "Doc about computing"],
-    ["Doc about neural nets", "Doc about deep learning"],
-    ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
-]
-
-# Build index and schedule for prefix sharing
-index = cp.build_context_index(all_contexts, use_gpu=False)
-reordered, _, order, _ = cp.InterContextScheduler().schedule_contexts(index)
-
-# Send in optimized order — shared prefixes hit KV cache
-for ctx, orig_idx in zip(reordered, order):
-    docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
-    # Importance ranking restores original retrieval order for the model
-    importance_ranking = ">".join(
-        str(ctx.index(doc) + 1) for doc in all_contexts[orig_idx] if doc in ctx
-    )
-    response = client.chat.completions.create(
-        model="Qwen/Qwen3-4B",
-        messages=[
-            {"role": "system", "content": (
-                f"Answer the question based on the provided documents.\n\n"
-                f"<documents>\n{docs_section}\n</documents>\n\n"
-                f"Read the documents in this importance ranking: {importance_ranking}\n"
-                f"Prioritize information from higher-ranked documents."
-            )},
-            {"role": "user", "content": queries[orig_idx]},
-        ],
-    )
-    print(f"Q: {queries[orig_idx]}\nA: {response.choices[0].message.content}\n")
-```
-
-> For online stateless scheduling via HTTP server, see the [online usage guide](docs/guides/online_usage.md).
-
-**Stateful** — `LiveContextIndex` tracks cached state:
+**Stateful** — `ContextPilot` tracks cached state across turns so
+overlapping documents are moved to the prefix for KV-cache reuse:
 
 ```python
 from openai import OpenAI
 import contextpilot as cp
 
 client = OpenAI(base_url="http://localhost:30000/v1", api_key="...")
-live = cp.LiveContextIndex(use_gpu=False)
+cp_live = cp.ContextPilot(use_gpu=False)
 
-# Simulate multi-turn: each turn has batch_size=1
-turns = [
-    {
-        "query": "What is AI?",
-        "contexts": [["Doc about AI", "Doc about ML", "Doc about computing"]],
-    },
-    {
-        "query": "Compare supervised and unsupervised learning",
-        # 2 of 3 docs overlap with Turn 1 ("Doc about AI", "Doc about ML"), different order + 1 new doc
-        "contexts": [["Doc about ML", "Doc about clustering", "Doc about AI"]],
-    },
+# Simulated per-turn memory search (e.g. from mem0)
+# Each turn retrieves different but partially overlapping documents
+turn_memories = [
+    ["Transformers use self-attention", "GPT is based on transformers", "BERT is bidirectional"],
+    ["RNNs use hidden states", "GPT is based on transformers", "LSTMs solve vanishing gradients"],
+    ["Attention computes QKV", "Transformers use self-attention", "GPT is based on transformers"],
 ]
+queries = ["What are transformers?", "How do RNNs compare?", "Explain attention in detail."]
 
-for turn_idx, turn in enumerate(turns):
-    contexts = turn["contexts"]
-    query = turn["query"]
+for turn_idx, (query, mems) in enumerate(zip(queries, turn_memories)):
+    # 1. Reorder for prefix sharing (handles cold start & incremental)
+    [ctx], order = cp_live.reorder([mems])   # single request per turn
+    # Turn 2: "GPT is based on transformers" ← moved to prefix (shared with turn 1)
+    # Turn 3: "Transformers …", "GPT …"     ← both moved to prefix
 
-    # build_incremental handles both cold start and incremental turns
-    result = live.build_incremental(contexts)
-    reordered = result['reordered_contexts']
-    # Turn 2: reordered to ["Doc about AI", "Doc about ML", "Doc about clustering"]
-    #                        ^— shared prefix from Turn 1 —^    ^— new doc appended
-
-    ctx = reordered[0]
+    # 2. Generate answer with reordered context
     docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
     importance_ranking = ">".join(
-        str(ctx.index(doc) + 1) for doc in contexts[0] if doc in ctx
+        str(ctx.index(doc) + 1) for doc in mems if doc in ctx
     )
     response = client.chat.completions.create(
         model="Qwen/Qwen3-4B",
@@ -180,7 +130,61 @@ for turn_idx, turn in enumerate(turns):
     print(f"A: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** Stateful mode works without eviction sync — `LiveContextIndex` tracks the previous ordering and reorders new contexts to maximize prefix cache hits. For production deployments with limited storage size where the KV cache may evict entries, install the [SGLang eviction patch](docs/guides/online_usage.md#sglang-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md) for HTTP server setup.
+> **Note:** Stateful mode works without eviction sync — `ContextPilot` tracks the previous ordering and reorders new contexts to maximize prefix cache hits. For production deployments with limited KV-cache capacity, install the [SGLang eviction patch](docs/guides/online_usage.md#sglang-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md) for HTTP server setup.
+
+**Offline / Online Stateless** — same API, just pass the full batch at once:
+
+```python
+from openai import OpenAI
+import contextpilot as cp
+
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="...") # Your inference engine URL and API key
+cp_batch = cp.ContextPilot(use_gpu=False)
+
+queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
+all_contexts = [
+    ["Doc about AI", "Doc about ML", "Doc about computing"],
+    ["Doc about neural nets", "Doc about deep learning"],
+    ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
+]
+
+# One call: builds index, reorders docs for prefix sharing, and schedules execution order
+reordered, order = cp_batch.reorder(all_contexts)
+
+# Build all prompts in optimized order
+messages_batch = []
+for ctx, orig_idx in zip(reordered, order):
+    docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
+    importance_ranking = ">".join(
+        str(ctx.index(doc) + 1) for doc in all_contexts[orig_idx] if doc in ctx
+    )
+    messages_batch.append({
+        "model": "Qwen/Qwen3-4B",
+        "messages": [
+            {"role": "system", "content": (
+                f"Answer the question based on the provided documents.\n\n"
+                f"<documents>\n{docs_section}\n</documents>\n\n"
+                f"Read the documents in this importance ranking: {importance_ranking}\n"
+                f"Prioritize information from higher-ranked documents."
+            )},
+            {"role": "user", "content": queries[orig_idx]},
+        ],
+    })
+
+# Send concurrently — inference engine processes them in order for max cache reuse
+import asyncio, openai
+
+async def generate_all(batch):
+    aclient = openai.AsyncOpenAI(base_url="http://localhost:30000/v1", api_key="...")
+    tasks = [aclient.chat.completions.create(**req) for req in batch]
+    return await asyncio.gather(*tasks)
+
+responses = asyncio.run(generate_all(messages_batch))
+for resp, orig_idx in zip(responses, order):
+    print(f"Q: {queries[orig_idx]}\nA: {resp.choices[0].message.content}\n")
+```
+
+> For online stateless scheduling via HTTP server, see the [online usage guide](docs/guides/online_usage.md).
 
 ## Documentation
 

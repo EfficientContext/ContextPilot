@@ -15,7 +15,7 @@ from .tree_nodes import (
 from .index_construction import (
     ContextIndex,
     IndexResult,
-    build_context_index
+    build_context_index,
 )
 
 # Import distance computation

@@ -2,7 +2,7 @@
 ContextPilot Live Index HTTP Server
 
 A FastAPI-based HTTP server that:
-1. Exposes the LiveContextIndex as a REST API
+1. Exposes ContextPilot as a REST API
 2. Proxies LLM requests to inference engine backend
 3. Automatically tracks tokens and triggers eviction
 4. Multi-turn conversation context deduplication
@@ -36,7 +36,7 @@ except ImportError:
         "Install with: pip install fastapi uvicorn pydantic aiohttp"
     )
 
-from .live_index import LiveContextIndex
+from .live_index import ContextPilot
 from .conversation_tracker import (
     ConversationTracker, 
     DeduplicationResult,
@@ -57,7 +57,7 @@ except ImportError:
 
 
 # Global state (initialized from env vars or CLI args)
-_index: Optional[LiveContextIndex] = None
+_index: Optional[ContextPilot] = None
 _max_tokens: Optional[int] = None
 _infer_api_url: Optional[str] = None
 _aiohttp_session: Optional[aiohttp.ClientSession] = None
@@ -65,7 +65,7 @@ _tokenizer = None  # AutoTokenizer instance for chat template
 _model_name: Optional[str] = None  # Model name for tokenizer
 _stateless_mode: bool = False  # Stateless mode: just clustering/scheduling, no cache tracking
 # Persistent string-to-ID mapping for string-input mode.
-# Same string always gets the same integer ID across /build calls.
+# Same string always gets the same integer ID across /reorder calls.
 _str_to_id: Dict[str, int] = {}
 _id_to_str: Dict[int, str] = {}
 _next_str_id: int = 0
@@ -101,7 +101,7 @@ def _init_config():
 
 # Request/Response Models
 class BuildIndexRequest(BaseModel):
-    """Request to build the index."""
+    """Request to build the index (legacy, use ReorderRequest instead)."""
 
     contexts: List[List[Any]] = Field(
         ..., description="List of contexts (each is a list of document IDs)"
@@ -129,7 +129,7 @@ class BuildIndexRequest(BaseModel):
 
 
 class ScheduleRequest(BaseModel):
-    """Request to schedule a batch (stateless mode - no cache tracking)."""
+    """Request to schedule a batch (legacy, use ReorderRequest instead)."""
 
     contexts: List[List[Any]] = Field(
         ..., 
@@ -139,6 +139,35 @@ class ScheduleRequest(BaseModel):
     alpha: float = Field(0.005, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
     linkage_method: str = Field("average", description="Linkage method for clustering")
+
+
+class ReorderRequest(BaseModel):
+    """Unified request for context reordering (works in both stateless and stateful modes)."""
+
+    contexts: List[List[Any]] = Field(
+        ...,
+        description="List of contexts. Each context is a list of items (int doc IDs OR string doc contents). "
+                    "If strings are provided, identical strings are treated as the same document."
+    )
+    alpha: float = Field(0.005, description="Distance computation parameter")
+    use_gpu: bool = Field(False, description="Use GPU for distance computation")
+    linkage_method: str = Field("average", description="Linkage method for clustering")
+    # Stateful-mode fields (ignored in stateless mode)
+    initial_tokens_per_context: int = Field(
+        0, description="Initial token count per context (stateful mode only)"
+    )
+    parent_request_ids: Optional[List[Optional[str]]] = Field(
+        None,
+        description="Parent request IDs for multi-turn deduplication (stateful mode only)"
+    )
+    deduplicate: bool = Field(
+        False,
+        description="If True, deduplicate contexts based on conversation history (stateful mode only)"
+    )
+    hint_template: Optional[str] = Field(
+        None,
+        description="Template for reference hints (stateful mode only)"
+    )
 
 
 class EvictRequest(BaseModel):
@@ -203,7 +232,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="ContextPilot Live Index Server",
-    description="HTTP API for ContextPilot LiveContextIndex with inference engine proxy and eviction synchronization",
+    description="HTTP API for ContextPilot with inference engine proxy and eviction synchronization",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -244,7 +273,7 @@ async def health():
             status_code=503,
             content={
                 "status": "not_ready",
-                "message": "Index not initialized. Call POST /build first.",
+                "message": "Index not initialized. Call POST /reorder first.",
             },
         )
 
@@ -264,39 +293,122 @@ async def health():
     }
 
 
-@app.post("/build")
-async def build_index(request: BuildIndexRequest):
+@app.post("/reorder")
+async def reorder(request: ReorderRequest):
     """
-    Build or incrementally update the index.
+    Reorder contexts for optimal prefix sharing.
 
-    Auto-detects mode based on index state:
-    - Index empty/not initialized → cold start (full build + reorder)
-    - Index exists and live → incremental (search + reorder matched + merge unmatched)
+    **This is the primary endpoint.** It auto-dispatches based on server mode:
+
+    - **Stateless mode** (``--stateless``): One-shot clustering and scheduling.
+      Each call is independent — no state is kept between calls.
+    - **Stateful mode** (default): Builds or incrementally updates a live index
+      that tracks cached state across calls.  Supports multi-turn deduplication
+      via ``deduplicate=True``.
 
     Supports two input formats:
-    - List[List[int]]: Each context is a list of document IDs
-    - List[List[str]]: Each context is a list of document contents (strings)
+    - ``List[List[int]]``: Each context is a list of document IDs.
+    - ``List[List[str]]``: Each context is a list of document contents.
       Identical strings are treated as the same document.
 
-    Use POST /reset to clear the index and force a cold start.
-    Use POST /schedule for stateless reordering (no index).
+    **Response (always present)**:
+    - ``reordered_contexts``: Contexts with documents rearranged for maximum
+      prefix cache sharing, in the optimal execution order.
+    - ``original_indices``: List of original context indices so that
+      ``reordered_contexts[i]`` corresponds to ``contexts[original_indices[i]]``.
 
-    Optional deduplication (deduplicate=True):
-       - Compares contexts against conversation history
-       - Returns deduplicated_contexts with overlapping docs removed
-       - Returns reference_hints for each deduplicated document
-
-    The response includes an ordered list of request_ids matching input contexts order.
-    These request_ids should be used when sending requests to the inference engine so that
-    the eviction callback can notify ContextPilot which contexts were evicted.
+    **Response (stateful mode only)**:
+    - ``request_ids``: Ordered list matching input contexts.
+    - ``deduplication``: Present when ``deduplicate=True``.
     """
     global _index
 
-    # Ensure config is initialized from env vars
     _init_config()
 
+    if _stateless_mode:
+        return await _reorder_stateless(request)
+    else:
+        return await _reorder_stateful(request)
+
+
+# ── internal helpers ─────────────────────────────────────────────────────────
+
+async def _reorder_stateless(request: ReorderRequest):
+    """Stateless reorder: one-shot clustering + scheduling, no state."""
     try:
-        # Convert string inputs to integer IDs if needed (persistent mapping)
+        logger.info(f"Reordering {len(request.contexts)} contexts (stateless)...")
+
+        contexts = request.contexts
+        str_to_id = {}
+        id_to_str = {}
+        is_string_input = False
+
+        if contexts and contexts[0] and isinstance(contexts[0][0], str):
+            is_string_input = True
+            logger.info("Detected string input, converting to integer IDs...")
+
+            next_id = 0
+            converted_contexts = []
+            for ctx in contexts:
+                converted_ctx = []
+                for item in ctx:
+                    sid = str_to_id.get(item)
+                    if sid is None:
+                        sid = next_id
+                        str_to_id[item] = sid
+                        id_to_str[sid] = item
+                        next_id += 1
+                    converted_ctx.append(sid)
+                converted_contexts.append(converted_ctx)
+
+            contexts = converted_contexts
+            logger.info(f"Converted {len(str_to_id)} unique strings to IDs")
+
+        temp_index = ContextPilot(
+            alpha=request.alpha,
+            use_gpu=request.use_gpu,
+            linkage_method=request.linkage_method,
+        )
+
+        result = temp_index.schedule_only(contexts=contexts)
+
+        scheduled_contexts = result["reordered_contexts"]
+        if is_string_input:
+            scheduled_contexts = [
+                [id_to_str[item_id] for item_id in ctx]
+                for ctx in scheduled_contexts
+            ]
+
+        logger.info(
+            f"Reordered: {len(result['groups'])} groups, "
+            f"{len(request.contexts)} contexts"
+        )
+
+        return {
+            "status": "success",
+            "message": "Contexts reordered successfully (stateless mode)",
+            "mode": "stateless",
+            "input_type": "string" if is_string_input else "integer",
+            "num_contexts": len(request.contexts),
+            "num_groups": len(result["groups"]),
+            "reordered_contexts": scheduled_contexts,
+            "original_indices": result["original_indices"],
+            # Legacy aliases
+            "scheduled_contexts": scheduled_contexts,
+            "groups": result["groups"],
+            "stats": result.get("stats", {}),
+        }
+
+    except Exception as e:
+        logger.error(f"Error reordering (stateless): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _reorder_stateful(request: ReorderRequest):
+    """Stateful reorder: build/update live index, track cache state."""
+    global _index
+
+    try:
         global _str_to_id, _id_to_str, _next_str_id
         contexts = request.contexts
         is_string_input = False
@@ -319,27 +431,25 @@ async def build_index(request: BuildIndexRequest):
             contexts = converted_contexts
             logger.info(f"Converted to IDs ({_next_str_id} unique strings total)")
 
-        # Helper to convert reordered contexts back to strings
         def _to_output(reordered):
             if is_string_input and reordered:
                 return [[_id_to_str[i] for i in ctx] for ctx in reordered]
             return reordered
 
-        # Auto-detect mode: index exists → search (incremental), otherwise → cold start
+        # ── Incremental update ───────────────────────────────────────────
         if _index is not None and _index.is_live:
-            logger.info(f"Incremental build with {len(contexts)} contexts...")
-            
+            logger.info(f"Incremental reorder with {len(contexts)} contexts...")
+
             result = _index.build_incremental(
                 contexts=contexts,
                 initial_tokens_per_context=request.initial_tokens_per_context,
             )
-            
+
             logger.info(
-                f"Incremental build: {result['matched_count']} matched+inserted, "
+                f"Incremental: {result['matched_count']} matched+inserted, "
                 f"{result['merged_count']} built+merged"
             )
-            
-            # Multi-turn deduplication if requested
+
             dedup_results = None
             if request.deduplicate:
                 tracker = get_conversation_tracker()
@@ -347,26 +457,26 @@ async def build_index(request: BuildIndexRequest):
                     request_ids=result['request_ids'],
                     docs_list=result.get('reordered_contexts') or contexts,
                     parent_request_ids=request.parent_request_ids,
-                    hint_template=request.hint_template
+                    hint_template=request.hint_template,
                 )
                 logger.info(f"Deduplication: processed {len(dedup_results)} contexts")
-            
+
+            reordered = _to_output(result.get('reordered_contexts'))
             response = {
                 "status": "success",
-                "message": "Incremental build completed",
+                "message": "Incremental reorder completed",
                 "mode": "incremental",
                 "input_type": "string" if is_string_input else "integer",
                 "num_contexts": len(contexts),
                 "matched_count": result['matched_count'],
                 "merged_count": result['merged_count'],
                 "request_ids": result['request_ids'],
-                "reordered_contexts": _to_output(result.get('reordered_contexts')),
-                "scheduled_order": result['scheduled_order'],
+                "reordered_contexts": reordered,
+                "original_indices": result['original_indices'],
                 "groups": result['groups'],
                 "stats": _index.get_stats(),
             }
-            
-            # Add deduplication results if requested
+
             if dedup_results:
                 response["deduplication"] = {
                     "enabled": True,
@@ -383,13 +493,13 @@ async def build_index(request: BuildIndexRequest):
                     ],
                     "total_docs_deduplicated": sum(len(r.overlapping_docs) for r in dedup_results),
                 }
-            
+
             return response
-        
-        # Initial build
+
+        # ── Initial build ────────────────────────────────────────────────
         logger.info(f"Building index with {len(contexts)} contexts...")
 
-        _index = LiveContextIndex(
+        _index = ContextPilot(
             alpha=request.alpha,
             use_gpu=request.use_gpu,
             linkage_method=request.linkage_method,
@@ -400,28 +510,27 @@ async def build_index(request: BuildIndexRequest):
             initial_tokens_per_context=request.initial_tokens_per_context,
         )
 
-        # Extract request_id mapping for inference engine integration
         request_id_mapping = result.get("request_id_mapping", {})
-        # Ordered list of request_ids matching input contexts order
         request_ids = result.get("request_ids", [])
 
         logger.info(
-            f"Index built successfully. Auto-assigned {len(request_id_mapping)} request IDs"
+            f"Index built. Auto-assigned {len(request_id_mapping)} request IDs"
         )
-        
-        # Multi-turn deduplication if requested (for initial build too)
+
         dedup_results = None
         if request.deduplicate:
             tracker = get_conversation_tracker()
-            reordered = result.get('scheduled_reordered') or contexts
+            reordered_raw = result.get('reordered_contexts') or contexts
             dedup_results = tracker.deduplicate_batch(
                 request_ids=request_ids,
-                docs_list=reordered,
+                docs_list=reordered_raw,
                 parent_request_ids=request.parent_request_ids,
-                hint_template=request.hint_template
+                hint_template=request.hint_template,
             )
             logger.info(f"Deduplication: processed {len(dedup_results)} contexts")
 
+        reordered = _to_output(result.get("reordered_contexts", contexts))
+        order = result.get("original_indices", list(range(len(contexts))))
         response = {
             "status": "success",
             "message": "Index built successfully",
@@ -432,12 +541,11 @@ async def build_index(request: BuildIndexRequest):
             "inserted_count": len(contexts),
             "request_id_mapping": request_id_mapping,
             "request_ids": request_ids,
-            "scheduled_reordered": _to_output(result.get("scheduled_reordered", contexts)),
-            "scheduled_order": result.get("final_mapping", list(range(len(contexts)))),
+            "reordered_contexts": reordered,
+            "original_indices": order,
             "stats": _index.get_stats(),
         }
-        
-        # Add deduplication results if requested
+
         if dedup_results:
             response["deduplication"] = {
                 "enabled": True,
@@ -454,189 +562,43 @@ async def build_index(request: BuildIndexRequest):
                 ],
                 "total_docs_deduplicated": sum(len(r.overlapping_docs) for r in dedup_results),
             }
-        
+
         return response
 
     except Exception as e:
-        logger.error(f"Error building index: {e}")
+        logger.error(f"Error reordering (stateful): {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/deduplicate")
-async def deduplicate_contexts(request: DeduplicateRequest):
-    """
-    Deduplicate contexts for multi-turn conversations without index operations.
-    
-    This is a lightweight endpoint designed for Turn 2+ in multi-turn conversations.
-    It only performs deduplication against conversation history - no index build/search.
-    
-    Flow:
-    1. Turn 1: Client calls /build (no parent_request_id, builds index, registers in tracker)
-    2. Turn 2+: Client calls /deduplicate (has parent_request_id, just deduplicates)
-    
-    For each context:
-    - If parent_request_id is None: Registers as a new conversation root (Turn 1)
-    - If parent_request_id is provided: Deduplicates against conversation history
-    
-    Returns deduplicated docs with reference hints for overlapping documents.
-    """
-    try:
-        tracker = get_conversation_tracker()
-        
-        # Validate input lengths match
-        if len(request.contexts) != len(request.parent_request_ids):
-            raise HTTPException(
-                status_code=400,
-                detail=f"contexts and parent_request_ids must have same length "
-                       f"(got {len(request.contexts)} vs {len(request.parent_request_ids)})"
-            )
-        
-        # Generate request_ids for this batch
-        import uuid
-        request_ids = [f"dedup_{uuid.uuid4().hex[:8]}" for _ in request.contexts]
-        
-        # Perform deduplication
-        dedup_results = tracker.deduplicate_batch(
-            request_ids=request_ids,
-            docs_list=request.contexts,
-            parent_request_ids=request.parent_request_ids,
-            hint_template=request.hint_template
-        )
-        
-        logger.info(
-            f"Deduplicated {len(request.contexts)} contexts, "
-            f"removed {sum(len(r.overlapping_docs) for r in dedup_results)} overlapping docs"
-        )
-        
-        return {
-            "status": "success",
-            "message": "Deduplication completed",
-            "request_ids": request_ids,
-            "results": [
-                {
-                    "request_id": request_ids[i],
-                    "parent_request_id": request.parent_request_ids[i],
-                    "original_docs": r.original_docs,
-                    "deduplicated_docs": r.deduplicated_docs,
-                    "overlapping_docs": r.overlapping_docs,
-                    "new_docs": r.new_docs,
-                    "reference_hints": r.reference_hints,
-                    "is_new_conversation": r.is_new_conversation,
-                }
-                for i, r in enumerate(dedup_results)
-            ],
-            "summary": {
-                "total_contexts": len(request.contexts),
-                "new_conversations": sum(1 for r in dedup_results if r.is_new_conversation),
-                "continued_conversations": sum(1 for r in dedup_results if not r.is_new_conversation),
-                "total_docs_deduplicated": sum(len(r.overlapping_docs) for r in dedup_results),
-            }
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in deduplication: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# ── Legacy aliases (deprecated, use /reorder) ────────────────────────────────
+
+@app.post("/build", deprecated=True)
+async def build_index(request: BuildIndexRequest):
+    """Deprecated — use POST /reorder instead. Kept for backward compatibility."""
+    unified = ReorderRequest(
+        contexts=request.contexts,
+        alpha=request.alpha,
+        use_gpu=request.use_gpu,
+        linkage_method=request.linkage_method,
+        initial_tokens_per_context=request.initial_tokens_per_context,
+        parent_request_ids=request.parent_request_ids,
+        deduplicate=request.deduplicate,
+        hint_template=request.hint_template,
+    )
+    return await reorder(unified)
 
 
-@app.post("/schedule")
+@app.post("/schedule", deprecated=True)
 async def schedule_batch(request: ScheduleRequest):
-    """
-    Schedule a batch of contexts (STATELESS MODE).
-
-    This endpoint performs clustering and scheduling WITHOUT tracking cache state.
-    Use this when you want to:
-    1. Just reorder contexts for optimal prefix sharing
-    2. Process batches independently without maintaining server state
-    3. Send scheduled contexts directly to LLM engine without cache sync
-
-    Supports two input formats:
-    - List[List[int]]: Each context is a list of document IDs
-    - List[List[str]]: Each context is a list of document contents (strings)
-      Identical strings are treated as the same document.
-
-    No cache tracking, eviction, or token updates required.
-    Each call is independent - perfect for batch processing.
-
-    Returns:
-        - scheduled_contexts: Reordered contexts for optimal prefix sharing
-        - original_indices: Mapping to original context indices
-        - groups: Execution groups with prefix sharing info
-    """
-    try:
-        logger.info(f"Scheduling batch with {len(request.contexts)} contexts (stateless mode)...")
-
-        # Check if input is strings or ints
-        contexts = request.contexts
-        str_to_id = {}
-        id_to_str = {}
-        is_string_input = False
-        
-        if contexts and contexts[0] and isinstance(contexts[0][0], str):
-            is_string_input = True
-            logger.info("Detected string input, converting to integer IDs...")
-            
-            # Build mapping: unique string -> integer ID
-            next_id = 0
-            converted_contexts = []
-            for ctx in contexts:
-                converted_ctx = []
-                for item in ctx:
-                    sid = str_to_id.get(item)
-                    if sid is None:
-                        sid = next_id
-                        str_to_id[item] = sid
-                        id_to_str[sid] = item
-                        next_id += 1
-                    converted_ctx.append(sid)
-                converted_contexts.append(converted_ctx)
-            
-            contexts = converted_contexts
-            logger.info(f"Converted {len(str_to_id)} unique strings to IDs")
-
-        # Create a temporary index just for clustering/scheduling
-        temp_index = LiveContextIndex(
-            alpha=request.alpha,
-            use_gpu=request.use_gpu,
-            linkage_method=request.linkage_method,
-        )
-
-        # Build and schedule without live tracking
-        result = temp_index.schedule_only(
-            contexts=contexts,
-        )
-
-        # Convert back to strings if input was strings
-        scheduled_contexts = result["scheduled_reordered"]
-        if is_string_input:
-            scheduled_contexts = [
-                [id_to_str[item_id] for item_id in ctx]
-                for ctx in scheduled_contexts
-            ]
-
-        logger.info(
-            f"Batch scheduled: {len(result['groups'])} groups, "
-            f"{len(request.contexts)} contexts reordered"
-        )
-
-        return {
-            "status": "success",
-            "message": "Batch scheduled successfully (stateless mode)",
-            "mode": "stateless",
-            "input_type": "string" if is_string_input else "integer",
-            "num_contexts": len(request.contexts),
-            "num_groups": len(result["groups"]),
-            "scheduled_contexts": scheduled_contexts,
-            "original_indices": result["final_mapping"],
-            "groups": result["groups"],
-            "stats": result.get("stats", {}),
-        }
-
-    except Exception as e:
-        logger.error(f"Error scheduling batch: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+    """Deprecated — use POST /reorder instead. Kept for backward compatibility."""
+    unified = ReorderRequest(
+        contexts=request.contexts,
+        alpha=request.alpha,
+        use_gpu=request.use_gpu,
+        linkage_method=request.linkage_method,
+    )
+    # Force stateless behaviour regardless of server mode
+    return await _reorder_stateless(unified)
 
 @app.post("/evict")
 async def evict(request: EvictRequest):
@@ -667,7 +629,7 @@ async def evict(request: EvictRequest):
     # Check if index is initialized
     if _index is None:
         raise HTTPException(
-            status_code=503, detail="Index not initialized. Call POST /build first."
+            status_code=503, detail="Index not initialized. Call POST /reorder first."
         )
 
     try:
@@ -709,7 +671,7 @@ async def reset_index():
     and string-to-ID mappings.
     Use this to start fresh without restarting the server.
     
-    After reset, you must call /build again before other operations.
+    After reset, you must call /reorder again before other operations.
     """
     global _index, _str_to_id, _id_to_str, _next_str_id
     
@@ -748,7 +710,7 @@ async def search(request: SearchRequest):
     """Search for a context in the index."""
     if _index is None:
         raise HTTPException(
-            status_code=503, detail="Index not initialized. Call POST /build first."
+            status_code=503, detail="Index not initialized. Call POST /reorder first."
         )
 
     try:
@@ -780,7 +742,7 @@ async def insert_context(request: InsertRequest):
     """
     if _index is None:
         raise HTTPException(
-            status_code=503, detail="Index not initialized. Call POST /build first."
+            status_code=503, detail="Index not initialized. Call POST /reorder first."
         )
 
     try:
@@ -811,7 +773,7 @@ async def get_requests():
     """
     if _index is None:
         raise HTTPException(
-            status_code=503, detail="Index not initialized. Call POST /build first."
+            status_code=503, detail="Index not initialized. Call POST /reorder first."
         )
 
     try:
@@ -833,7 +795,7 @@ async def get_stats():
     """Get index statistics."""
     if _index is None:
         raise HTTPException(
-            status_code=503, detail="Index not initialized. Call POST /build first."
+            status_code=503, detail="Index not initialized. Call POST /reorder first."
         )
 
     try:
@@ -929,7 +891,7 @@ async def proxy_completions(request: Request):
         request_id = body.pop("request_id", None) or body.get("rid", None)
         
         # NOTE: We do NOT auto-generate request_id anymore.
-        # The client should pass request_id from the /build response.
+        # The client should pass request_id from the /reorder response.
         # If not provided, ContextPilot token tracking is skipped for this request.
         if not request_id:
             logger.debug("No request_id provided, ContextPilot tracking disabled for this request")
@@ -1043,15 +1005,15 @@ Examples:
   python -m contextpilot.server.http_server --port 8765 --stateless --infer-api-url http://localhost:30000
 
 Live mode:
-  - Build context index via POST /build
+  - Build context index via POST /reorder
   - Receive eviction callbacks from inference engine at POST /evict
   - Engine notifies ContextPilot when requests are evicted from KV cache
   - For SGLang: set CONTEXTPILOT_INDEX_URL=http://localhost:8765
 
 Stateless mode:
-  - Use POST /schedule endpoint for one-off batch reordering
+  - Use POST /reorder endpoint for one-off batch reordering
   - No index maintained, no eviction tracking
-  - Each /schedule call is independent
+  - Each /reorder call is independent
         """,
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
@@ -1065,8 +1027,8 @@ Stateless mode:
     parser.add_argument(
         "--stateless",
         action="store_true",
-        help="Run in stateless mode: clustering/scheduling only, no index maintained. "
-             "Use POST /schedule endpoint for batch reordering.",
+        help="Run in stateless mode: clustering/reordering only, no index maintained. "
+             "Use POST /reorder endpoint for batch reordering.",
     )
     parser.add_argument(
         "--infer-api-url",
@@ -1124,9 +1086,10 @@ Stateless mode:
     if _stateless_mode:
         logger.info(f"Starting ContextPilot Index Server on {args.host}:{args.port} (STATELESS MODE)")
         logger.info("Stateless mode: clustering/scheduling only, no cache tracking")
-        logger.info("Use POST /schedule endpoint for batch reordering")
+        logger.info("Use POST /reorder endpoint for batch reordering")
     else:
         logger.info(f"Starting ContextPilot Index Server on {args.host}:{args.port} (LIVE MODE)")
+        logger.info("Use POST /reorder endpoint for stateful reordering")
         logger.info("Eviction is driven by engine callback (CONTEXTPILOT_INDEX_URL)")
     logger.info(f"Inference backend URL: {_infer_api_url}")
 

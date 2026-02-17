@@ -6,11 +6,11 @@ Practical code examples for using ContextPilot.
 
 | Example | Description | Prerequisites |
 |---------|-------------|---------------|
-| `simple_reorder_example.py` | Minimal "hello world" — call `/schedule` with 4 contexts | ContextPilot server (stateless) |
+| `simple_reorder_example.py` | Minimal "hello world" — call `/reorder` with 4 contexts | ContextPilot server (stateless) |
 | `pipeline_examples.py` | Pipeline API usage (BM25, FAISS, generation) | Corpus file |
 | `http_server_example.py` | Stateful index server (build, proxy, eviction) | ContextPilot + SGLang |
-| `stateless_batch_example.py` | Stateless batch scheduling (3 approaches) | ContextPilot server (stateless) |
-| `stateless_sglang_e2e.py` | Stateless scheduling → SGLang inference e2e | ContextPilot + SGLang |
+| `stateless_batch_example.py` | Stateless batch reordering (3 approaches) | ContextPilot server (stateless) |
+| `stateless_sglang_e2e.py` | Stateless reordering → SGLang inference e2e | ContextPilot + SGLang |
 | `pageindex_e2e_example.py` | PageIndex tree → ContextPilot scheduling with prefix sharing | ContextPilot (demo: none; full: PageIndex + OpenAI) |
 | `mem0_bench_simple.py` | A/B benchmark: Baseline vs ContextPilot (cache hit rate) | mem0ai + OpenAI key + SGLang |
 | `mem0_locomo_example.py` | LoCoMo multi-turn benchmark with TTFT & F1 scoring | mem0ai + OpenAI key + SGLang |
@@ -47,7 +47,7 @@ python -m contextpilot.server.http_server --port 8765 --infer-api-url http://loc
 python examples/http_server_example.py
 ```
 
-### 4. Stateless Scheduling → SGLang e2e
+### 4. Stateless Reordering → SGLang e2e
 
 ```bash
 # Terminal 1: Start SGLang
@@ -99,12 +99,12 @@ examples/
 ├── simple_reorder_example.py     # Minimal hello world
 ├── pipeline_examples.py          # Pipeline API (BM25, FAISS, generation)
 ├── http_server_example.py        # Stateful index server
-├── stateless_batch_example.py    # Stateless batch scheduling
+├── stateless_batch_example.py    # Stateless batch reordering
 ├── stateless_sglang_e2e.py       # Stateless → SGLang e2e
 ├── pageindex_e2e_example.py      # PageIndex + ContextPilot
 ├── mem0_bench_simple.py          # A/B cache hit benchmark
 ├── mem0_locomo_example.py        # LoCoMo multi-turn benchmark
-├── batch_inference/              # Batch processing utilities
+├── offline/                      # Batch processing utilities
 │   └── prepare_batch.py          # Batch optimization
 ├── construct_rag_data/           # Data retrieval utilities
 │   ├── multihopRAG_bm25.py       # BM25 retrieval

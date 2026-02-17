@@ -14,9 +14,9 @@ class TestLiveIndexInitialization:
     
     def test_live_index_creation(self):
         """Test basic live index creation."""
-        from contextpilot.server.live_index import LiveContextIndex
+        from contextpilot import ContextPilot
         
-        index = LiveContextIndex(
+        index = ContextPilot(
             alpha=0.005,
             use_gpu=False,
         )
@@ -26,7 +26,7 @@ class TestLiveIndexInitialization:
     
     def test_live_index_with_different_configs(self):
         """Test live index with various configurations."""
-        from contextpilot.server.live_index import LiveContextIndex
+        from contextpilot import ContextPilot
         
         configs = [
             {"alpha": 0.001},
@@ -35,7 +35,7 @@ class TestLiveIndexInitialization:
         ]
         
         for config in configs:
-            index = LiveContextIndex(use_gpu=False, **config)
+            index = ContextPilot(use_gpu=False, **config)
             assert index is not None
 
 
@@ -44,9 +44,9 @@ class TestBuildAndSchedule:
     
     def test_build_and_schedule(self):
         """Test building and scheduling contexts."""
-        from contextpilot.server.live_index import LiveContextIndex
+        from contextpilot import ContextPilot
         
-        index = LiveContextIndex(use_gpu=False)
+        index = ContextPilot(use_gpu=False)
         
         contexts = [
             [1, 2, 3, 4, 5],
@@ -62,9 +62,9 @@ class TestBuildAndSchedule:
     
     def test_index_becomes_live_after_build(self):
         """Test that index becomes live after build_and_schedule."""
-        from contextpilot.server.live_index import LiveContextIndex
+        from contextpilot import ContextPilot
         
-        index = LiveContextIndex(use_gpu=False)
+        index = ContextPilot(use_gpu=False)
         
         contexts = [[1, 2, 3], [4, 5, 6]]
         index.build_and_schedule(contexts)
@@ -74,17 +74,17 @@ class TestBuildAndSchedule:
     
     def test_schedule_only_stateless(self):
         """Test schedule_only for stateless mode."""
-        from contextpilot.server.live_index import LiveContextIndex
+        from contextpilot import ContextPilot
         
-        index = LiveContextIndex(use_gpu=False)
+        index = ContextPilot(use_gpu=False)
         
         contexts = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
         result = index.schedule_only(contexts)
         
         assert result is not None
-        assert 'scheduled_reordered' in result
+        assert 'reordered_contexts' in result
         assert 'scheduled_originals' in result
-        assert 'final_mapping' in result
+        assert 'original_indices' in result
         # In stateless mode, is_live should remain False
         assert index.is_live is False
 
@@ -243,9 +243,9 @@ class TestLiveIndexRequestTracking:
     
     def test_request_id_auto_generated(self):
         """Test that request IDs are auto-generated during build."""
-        from contextpilot.server.live_index import LiveContextIndex
+        from contextpilot import ContextPilot
         
-        index = LiveContextIndex(use_gpu=False)
+        index = ContextPilot(use_gpu=False)
         
         contexts = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
         result = index.build_and_schedule(contexts)

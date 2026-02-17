@@ -84,7 +84,7 @@ def llm_judge(question, prediction, ground_truth):
 
 
 def cp_build(contexts, incremental=False):
-    r = requests.post(f"{CONTEXTPILOT_URL}/build", json={
+    r = requests.post(f"{CONTEXTPILOT_URL}/reorder", json={
         "contexts": contexts, "use_gpu": False, "linkage_method": "average",
         "alpha": 0.0005,
     }, timeout=30)
@@ -158,7 +158,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
                 if idx < 5:
                     print(f"    /search FAILED: {e}")
 
-        # Reorder via ContextPilot /build
+        # Reorder via ContextPilot /reorder
         if use_reorder and cp_available:
             try:
                 incremental = idx > 0  # first turn: initial build, rest: incremental
@@ -166,9 +166,9 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
                 if br.get("reordered_contexts"):
                     reordered_ids = br["reordered_contexts"][0]
                 if idx < 5:
-                    print(f"    /build mode={br.get('mode')} matched={br.get('matched_count')}")
+                    print(f"    /reorder mode={br.get('mode')} matched={br.get('matched_count')}")
             except Exception as e:
-                print(f"    /build FAILED: {e}")
+                print(f"    /reorder FAILED: {e}")
 
         # Build context string directly from corpus map
         context_str = build_context_str(reordered_ids, cmap)

@@ -90,7 +90,7 @@ Best for production systems where you need fine-grained control and maximum effi
 │                         Multi-Turn Flow                             │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  Turn 1:  POST /build                                               │
+│  Turn 1:  POST /reorder                                               │
 │           ├─ Build index                                            │
 │           ├─ Register in conversation tracker                       │
 │           └─ Return request_id (for linking turns)                  │
@@ -112,12 +112,12 @@ import requests
 INDEX_SERVER = "http://localhost:8765"
 
 # ═══════════════════════════════════════════════════════════════════
-# Turn 1: Use /build to create index and register conversation
-# ═══════════════════════════════════════════════════════════════════
+# Turn 1: Use /reorder to create index and register conversation
+# ═════════════════════════════════════════════════════════════════
 turn1_docs = [4, 3, 1]  # Retrieved documents for turn 1
 
 turn1_response = requests.post(
-    f"{INDEX_SERVER}/build",
+    f"{INDEX_SERVER}/reorder",
     json={
         "contexts": [turn1_docs],
         "deduplicate": True,
@@ -174,7 +174,7 @@ print(f"Turn 3: {result3['overlapping_docs']} overlap, {result3['new_docs']} new
 
 ### Why Use `/deduplicate` for Turn 2+?
 
-| Operation | `/build` | `/deduplicate` |
+| Operation | `/reorder` | `/deduplicate` |
 |-----------|----------|----------------|
 | Index build | ✓ | ✗ |
 | Clustering | ✓ | ✗ |
@@ -292,8 +292,8 @@ requests.post(f"{INDEX_SERVER}/reset")
 **Typical production flow:**
 ```
 Server starts
-├─► Session A: /build → /deduplicate → /deduplicate → ...
-├─► Session B: /build → /deduplicate → /deduplicate → ...
+├─► Session A: /reorder → /deduplicate → /deduplicate → ...
+├─► Session B: /reorder → /deduplicate → /deduplicate → ...
 ├─► Sessions complete naturally
 └─► /reset (optional, for maintenance)
 ```

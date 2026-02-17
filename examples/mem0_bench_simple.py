@@ -8,11 +8,11 @@ Simulates a realistic **per-request** flow where each request arrives one at a t
   4. Next query arrives...
 
   A) Baseline:      retrieve → build prompt (original retrieval order) → send to SGLang
-  B) ContextPilot:  retrieve → /build incremental (reorder memories) → build prompt → send to SGLang
+  B) ContextPilot:  retrieve → /reorder incremental (reorder memories) → build prompt → send to SGLang
 
 Both runs use the SAME arrival order and send directly to SGLang.
 The only variable is **within-prompt memory ordering**: ContextPilot's incremental
-/build reorders each request's memories so that shared content with previous requests
+/reorder reorders each request's memories so that shared content with previous requests
 appears at the front (prefix), maximizing radix cache reuse.
 
 Between runs, SGLang's radix cache and ContextPilot's index are both flushed.
@@ -292,10 +292,10 @@ def main():
           f"({len(all_docs)} total refs, {len(unique_docs)} unique docs)")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # RUN B: ContextPilot — per-request: retrieve → /build incremental → prompt → send
+    # RUN B: ContextPilot — per-request: retrieve → /reorder incremental → prompt → send
     # ══════════════════════════════════════════════════════════════════════════
     print(f"\n{'─' * 80}")
-    print("RUN B: CONTEXTPILOT — per-request: retrieve → /build incremental → prompt → SGLang")
+    print("RUN B: CONTEXTPILOT — per-request: retrieve → /reorder incremental → prompt → SGLang")
     print(f"{'─' * 80}")
 
     print("  Flushing SGLang radix cache...")
@@ -319,8 +319,8 @@ def main():
         doc_ids = results[0]["top_k_doc_id"]
         cp_contexts_original.append(doc_ids)
 
-        # 2. /build — ContextPilot auto-detects: first call → cold start, subsequent → incremental search
-        build_resp = requests.post(f"{CONTEXTPILOT_URL}/build", json={
+        # 2. /reorder — ContextPilot auto-detects: first call → cold start, subsequent → incremental search
+        build_resp = requests.post(f"{CONTEXTPILOT_URL}/reorder", json={
             "contexts": [doc_ids],  # single request
             "initial_tokens_per_context": 0,
             "alpha": 0.005,
@@ -329,20 +329,8 @@ def main():
         }, timeout=30).json()
 
         # Get reordered memories from ContextPilot
-        mode = build_resp.get("mode", "?")
-        reordered = None
-        if mode == "incremental":
-            rc = build_resp.get("reordered_contexts")
-            if rc and len(rc) == 1:
-                reordered = rc[0]
-        else:
-            # Initial build (first request)
-            sr = build_resp.get("scheduled_reordered")
-            if sr and len(sr) == 1:
-                reordered = sr[0]
-
-        if reordered is None:
-            reordered = doc_ids  # fallback
+        rc = build_resp.get("reordered_contexts")
+        reordered = rc[0] if rc and len(rc) == 1 else doc_ids
         cp_contexts_reordered.append(reordered)
 
         # 3. Build prompt with reordered memories
@@ -351,7 +339,7 @@ def main():
 
         # 4. Send to SGLang
         changed = "reordered" if reordered != doc_ids else "same"
-        print(f"    [{i+1}/{n_queries}] Q{i}: retrieve → /build({mode}) [{changed}] → send ...",
+        print(f"    [{i+1}/{n_queries}] Q{i}: retrieve → /reorder [{changed}] → send ...",
               end=" ", flush=True)
         resp = send_one(prompt)
         m = extract_metrics(resp)
@@ -449,13 +437,13 @@ def main():
   Retrieval overlap:  {overlap_pct:.0%}
 
   Flow A (Baseline):      retrieve → prompt(original order) → SGLang
-  Flow B (ContextPilot):  retrieve → /build(incremental) → prompt(reordered) → SGLang
+  Flow B (ContextPilot):  retrieve → /reorder(incremental) → prompt(reordered) → SGLang
 
   Cache hit rate:     {b_hit_rate:.1f}% (baseline) -> {c_hit_rate:.1f}% (ContextPilot)
   Prefill saved:      {prefill_saved} tokens ({prefill_pct:.1f}% reduction)
   Wall time:          {baseline_wall:.2f}s -> {cp_wall:.2f}s
 
-  ContextPilot's incremental /build reorders each request's memories so that
+  ContextPilot's incremental /reorder reorders each request's memories so that
   content shared with previously-seen requests appears at the front (prefix).
   This maximizes SGLang's radix cache reuse across sequential requests.
 """)

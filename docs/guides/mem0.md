@@ -24,7 +24,7 @@ python -m contextpilot.server.http_server --port 8765
 In a separate terminal:
 
 ```bash
-export RAGBOOST_INDEX_URL=http://localhost:8765
+export CONTEXTPILOT_INDEX_URL=http://localhost:8765
 python -m sglang.launch_server --model <model> --port 30000
 ```
 
@@ -87,12 +87,11 @@ corpus_map = retriever.get_corpus_map()
 ### Reorder with the library
 
 ```python
-from contextpilot.context_index import build_context_index
-from contextpilot.context_ordering import InterContextScheduler
+import contextpilot as cp
 
 contexts = [r["top_k_doc_id"] for r in results]
-index_result = build_context_index(contexts)
-reordered, _, order, _ = InterContextScheduler().schedule_contexts(index_result)
+engine = cp.ContextPilot(use_gpu=False)
+reordered, order = engine.reorder(contexts)
 ```
 
 ### Reorder via the server (enables KV-cache tracking)
@@ -101,7 +100,7 @@ reordered, _, order, _ = InterContextScheduler().schedule_contexts(index_result)
 import requests
 
 requests.post("http://localhost:8765/reset")
-resp = requests.post("http://localhost:8765/build", json={
+resp = requests.post("http://localhost:8765/reorder", json={
     "contexts": contexts,
     "use_gpu": False,
     "linkage_method": "average",
@@ -113,13 +112,13 @@ reordered = resp["reordered_contexts"]  # reordered doc ID lists
 
 ### Multi-turn
 
-Just call `/build` each turn — ContextPilot auto-detects whether the index exists and extends it incrementally:
+Just call `/reorder` each turn — ContextPilot auto-detects whether the index exists and extends it incrementally:
 
 ```python
 for turn, query in enumerate(queries):
     results = retriever.search_queries(
         query_data=[{"text": query}], user_id="user123", top_k=20)
-    resp = requests.post("http://localhost:8765/build", json={
+    resp = requests.post("http://localhost:8765/reorder", json={
         "contexts": [results[0]["top_k_doc_id"]],
         "use_gpu": False,
         "linkage_method": "average",

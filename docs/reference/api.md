@@ -199,21 +199,19 @@ Detailed health check with index statistics.
 }
 ```
 
-### Schedule (Stateless)
+### Schedule / Reorder (Stateless)
 
 ```
-POST /schedule
+POST /reorder
+POST /schedule   # deprecated alias
 ```
 
-Compute optimal scheduling without maintaining state.
+Compute optimal context reordering without maintaining state.
 
 **Request (with integer doc IDs):**
 ```json
 {
-    "contexts": [[1, 2, 3], [2, 3, 4]],
-    "alpha": 0.005,
-    "use_gpu": false,
-    "linkage_method": "average"
+    "contexts": [[1, 2, 3], [2, 3, 4]]
 }
 ```
 
@@ -223,10 +221,7 @@ Compute optimal scheduling without maintaining state.
     "contexts": [
         ["Document text A", "Document text B", "Document text C"],
         ["Document text B", "Document text C", "Document text D"]
-    ],
-    "alpha": 0.005,
-    "use_gpu": false,
-    "linkage_method": "average"
+    ]
 }
 ```
 
@@ -236,12 +231,11 @@ The server auto-detects input type and handles string-to-ID mapping internally.
 ```json
 {
     "status": "success",
-    "message": "Batch scheduled successfully (stateless mode)",
     "mode": "stateless",
     "input_type": "integer",
     "num_contexts": 2,
     "num_groups": 1,
-    "scheduled_contexts": [[2, 3, 1], [2, 3, 4]],
+    "reordered_contexts": [[2, 3, 1], [2, 3, 4]],
     "original_indices": [0, 1],
     "groups": [...],
     "stats": {...}
@@ -251,16 +245,13 @@ The server auto-detects input type and handles string-to-ID mapping internally.
 ### Build Index (Stateful)
 
 ```
-POST /build
+POST /reorder          # primary (auto-detects stateful mode)
+POST /build            # deprecated alias
 ```
 
 Build the index or incrementally update an existing one. Auto-detects mode: empty index → initial build, existing index → incremental update. Call `POST /reset` to force initial build. Supports multi-turn deduplication.
 
-**Important:** Response field names differ between modes:
-- **Initial mode**: Returns `scheduled_reordered` (reordered contexts)
-- **Incremental mode**: Returns `reordered_contexts` (reordered contexts)
-
-Both contain the same information (optimally reordered document IDs), just with different field names for historical reasons.
+The response always includes `reordered_contexts` and `original_indices`.
 
 **Request (integer doc IDs):**
 ```json
@@ -312,8 +303,8 @@ Identical strings are automatically mapped to the same internal ID.
     "inserted_count": 2,
     "request_id_mapping": {...},
     "request_ids": ["contextpilot_abc123", "contextpilot_def456"],
-    "scheduled_reordered": [[2, 3, 1], [2, 3, 4]],
-    "scheduled_order": [0, 1],
+    "reordered_contexts": [[2, 3, 1], [2, 3, 4]],
+    "original_indices": [0, 1],
     "stats": {...}
 }
 ```
@@ -330,7 +321,7 @@ Identical strings are automatically mapped to the same internal ID.
     "merged_count": 0,
     "request_ids": ["contextpilot_ghi789"],
     "reordered_contexts": [[2, 3, 5]],
-    "scheduled_order": [0],
+    "original_indices": [0],
     "groups": [...],
     "stats": {...}
 }
@@ -369,7 +360,7 @@ Deduplicate contexts for multi-turn conversations **without index operations**.
 This is a lightweight endpoint designed for **Turn 2+** in multi-turn conversations. It only performs deduplication against conversation history - no index build or search operations.
 
 **Recommended Flow:**
-1. **Turn 1**: Call `/build` (builds index, registers request in tracker)
+1. **Turn 1**: Call `/reorder` (builds index, registers request in tracker)
 2. **Turn 2+**: Call `/deduplicate` (just deduplicates, no index ops)
 
 **Request:**
@@ -577,11 +568,14 @@ from contextpilot.server.http_client import ContextPilotIndexClient
 
 client = ContextPilotIndexClient("http://localhost:8765", timeout=1.0)
 
-# Stateless mode
-result = client.schedule(contexts, alpha=0.005, use_gpu=False)
+# Primary API — works in both stateless and stateful modes
+reordered, order = client.reorder(contexts)  # simple tuple return
+result = client.reorder_raw(contexts)        # full server response dict
 
-# Stateful mode
-client.build(contexts, alpha=0.005, use_gpu=False, deduplicate=True)
+# Stateful-only options
+result = client.reorder_raw(
+    contexts, deduplicate=True, parent_request_ids=[None]
+)
 client.deduplicate(contexts, parent_request_ids, hint_template=None)
 client.evict(request_ids)  # Evict specific requests
 client.reset()  # Clear index and conversation tracker
@@ -601,12 +595,14 @@ client.close()
 
 | Method | Description |
 |--------|-------------|
-| `schedule(contexts, alpha, use_gpu)` | Get optimal scheduling (stateless) |
-| `build(contexts, alpha, use_gpu, deduplicate, parent_request_ids)` | Build live index (initial or incremental) |
+| `reorder(contexts, ...)` | Reorder contexts, returns `(reordered_contexts, original_indices)` tuple |
+| `reorder_raw(contexts, ...)` | Reorder contexts, returns full server response dict |
+| `build(...)` | **Deprecated** — alias for `reorder_raw()` |
+| `schedule(...)` | **Deprecated** — alias for `reorder_raw()` |
 | `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+, lightweight) |
 | `evict(request_ids)` | Remove requests from index |
 | `reset()` | Reset index and conversation tracker |
-| `stats()` | Get index statistics |
+| `get_stats()` | Get index statistics |
 | `get_requests()` | Get all tracked request IDs |
 | `health()` | Health check |
 | `is_ready()` | Check if server is ready |
@@ -619,8 +615,8 @@ from contextpilot.server.http_client import ContextPilotIndexClient
 
 client = ContextPilotIndexClient("http://localhost:8765")
 
-# Turn 1: Build index
-turn1 = client.build(
+# Turn 1: Build index via /reorder
+turn1 = client.reorder_raw(
     contexts=[[4, 3, 1]],
     deduplicate=True,
     parent_request_ids=[None]

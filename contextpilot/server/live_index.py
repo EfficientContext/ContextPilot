@@ -47,7 +47,7 @@ def compute_prefix_length(list1: List[int], list2: List[int]) -> int:
     return length
 
 
-class LiveContextIndex(ContextIndex):
+class ContextPilot(ContextIndex):
     """
     Live context index with dynamic updates and request tracking.
     
@@ -177,9 +177,9 @@ class LiveContextIndex(ContextIndex):
         print(f"   ✓ Created {len(groups)} execution groups")
         
         self.scheduled_result = {
-            'scheduled_reordered': scheduled_reordered,
+            'reordered_contexts': scheduled_reordered,
+            'original_indices': final_mapping,
             'scheduled_originals': scheduled_originals,
-            'final_mapping': final_mapping,
             'groups': groups,
             'clustering_result': self.initial_result
         }
@@ -207,6 +207,31 @@ class LiveContextIndex(ContextIndex):
         
         return self.scheduled_result
     
+    def reorder(self, contexts, initial_tokens_per_context: int = 0):
+        """Reorder contexts for optimal KV-cache prefix sharing.
+
+        This is the primary user-facing method.  It handles both the
+        initial (cold-start) build and subsequent incremental updates
+        transparently — callers never need to distinguish between them.
+
+        Args:
+            contexts: ``List[List[int]]`` or ``List[List[str]]`` — each
+                inner list is one context (document IDs or text strings).
+            initial_tokens_per_context: Initial token budget per context
+                (used for eviction tracking; 0 to ignore).
+
+        Returns:
+            A tuple ``(reordered_contexts, original_indices)`` where
+
+            * **reordered_contexts** – contexts with documents reordered so
+              that shared prefixes appear first, maximising cache hits.
+            * **original_indices** – execution order mapping.
+              ``reordered_contexts[i]`` corresponds to
+              ``contexts[original_indices[i]]``.
+        """
+        result = self.build_incremental(contexts, initial_tokens_per_context)
+        return result["reordered_contexts"], result["original_indices"]
+
     def build_incremental(self, contexts: List[List[int]], 
                           initial_tokens_per_context: int = 0) -> Dict:
         """
@@ -227,7 +252,7 @@ class LiveContextIndex(ContextIndex):
             Dictionary with:
                 - request_ids: List of NEW request_ids in same order as input contexts
                 - reordered_contexts: Contexts reordered for optimal cache reuse
-                - scheduled_order: Optimized execution order
+                - original_indices: Optimized execution order
                 - groups: Execution groups for cache efficiency
         """
         # Auto-convert string inputs to integer IDs
@@ -237,14 +262,14 @@ class LiveContextIndex(ContextIndex):
             # First batch - do full build
             print("Index not live, performing full build...")
             result = self.build_and_schedule(contexts, initial_tokens_per_context)
-            reordered = result.get('scheduled_reordered', contexts)
+            reordered = result.get('reordered_contexts', contexts)
             return {
                 'request_ids': result.get('request_ids', []),
                 'reordered_contexts': self._convert_to_str(reordered),
                 'matched_count': 0,
                 'inserted_count': len(contexts),
                 'merged_count': 0,
-                'scheduled_order': result.get('final_mapping', list(range(len(contexts)))),
+                'original_indices': result.get('original_indices', list(range(len(contexts)))),
                 'groups': result.get('groups', []),
             }
         
@@ -327,7 +352,7 @@ class LiveContextIndex(ContextIndex):
             unmatched_only = [ctx for _, ctx in unmatched_contexts]
             
             # Build a temporary index (don't go live)
-            temp_index = LiveContextIndex(
+            temp_index = ContextPilot(
                 alpha=self.alpha,
                 use_gpu=self.use_gpu,
                 linkage_method=self.linkage_method,
@@ -376,7 +401,7 @@ class LiveContextIndex(ContextIndex):
             'matched_count': len(matched_contexts),
             'inserted_count': len(contexts),
             'merged_count': merged_count,
-            'scheduled_order': scheduled_order,
+            'original_indices': scheduled_order,
             'groups': groups,
         }
     
@@ -668,9 +693,9 @@ class LiveContextIndex(ContextIndex):
         
         # Return results without going live (stateless)
         scheduled_result = {
-            'scheduled_reordered': scheduled_reordered,
+            'reordered_contexts': scheduled_reordered,
+            'original_indices': final_mapping,
             'scheduled_originals': scheduled_originals,
-            'final_mapping': final_mapping,
             'groups': groups,
             'stats': {
                 'total_nodes': result.stats['total_nodes'],

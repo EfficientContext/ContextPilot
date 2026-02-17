@@ -1,8 +1,8 @@
 """
-Example: Stateless Batch Scheduling with ContextPilot
+Example: Stateless Batch Reordering with ContextPilot
 
 This shows how to use ContextPilot in STATELESS mode - just for clustering and 
-scheduling contexts WITHOUT tracking SGLang's cache state.
+reordering contexts WITHOUT tracking SGLang's cache state.
 
 Use this when:
 1. You want to process batches independently
@@ -13,7 +13,7 @@ SETUP:
 1. Start ContextPilot server in stateless mode:
    python -m contextpilot.server.http_server --port 8765 --stateless
    
-2. Send batches to /schedule endpoint
+2. Send batches to /reorder endpoint
 """
 
 import requests
@@ -40,25 +40,25 @@ def example_with_client():
         [1, 5, 10, 19, 24],     # Query 5 uses docs 1, 5, 10, 19, 24
     ]
     
-    print("Scheduling batch with ContextPilot (stateless mode)...")
-    result = client.schedule(contexts)
+    print("Reordering batch with ContextPilot (stateless mode)...")
+    result = client.reorder_raw(contexts)
     
     if result:
-        print(f"\n✓ Batch scheduled successfully!")
+        print(f"\n✓ Batch reordered successfully!")
         print(f"  Mode: {result.get('mode', 'stateless')}")
         print(f"  Number of contexts: {result['num_contexts']}")
         print(f"  Number of execution groups: {result['num_groups']}")
         
-        print(f"\nScheduled order (original indices): {result['original_indices']}")
+        print(f"\nExecution order (original indices): {result['original_indices']}")
         print(f"\nExecution groups:")
         for i, group in enumerate(result['groups']):
             print(f"  Group {i}: {group}")
         
         # Send to SGLang in this order
-        scheduled_contexts = result['scheduled_contexts']
+        reordered_contexts = result['reordered_contexts']
         print(f"\n→ Send contexts to SGLang in this order for optimal prefix sharing")
     else:
-        print("Failed to schedule batch")
+        print("Failed to reorder batch")
     
     client.close()
 
@@ -78,7 +78,7 @@ def example_with_function():
         [1, 5, 10, 19, 24],
     ]
     
-    print("Scheduling batch with convenience function...")
+    print("Reordering batch with convenience function...")
     result = schedule_batch(
         contexts=contexts,
         server_url="http://localhost:8765",
@@ -87,10 +87,10 @@ def example_with_function():
     )
     
     if result:
-        print(f"✓ Scheduled {result['num_contexts']} contexts into {result['num_groups']} groups")
+        print(f"✓ Reordered {result['num_contexts']} contexts into {result['num_groups']} groups")
         print(f"Original indices order: {result['original_indices']}")
     else:
-        print("Failed to schedule batch")
+        print("Failed to reorder batch")
 
 
 # ============================================================================
@@ -108,9 +108,9 @@ def example_direct_http():
         [1, 5, 10, 19, 24],
     ]
     
-    print("Scheduling batch with direct HTTP request...")
+    print("Reordering batch with direct HTTP request...")
     response = requests.post(
-        "http://localhost:8765/schedule",
+        "http://localhost:8765/reorder",
         json={
             "contexts": contexts,
             "alpha": 0.005,
@@ -122,7 +122,7 @@ def example_direct_http():
     
     if response.status_code == 200:
         result = response.json()
-        print(f"✓ Scheduled successfully!")
+        print(f"✓ Reordered successfully!")
         print(f"  Groups: {result['num_groups']}")
         print(f"  Order: {result['original_indices']}")
     else:
@@ -135,7 +135,7 @@ def example_direct_http():
 
 def batch_processing_workflow():
     """
-    Complete workflow: Schedule batch → Send to SGLang → Process responses.
+    Complete workflow: Reorder batch → Send to SGLang → Process responses.
     
     This is the typical workflow when using ContextPilot in stateless mode
     without needing cache sync.
@@ -164,29 +164,29 @@ def batch_processing_workflow():
     
     print(f"\n1. Prepared {len(contexts)} queries with their contexts")
     
-    # Step 2: Get optimal scheduling from ContextPilot
-    print("\n2. Calling ContextPilot /schedule endpoint...")
+    # Step 2: Get optimal reordering from ContextPilot
+    print("\n2. Calling ContextPilot /reorder endpoint...")
     result = schedule_batch(contexts=contexts)
     
     if not result:
-        print("   ✗ Scheduling failed!")
+        print("   ✗ Reordering failed!")
         return
     
-    scheduled_order = result['original_indices']
-    print(f"   ✓ Optimal order: {scheduled_order}")
+    execution_order = result['original_indices']
+    print(f"   ✓ Optimal order: {execution_order}")
     print(f"   ✓ {result['num_groups']} execution groups")
     
-    # Step 3: Reorder your data according to the schedule
+    # Step 3: Reorder your data according to the execution order
     print("\n3. Reordering data for SGLang...")
-    reordered_contexts = [contexts[i] for i in scheduled_order]
-    reordered_prompts = [original_prompts[i] for i in scheduled_order]
+    reordered_contexts = [contexts[i] for i in execution_order]
+    reordered_prompts = [original_prompts[i] for i in execution_order]
     
     for i, (prompt, ctx) in enumerate(zip(reordered_prompts, reordered_contexts)):
-        orig_idx = scheduled_order[i]
+        orig_idx = execution_order[i]
         print(f"   Position {i}: Original query {orig_idx} - {prompt[:30]}... (docs: {ctx[:3]}...)")
     
     # Step 4: Send to SGLang in this order
-    print("\n4. Send to SGLang in scheduled order...")
+    print("\n4. Send to SGLang in reordered order...")
     print("   (This would be your actual SGLang API calls)")
     
     # Example pseudo-code for SGLang:
@@ -197,7 +197,7 @@ def batch_processing_workflow():
     
     # Step 5: Reorder results back to original order
     print("\n5. After getting responses, reorder back to original indices")
-    print("   reverse_mapping = {scheduled_order[i]: i for i in range(len(scheduled_order))}")
+    print("   reverse_mapping = {execution_order[i]: i for i in range(len(execution_order))}")
     print("   original_order_results = [results[reverse_mapping[i]] for i in range(len(results))]")
     
     print("\n" + "=" * 60)
@@ -208,7 +208,7 @@ def batch_processing_workflow():
 if __name__ == "__main__":
     import sys
     
-    print("ContextPilot Stateless Batch Scheduling Example")
+    print("ContextPilot Stateless Batch Reordering Example")
     print("-" * 50)
     print("\nMake sure the server is running in stateless mode:")
     print("  python -m contextpilot.server.http_server --port 8765 --stateless")

@@ -153,9 +153,97 @@ class ContextPilotIndexClient:
         })
     
     # =========================================================================
-    # Index Building (Stateful Mode)
+    # Primary API — works in both stateless and stateful server modes
     # =========================================================================
-    
+
+    def reorder(
+        self,
+        contexts: List[List],
+        alpha: float = 0.005,
+        use_gpu: bool = False,
+        linkage_method: str = "average",
+        initial_tokens_per_context: int = 0,
+        deduplicate: bool = False,
+        parent_request_ids: Optional[List[Optional[str]]] = None,
+        hint_template: Optional[str] = None,
+    ):
+        """
+        Reorder contexts for optimal prefix sharing.
+
+        Calls the unified ``POST /reorder`` endpoint, which auto-dispatches
+        based on server mode (stateless vs stateful).
+
+        Args:
+            contexts: List of contexts (each is a list of document IDs or strings)
+            alpha: Distance computation parameter (default 0.005)
+            use_gpu: Use GPU for distance computation (default False)
+            linkage_method: Linkage method for clustering (default "average")
+            initial_tokens_per_context: Initial token count per context (stateful only)
+            deduplicate: Enable multi-turn deduplication (stateful only)
+            parent_request_ids: Parent request IDs for deduplication (stateful only)
+            hint_template: Custom template for reference hints (stateful only)
+
+        Returns:
+            A tuple ``(reordered_contexts, execution_order)`` where
+
+            * **reordered_contexts** – contexts reordered for maximum prefix sharing.
+            * **execution_order** – list of original context indices so that
+              ``reordered_contexts[i]`` corresponds to ``contexts[execution_order[i]]``.
+
+            Returns ``None`` if the request failed.
+        """
+        payload: Dict[str, Any] = {
+            "contexts": contexts,
+            "alpha": alpha,
+            "use_gpu": use_gpu,
+            "linkage_method": linkage_method,
+            "initial_tokens_per_context": initial_tokens_per_context,
+            "deduplicate": deduplicate,
+        }
+        if parent_request_ids is not None:
+            payload["parent_request_ids"] = parent_request_ids
+        if hint_template is not None:
+            payload["hint_template"] = hint_template
+
+        result = self._post("/reorder", payload)
+        if result is None:
+            return None
+        return result["reordered_contexts"], result["original_indices"]
+
+    def reorder_raw(
+        self,
+        contexts: List[List],
+        alpha: float = 0.005,
+        use_gpu: bool = False,
+        linkage_method: str = "average",
+        initial_tokens_per_context: int = 0,
+        deduplicate: bool = False,
+        parent_request_ids: Optional[List[Optional[str]]] = None,
+        hint_template: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Same as :py:meth:`reorder` but returns the full server response dict
+        (includes ``request_ids``, ``groups``, ``stats``, ``deduplication``, etc.).
+        """
+        payload: Dict[str, Any] = {
+            "contexts": contexts,
+            "alpha": alpha,
+            "use_gpu": use_gpu,
+            "linkage_method": linkage_method,
+            "initial_tokens_per_context": initial_tokens_per_context,
+            "deduplicate": deduplicate,
+        }
+        if parent_request_ids is not None:
+            payload["parent_request_ids"] = parent_request_ids
+        if hint_template is not None:
+            payload["hint_template"] = hint_template
+
+        return self._post("/reorder", payload)
+
+    # =========================================================================
+    # Legacy wrappers (deprecated — use reorder / reorder_raw)
+    # =========================================================================
+
     def build(
         self,
         contexts: List[List[int]],
@@ -167,48 +255,37 @@ class ContextPilotIndexClient:
         parent_request_ids: Optional[List[Optional[str]]] = None,
         hint_template: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Build a new index or incrementally update an existing one.
-        
-        Mode is auto-detected by the server:
-        - If no index exists: full (initial) build
-        - If an index exists: incremental (search/reorder/merge)
-        
-        Call reset() first to force a fresh initial build.
-        
-        Args:
-            contexts: List of contexts (each is a list of document IDs)
-            alpha: Distance computation parameter (default 0.005)
-            use_gpu: Use GPU for distance computation (default False)
-            linkage_method: Clustering method (default "average")
-            initial_tokens_per_context: Initial token count per context
-            deduplicate: Enable multi-turn deduplication
-            parent_request_ids: Parent request IDs for deduplication
-            hint_template: Custom template for reference hints
-            
-        Returns:
-            Dictionary with request_ids, stats, and optional deduplication results
-        """
-        payload = {
-            "contexts": contexts,
-            "alpha": alpha,
-            "use_gpu": use_gpu,
-            "linkage_method": linkage_method,
-            "initial_tokens_per_context": initial_tokens_per_context,
-            "deduplicate": deduplicate,
-        }
-        
-        if parent_request_ids is not None:
-            payload["parent_request_ids"] = parent_request_ids
-        if hint_template is not None:
-            payload["hint_template"] = hint_template
-            
-        return self._post("/build", payload)
-    
+        """Deprecated — use :py:meth:`reorder` or :py:meth:`reorder_raw` instead."""
+        return self.reorder_raw(
+            contexts=contexts,
+            alpha=alpha,
+            use_gpu=use_gpu,
+            linkage_method=linkage_method,
+            initial_tokens_per_context=initial_tokens_per_context,
+            deduplicate=deduplicate,
+            parent_request_ids=parent_request_ids,
+            hint_template=hint_template,
+        )
+
+    def schedule(
+        self,
+        contexts: List[List[int]],
+        alpha: float = 0.005,
+        use_gpu: bool = False,
+        linkage_method: str = "average"
+    ) -> Optional[Dict[str, Any]]:
+        """Deprecated — use :py:meth:`reorder` or :py:meth:`reorder_raw` instead."""
+        return self.reorder_raw(
+            contexts=contexts,
+            alpha=alpha,
+            use_gpu=use_gpu,
+            linkage_method=linkage_method,
+        )
+
     # =========================================================================
     # Multi-Turn Deduplication
     # =========================================================================
-    
+
     def deduplicate(
         self,
         contexts: List[List[int]],
@@ -217,104 +294,54 @@ class ContextPilotIndexClient:
     ) -> Optional[Dict[str, Any]]:
         """
         Deduplicate contexts for multi-turn conversations.
-        
-        This is a lightweight endpoint for Turn 2+ in conversations.
-        It only performs deduplication - no index build or search operations.
-        
+
+        Lightweight endpoint for Turn 2+ — no index build or search.
+
         Recommended flow:
-        1. Turn 1: Call build() with deduplicate=True
-        2. Turn 2+: Call deduplicate() (10-100x faster than build)
-        
+        1. Turn 1: Call ``reorder(deduplicate=True)``
+        2. Turn 2+: Call ``deduplicate()`` (10-100x faster)
+
         Args:
             contexts: List of contexts to deduplicate
             parent_request_ids: Parent request IDs (None = new conversation)
             hint_template: Custom template for reference hints
-            
+
         Returns:
-            Dictionary with:
-            - request_ids: New request IDs for this turn
-            - results: List of deduplication results per context
-            - summary: Statistics about deduplication
+            Dictionary with request_ids, results, summary
         """
-        payload = {
+        payload: Dict[str, Any] = {
             "contexts": contexts,
             "parent_request_ids": parent_request_ids,
         }
-        
         if hint_template is not None:
             payload["hint_template"] = hint_template
-            
+
         return self._post("/deduplicate", payload)
-    
+
+    # =========================================================================
+    # Utility
+    # =========================================================================
+
     def reset(self) -> Optional[Dict[str, Any]]:
-        """
-        Reset the index and conversation tracker.
-        
-        Call this to clear all state and start fresh.
-        
-        Returns:
-            Dictionary with reset confirmation
-        """
+        """Reset the index and conversation tracker."""
         return self._post("/reset", {})
-    
+
     def get_requests(self) -> Optional[Dict[str, Any]]:
         """Get all tracked request IDs."""
         return self._get("/requests")
-    
+
     def get_stats(self) -> Optional[Dict[str, Any]]:
         """Get index statistics."""
         return self._get("/stats")
-    
+
     def health(self) -> Optional[Dict[str, Any]]:
         """Check server health."""
         return self._get("/health")
-    
+
     def is_ready(self) -> bool:
         """Check if the server is ready."""
         health = self.health()
         return health is not None and health.get("status") == "ready"
-    
-    # =========================================================================
-    # Stateless Mode (Batch Scheduling Only)
-    # =========================================================================
-    
-    def schedule(
-        self,
-        contexts: List[List[int]],
-        alpha: float = 0.005,
-        use_gpu: bool = False,
-        linkage_method: str = "average"
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Schedule a batch of contexts (STATELESS MODE).
-        
-        This performs clustering and scheduling WITHOUT tracking cache state.
-        Use this when you want to:
-        1. Just reorder contexts for optimal prefix sharing
-        2. Process batches independently without maintaining server state
-        3. Send scheduled contexts directly to LLM engine without cache sync
-        
-        No cache tracking, eviction, or token updates required.
-        Each call is independent - perfect for batch processing.
-        
-        Args:
-            contexts: List of contexts (each is a list of document IDs)
-            alpha: Distance computation parameter (default 0.005)
-            use_gpu: Use GPU for distance computation (default False)
-            linkage_method: Linkage method for clustering (default "average")
-        
-        Returns:
-            Dictionary with:
-            - scheduled_contexts: Reordered contexts for optimal prefix sharing
-            - original_indices: Mapping to original context indices
-            - groups: Execution groups with prefix sharing info
-        """
-        return self._post("/schedule", {
-            "contexts": contexts,
-            "alpha": alpha,
-            "use_gpu": use_gpu,
-            "linkage_method": linkage_method
-        })
     
     def close(self):
         """Close the client session."""
@@ -372,10 +399,10 @@ def schedule_batch(
     timeout: float = 30.0
 ):
     """
-    Schedule a batch of contexts for optimal prefix sharing (STATELESS MODE).
+    Reorder a batch of contexts for optimal prefix sharing (convenience function).
     
     For one-off calls without maintaining a client instance.
-    Perfect for batch processing without needing to track cache state.
+    Works with both stateless and stateful server modes.
     
     Args:
         contexts: List of contexts (each is a list of document IDs)
@@ -386,11 +413,11 @@ def schedule_batch(
         timeout: Request timeout (longer for large batches)
     
     Returns:
-        Dictionary with scheduled_contexts, original_indices, groups
+        Dictionary with reordered_contexts, original_indices, groups
     """
     try:
         response = requests.post(
-            f"{server_url}/schedule",
+            f"{server_url}/reorder",
             json={
                 "contexts": contexts,
                 "alpha": alpha,
@@ -402,5 +429,5 @@ def schedule_batch(
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logger.warning(f"ContextPilot batch scheduling failed: {e}")
+        logger.warning(f"ContextPilot reorder failed: {e}")
         return None

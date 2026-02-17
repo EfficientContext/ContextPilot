@@ -1,5 +1,4 @@
-from contextpilot.context_index import build_context_index
-from contextpilot.context_ordering import InterContextScheduler
+import contextpilot as cp
 import json
 import argparse
 import time
@@ -28,57 +27,37 @@ def prepare_batch(context_path):
     answers = [prompt['answer'] for prompt in prompts]
     topk_doc_ids = [prompt['top_k_doc_id'] for prompt in prompts]
 
-    scheduler = InterContextScheduler()
-    
-    # Perform clustering and intra-reordering
-    cluster_start = time.perf_counter()
-    print("Building context index (clustering + intra-reordering)...")
-    result = build_context_index(
-        topk_doc_ids,
-        linkage_method=args.linkage_method,
+    # Reorder contexts for optimal KV-cache prefix sharing
+    reorder_start = time.perf_counter()
+    print("Reordering contexts with ContextPilot...")
+    engine = cp.ContextPilot(
         use_gpu=args.use_gpu,
-        alpha=args.alpha
+        alpha=args.alpha,
+        linkage_method=args.linkage_method,
     )
-    cluster_end = time.perf_counter()
-    print(f"Context indexing took {cluster_end - cluster_start:.2f} seconds")
+    reordered_contexts, original_indices = engine.reorder(topk_doc_ids)
+    reorder_end = time.perf_counter()
+    print(f"Reordering took {reorder_end - reorder_start:.2f} seconds")
 
-    # Perform inter-context scheduling
-    inter_start = time.perf_counter()
-    print("Performing inter-context scheduling...")
-    organized_reordered_ids, organized_original_ids, final_index_mapping, all_groups_with_scores = scheduler.schedule_contexts(result)
-    inter_end = time.perf_counter()
-    print(f"Inter-context scheduling took {inter_end - inter_start:.2f} seconds")
-
-    # Build output groups efficiently using final_index_mapping
-    groups = []
-    for group_id, (score, group_indices) in enumerate(all_groups_with_scores):
-        items = [
-            {
-                "qid": qids[idx],
-                "question": questions[idx],
-                "answer": answers[idx],
-                "top_k_doc_id": organized_reordered_ids[final_index_mapping.index(idx)],
-                "orig_top_k_doc_id": organized_original_ids[final_index_mapping.index(idx)]
-            }
-            for idx in group_indices
-        ]
-        groups.append({
-            "group_id": group_id,
-            "group_size": len(items),
-            "items": items
+    # Build output in optimized order
+    items = []
+    for i, q_idx in enumerate(original_indices):
+        items.append({
+            "qid": qids[q_idx],
+            "question": questions[q_idx],
+            "answer": answers[q_idx],
+            "top_k_doc_id": reordered_contexts[i],
+            "orig_top_k_doc_id": topk_doc_ids[q_idx],
         })
 
-    # Sort groups by size (largest to smallest)
-    groups.sort(key=lambda x: x['group_size'], reverse=True)
-
-    return groups
+    return items
 
 start = time.perf_counter()
-batch_groups = prepare_batch(context_path)
+batch_items = prepare_batch(context_path)
 end = time.perf_counter()
 print(f"Total batch preparation took {end - start:.2f} seconds")
-print(f"Generated {len(batch_groups)} groups")
+print(f"Generated {len(batch_items)} reordered items")
 with open(args.output_path, 'w') as f:
-    for group in batch_groups:
-        f.write(json.dumps(group) + "\n")
+    for item in batch_items:
+        f.write(json.dumps(item) + "\n")
 print(f"Output written to {args.output_path}")

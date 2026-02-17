@@ -16,7 +16,7 @@ Quick Start:
     >>> 
     >>> results = pipeline.run(queries=["What is AI?"])
 
-See docs/PIPELINE_API.md for detailed documentation.
+See docs/reference/api.md for detailed documentation.
 """
 
 from .pipeline import (
@@ -30,15 +30,13 @@ from .pipeline import (
 from .context_index import (
     ContextIndex,
     IndexResult,
-    build_context_index,
 )
 
 from .context_ordering import (
     IntraContextOrderer,
-    InterContextScheduler,
 )
 
-from .server.live_index import LiveContextIndex
+from .server.live_index import ContextPilot
 
 from .retriever import (
     BM25Retriever,
@@ -62,10 +60,8 @@ __all__ = [
     # Core components
     'ContextIndex',
     'IndexResult',
-    'build_context_index',
     'IntraContextOrderer',
-    'InterContextScheduler',
-    'LiveContextIndex',
+    'ContextPilot',
     
     # Retrievers
     'BM25Retriever',

@@ -8,14 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.2] - 2026-02-16
 
 ### Added
-- `LiveContextIndex` exported from top-level package for convenient imports
-- Automatic string-to-integer context conversion in `ContextIndex` and `LiveContextIndex` — `List[List[str]]` inputs are now accepted natively
-- Leaf-node splitting in `LiveContextIndex.build_incremental()` for finer-grained prefix sharing
+- `cp.ContextPilot` — unified class for both stateful and stateless context reordering
+- Automatic string-to-integer context conversion — `List[List[str]]` inputs are now accepted natively
+- Leaf-node splitting in incremental build for finer-grained prefix sharing
 - Sibling insertion mode when new contexts overlap but do not share a prefix with the matched node
 - Mem0 LoCoMo benchmark example (`mem0_locomo_example.py`)
+- `.reorder()` method — unified one-call API for both stateful and stateless reordering
+- Unified `POST /reorder` HTTP endpoint that auto-dispatches between stateless and stateful modes
+- `client.reorder()` and `client.reorder_raw()` methods in `ContextPilotIndexClient`
 
 ### Changed
 - Eviction API now accepts `request_ids: List[str]` instead of `num_tokens: int` for precise request-level eviction sync
+- **Unified response keys**: All endpoints (`/reorder`, initial build, incremental build) now return consistent `reordered_contexts` and `original_indices` keys — removed inconsistent `scheduled_reordered`, `final_mapping`, `scheduled_order` aliases
+- Updated all examples to use `POST /reorder` endpoint and new response keys
+
+### Deprecated
+- `POST /build` and `POST /schedule` endpoints — use `POST /reorder` instead
+- `client.build()` and `client.schedule()` — use `client.reorder()` / `client.reorder_raw()` instead
 - `_handle_single_prompt` always creates an empty root above the leaf, preventing root-exclusion guard from skipping valid matches during incremental builds
 - Improved diagnostic logging in `build_incremental` (prefix/sibling mode, overlap ratios)
 

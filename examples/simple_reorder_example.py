@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simplest ContextPilot Scheduling Example
+Simplest ContextPilot Reordering Example
 
 Usage:
 1. Start server: python -m contextpilot.server.http_server --port 8765 --stateless
@@ -18,19 +18,19 @@ contexts = [
 ]
 
 # Call ContextPilot
-response = requests.post("http://localhost:8765/schedule", json={
+response = requests.post("http://localhost:8765/reorder", json={
     "contexts": contexts
 })
 result = response.json()
 
 # Get results
-scheduled_order = result["original_indices"]      # Scheduled query order
-scheduled_contexts = result["scheduled_contexts"]  # Reordered doc IDs
+original_indices = result["original_indices"]        # Execution order
+reordered_contexts = result["reordered_contexts"]    # Reordered doc IDs
 
-print(f"Scheduled order: {scheduled_order}")
+print(f"Execution order: {original_indices}")
 print(f"Number of groups: {result['num_groups']}")
 
 print("\nReordered contexts:")
-for i, ctx in enumerate(scheduled_contexts):
-    orig_idx = scheduled_order[i]
+for i, ctx in enumerate(reordered_contexts):
+    orig_idx = original_indices[i]
     print(f"  Position {i}: Query {orig_idx} -> {ctx}")

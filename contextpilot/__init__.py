@@ -47,7 +47,7 @@ from .retriever import (
     MEM0_AVAILABLE,
 )
 
-__version__ = "0.3.3"
+__version__ = "0.3.3.post2"
 
 __all__ = [
     # High-level pipeline API

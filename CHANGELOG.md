@@ -5,6 +5,19 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3.post2] - 2026-02-17
+
+### Added
+- `.deduplicate()` method on `ContextPilot` — multi-turn deduplication with **required `conversation_id`** for data isolation between concurrent users
+- `.reorder()` now accepts a single `List` (auto-wrapped to `List[List]`) for convenience
+- Cross-contamination warning when `.reorder()` is called without `conversation_id` after explicit IDs have been used
+- Safety checks: `deduplicate()` raises `ValueError` if `conversation_id` is empty or has no prior `.reorder()` history
+
+### Changed
+- Default `alpha` changed from `0.005` → `0.001` across all source, docs, examples, and tests
+- Updated quickstart, multi-turn guide, and API reference docs to use Python `ContextPilot` API for deduplication examples
+- README examples simplified: removed tuple unpacking in favor of explicit `reordered, indices =` assignment; single-list `.reorder(mems)` usage
+
 ## [0.3.3] - 2026-02-17
 
 ### Added

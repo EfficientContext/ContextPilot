@@ -255,6 +255,29 @@ class TestLiveIndexRequestTracking:
         assert 'request_ids' in result
         assert len(result['request_ids']) == len(contexts)
 
+    def test_reorder_single_list(self):
+        """reorder() should accept a single list and auto-wrap it."""
+        from contextpilot import ContextPilot
+
+        engine = ContextPilot(use_gpu=False)
+        # Pass a flat list instead of list-of-lists
+        reordered, indices = engine.reorder([1, 2, 3])
+
+        assert len(reordered) == 1
+        assert set(reordered[0]) == {1, 2, 3}
+        assert indices == [0]
+
+    def test_reorder_single_list_strings(self):
+        """reorder() should accept a single list of strings."""
+        from contextpilot import ContextPilot
+
+        engine = ContextPilot(use_gpu=False)
+        reordered, indices = engine.reorder(["doc_a", "doc_b", "doc_c"])
+
+        assert len(reordered) == 1
+        assert set(reordered[0]) == {"doc_a", "doc_b", "doc_c"}
+        assert indices == [0]
+
 
 class TestDeduplication:
     """Test ContextPilot.deduplicate() for multi-turn deduplication."""

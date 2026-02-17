@@ -224,8 +224,10 @@ class ContextPilot(ContextIndex):
         transparently — callers never need to distinguish between them.
 
         Args:
-            contexts: ``List[List[int]]`` or ``List[List[str]]`` — each
-                inner list is one context (document IDs or text strings).
+            contexts: A single context (``List[int]`` / ``List[str]``)
+                or a batch of contexts (``List[List[int]]`` /
+                ``List[List[str]]``).  A single list is automatically
+                wrapped into ``[contexts]``.
             initial_tokens_per_context: Initial token budget per context
                 (used for eviction tracking; 0 to ignore).
             conversation_id: Conversation key for multi-turn
@@ -243,6 +245,10 @@ class ContextPilot(ContextIndex):
               ``reordered_contexts[i]`` corresponds to
               ``contexts[original_indices[i]]``.
         """
+        # Accept a single list and wrap it
+        if contexts and not isinstance(contexts[0], list):
+            contexts = [contexts]
+
         result = self.build_incremental(contexts, initial_tokens_per_context)
         reordered = result["reordered_contexts"]
 

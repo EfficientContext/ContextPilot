@@ -105,9 +105,9 @@ queries = ["What are transformers?", "How do RNNs compare?", "Explain attention 
 
 for turn_idx, (query, mems) in enumerate(zip(queries, turn_memories)):
     # 1. Reorder for prefix sharing (handles cold start & incremental)
-    # .reorder() returns (reordered_contexts, original_indices)
-    reordered_ctx, indices = cp_live.reorder([mems])
-    ctx = reordered_ctx[0]  # single context per turn
+    # .reorder() accepts a single list or list-of-lists
+    reordered, indices = cp_live.reorder(mems)
+    ctx = reordered[0]  # single context per turn
     # Turn 2: "GPT is based on transformers" ← moved to prefix (shared with turn 1)
     # Turn 3: "Transformers …", "GPT …"     ← both moved to prefix
 

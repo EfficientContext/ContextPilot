@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/about.png" alt="ContextPilot Logo" width="800"/>
 
-  <h1><strong>ContextPilot: Efficient Long Context Inference with Context Reuse</strong></h1>
+  <h1><strong>ContextPilot: Fast Long-Context Inference via Context Reuse</strong></h1>
 
   [![Python](https://img.shields.io/badge/python-≥3.10-blue)](https://www.python.org/)
   [![PyPI](https://img.shields.io/pypi/v/contextpilot)](https://pypi.org/project/contextpilot/)

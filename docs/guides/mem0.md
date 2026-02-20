@@ -55,7 +55,7 @@ LoCoMo conv 0, 102 memories, 150 turns:
 | k | mode | ttft | judge |
 |---|---|---|---|
 | 20 | baseline | 0.0377s | 0.440 |
-| 20 | reorder | 0.0351s | 0.460 |
+| 20 | reorder | 0.0315s | 0.460 |
 | 100 | baseline | 0.1012s | 0.437 |
 | 100 | reorder | 0.0554s | 0.420 |
 

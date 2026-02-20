@@ -805,21 +805,21 @@ class LiveContextIndex(ContextIndex):
         return request_id_mapping, request_ids_ordered
     
     # =========================================================================
-    # Request Eviction (Called by SGLang's radix cache callback)
+    # Request Eviction (Called by inference engine's eviction callback)
     # =========================================================================
     
     def remove_requests(self, request_ids: Set[str]) -> Dict[str, Any]:
         """
         Remove requests from the context index.
-        
-        THIS IS THE METHOD CALLED BY SGLANG'S EVICTION CALLBACK.
-        
-        When SGLang's radix cache evicts requests, it calls a callback
-        with the set of evicted request_ids. That callback should invoke
+
+        Called by the inference engine's eviction callback (SGLang or vLLM).
+
+        When the engine's cache evicts requests, it calls a callback
+        with the set of evicted request_ids. That callback invokes
         this method to keep the context index in sync.
-        
+
         Args:
-            request_ids: Set of request IDs to remove (from SGLang callback)
+            request_ids: Set of request IDs to remove (from engine callback)
             
         Returns:
             Dictionary with eviction results

@@ -645,24 +645,16 @@ async def evict(request: EvictRequest):
 
     THIS IS THE MAIN ENDPOINT THAT THE INFERENCE ENGINE'S EVICTION CALLBACK SHOULD CALL.
 
-    When the inference engine's cache evicts nodes, it collects the request_ids
-    from the evicted nodes and invokes the registered callback. That callback
-    should call this endpoint to remove the corresponding entries from ContextPilot.
+    When the inference engine's cache evicts entries, it collects the request_ids
+    from the evicted entries and invokes the registered callback. That callback
+    calls this endpoint to remove the corresponding entries from ContextPilot.
 
-    Integration example (SGLang):
-        def eviction_callback(evicted_request_ids: set):
-            if evicted_request_ids:
-                try:
-                    requests.post(
-                        "http://localhost:8765/evict",
-                        json={"request_ids": list(evicted_request_ids)},
-                        timeout=1.0
-                    )
-                except Exception as e:
-                    logger.warning(f"ContextPilot eviction sync failed: {e}")
-        
-        # Register callback when initializing radix cache
-        tree_cache.set_eviction_callback(eviction_callback)
+    Supported engines:
+        - SGLang: patches/sglang/ patches the radix cache to fire callbacks on eviction
+        - vLLM:   patches/vllm/ patches the block pool to fire callbacks on eviction
+
+    Both use the same protocol:
+        POST /evict  {"request_ids": ["req-1", "req-2", ...]}
     """
     # Check if index is initialized
     if _index is None:

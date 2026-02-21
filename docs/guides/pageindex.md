@@ -14,7 +14,7 @@
 1. **PageIndex** parses a document into a tree of titled, summarized nodes.
 2. Per-query **tree search** (LLM or keyword) returns relevant node IDs.
 3. **ContextPilot** takes the list of node-ID lists, clusters queries with overlapping nodes, reorders documents within each context so shared nodes form the longest common prefix, and schedules execution order.
-4. The **LLM engine** (e.g., SGLang with radix attention) caches the shared prefix and reuses it across consecutive requests.
+4. The **LLM engine** (e.g., SGLang or vLLM with prefix caching) caches the shared prefix and reuses it across consecutive requests.
 
 ## Quick Start
 

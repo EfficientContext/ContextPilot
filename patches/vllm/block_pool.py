@@ -89,9 +89,14 @@ def create_contextpilot_eviction_callback() -> EvictionCallback:
             return
 
         try:
+            preview_ids = sorted(filtered_ids)
+            preview = ", ".join(preview_ids[:10])
+            suffix = "" if len(preview_ids) <= 10 else ", ..."
             logger.info(
-                "[ContextPilot] Syncing eviction: %d requests",
+                "[ContextPilot] Syncing eviction: %d requests [%s%s]",
                 len(filtered_ids),
+                preview,
+                suffix,
             )
             http_requests.post(
                 f"{CONTEXTPILOT_INDEX_URL}/evict",

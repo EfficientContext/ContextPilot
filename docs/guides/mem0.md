@@ -1,6 +1,6 @@
 # mem0 + ContextPilot LoCoMo Benchmark
 
-This example measures TTFT and answer accuracy (token-F1, LLM judge) with and without ContextPilot context reordering, using mem0 as the memory backend and SGLang for inference.
+This example measures TTFT and answer accuracy (token-F1, LLM judge) with and without ContextPilot context reordering, using mem0 as the memory backend and an OpenAI-compatible inference engine (SGLang or vLLM).
 
 * [Mem0](https://github.com/mem0ai/mem0) is an intelligent memory layer that facilitates memory storage and retrieval for agents.
 * [Locomo](https://github.com/snap-research/locomo) is a long conversation benchmark used to test memory retrieval. 
@@ -11,8 +11,14 @@ This example measures TTFT and answer accuracy (token-F1, LLM judge) with and wi
 
 ```bash
 pip install mem0ai openai tqdm
+
+# Install your inference engine + ContextPilot patch:
+# SGLang:
 pip install "sglang==0.5.6"
 bash patches/sglang/apply_patch.sh
+# or vLLM:
+pip install vllm
+bash patches/vllm/apply_patch.sh
 ```
 
 ## Start servers
@@ -21,11 +27,15 @@ bash patches/sglang/apply_patch.sh
 python -m contextpilot.server.http_server --port 8765
 ```
 
-In a separate terminal:
+In a separate terminal, start your inference engine:
 
 ```bash
 export CONTEXTPILOT_INDEX_URL=http://localhost:8765
+
+# SGLang:
 python -m sglang.launch_server --model <model> --port 30000
+# or vLLM:
+python -m vllm.entrypoints.openai.api_server --model <model> --port 30000 --enable-prefix-caching
 ```
 
 ## Run
@@ -39,7 +49,7 @@ python examples/mem0_locomo_example.py
 
 | Variable | Default | Description |
 |---|---|---|
-| `SGLANG_URL` | `http://localhost:30000` | SGLang endpoint |
+| `INFERENCE_URL` | `http://localhost:30000` | Inference engine endpoint (also accepts `SGLANG_URL` for backwards compatibility) |
 | `CONTEXTPILOT_URL` | `http://localhost:8765` | ContextPilot server endpoint |
 | `JUDGE_MODEL` | `gpt-4.1-2025-04-14` | OpenAI model for LLM judge |
 | `LOCOMO_CONV_INDEX` | `0` | Which LoCoMo conversation to use |

@@ -8,13 +8,13 @@ Practical code examples for using ContextPilot.
 |---------|-------------|---------------|
 | `simple_reorder_example.py` | Minimal "hello world" — call `/reorder` with 4 contexts | ContextPilot server (stateless) |
 | `pipeline_examples.py` | Pipeline API usage (BM25, FAISS, generation) | Corpus file |
-| `http_server_example.py` | Stateful index server (build, proxy, eviction) | ContextPilot + SGLang |
+| `http_server_example.py` | Stateful index server (build, proxy, eviction) | ContextPilot + inference engine |
 | `vllm_patch_e2e_check.py` | Supervisor check: 2-request reorder + vLLM eviction sync | ContextPilot + patched vLLM |
 | `stateless_batch_example.py` | Stateless batch reordering (3 approaches) | ContextPilot server (stateless) |
-| `stateless_sglang_e2e.py` | Stateless reordering → SGLang inference e2e | ContextPilot + SGLang |
+| `stateless_sglang_e2e.py` | Stateless reordering → inference e2e | ContextPilot + inference engine |
 | `pageindex_e2e_example.py` | PageIndex tree → ContextPilot scheduling with prefix sharing | ContextPilot (demo: none; full: PageIndex + OpenAI) |
-| `mem0_bench_simple.py` | A/B benchmark: Baseline vs ContextPilot (cache hit rate) | mem0ai + OpenAI key + SGLang |
-| `mem0_locomo_example.py` | LoCoMo multi-turn benchmark with TTFT & F1 scoring | mem0ai + OpenAI key + SGLang |
+| `mem0_bench_simple.py` | A/B benchmark: Baseline vs ContextPilot (cache hit rate) | mem0ai + OpenAI key + inference engine |
+| `mem0_locomo_example.py` | LoCoMo multi-turn benchmark with TTFT & F1 scoring | mem0ai + OpenAI key + inference engine |
 
 ## Running Examples
 
@@ -37,9 +37,13 @@ python examples/pipeline_examples.py
 ### 3. Stateful Server (Live Mode)
 
 ```bash
-# Terminal 1: Start SGLang with ContextPilot eviction callback
+# Terminal 1: Start inference engine with ContextPilot eviction callback
+# SGLang:
 CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
     --model-path Qwen/Qwen3-4B --port 30000 --schedule-policy lpm
+# or vLLM:
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen3-4B --port 30000 --enable-prefix-caching
 
 # Terminal 2: Start ContextPilot server
 python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
@@ -48,13 +52,14 @@ python -m contextpilot.server.http_server --port 8765 --infer-api-url http://loc
 python examples/http_server_example.py
 ```
 
-### 4. Stateless Reordering → SGLang e2e
+### 4. Stateless Reordering → Inference e2e
 
 ```bash
-# Terminal 1: Start SGLang
+# Terminal 1: Start inference engine
 python -m sglang.launch_server --model-path Qwen/Qwen3-4B --port 30000
+# or: python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen3-4B --port 30000 --enable-prefix-caching
 
-# Terminal 2: Start ContextPilot (stateless — no CONTEXTPILOT_INDEX_URL needed on SGLang)
+# Terminal 2: Start ContextPilot (stateless)
 python -m contextpilot.server.http_server --port 8765 --stateless --infer-api-url http://localhost:30000
 
 # Terminal 3: Run
@@ -108,7 +113,7 @@ python examples/pageindex_e2e_example.py --tree path/to/my_tree.json -q "What wa
 pip install mem0ai
 export OPENAI_API_KEY="your-key"
 
-# Start SGLang + ContextPilot (live mode), then:
+# Start inference engine + ContextPilot (live mode), then:
 python examples/mem0_bench_simple.py
 ```
 
@@ -121,7 +126,7 @@ examples/
 ├── http_server_example.py        # Stateful index server
 ├── vllm_patch_e2e_check.py       # vLLM patch e2e verifier
 ├── stateless_batch_example.py    # Stateless batch reordering
-├── stateless_sglang_e2e.py       # Stateless → SGLang e2e
+├── stateless_sglang_e2e.py       # Stateless → inference e2e
 ├── pageindex_e2e_example.py      # PageIndex + ContextPilot
 ├── mem0_bench_simple.py          # A/B cache hit benchmark
 ├── mem0_locomo_example.py        # LoCoMo multi-turn benchmark

@@ -27,7 +27,7 @@ import sys
 import time
 import uuid
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Dict, List, Sequence, Set, Tuple
 
 import requests
@@ -119,10 +119,19 @@ def get_tracked_request_ids(
     return set(data.get("request_ids", []))
 
 
-def make_prompt(doc_ids: Sequence[int], approx_words: int, tag: str) -> str:
+def make_prompt(
+    doc_ids: Sequence[int],
+    approx_words: int,
+    tag: str,
+    anchor: str,
+    family: str,
+) -> str:
     base = " ".join([f"doc_{d}" for d in doc_ids])
     words = [f"w{(i * 7919) % 100000}" for i in range(max(0, approx_words - len(doc_ids)))]
     return (
+        # Family-specific first tokens reduce accidental shared prefix hashes
+        # between seed and pressure requests.
+        f"ANCHOR::{family}::{anchor}\n"
         f"Context IDs: {base}\n"
         f"Tag: {tag}\n"
         f"{' '.join(words)}\n"
@@ -205,6 +214,10 @@ def run_pressure(
     prompt_words: int,
     timeout: float,
     max_tokens: int,
+    attempts: int,
+    retry_backoff: float,
+    progress_every: int,
+    heartbeat_seconds: float,
 ) -> Tuple[int, int]:
     def _task(i: int) -> bool:
         sess = requests.Session()
@@ -214,6 +227,8 @@ def run_pressure(
                 [i, i + 1, i + 2, i + 3],
                 approx_words=prompt_words,
                 tag=f"pressure-{i}-{random_tail}",
+                anchor=f"p-{i}-{random_tail}",
+                family="pressure",
             )
             send_vllm_completion(
                 session=sess,
@@ -223,8 +238,8 @@ def run_pressure(
                 timeout=timeout,
                 request_id=None,
                 max_tokens=max_tokens,
-                attempts=2,
-                retry_backoff=1.0,
+                attempts=attempts,
+                retry_backoff=retry_backoff,
                 label=f"pressure-{i}",
                 verbose=False,
             )
@@ -235,15 +250,45 @@ def run_pressure(
             sess.close()
 
     ok, fail = 0, 0
+    completed = 0
+    start = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_task, i) for i in range(requests_count)]
-        for idx, fut in enumerate(as_completed(futures), 1):
-            if fut.result():
-                ok += 1
-            else:
-                fail += 1
-            if idx % max(1, requests_count // 4) == 0 or idx == requests_count:
-                print(f"  pressure progress: {idx}/{requests_count} (ok={ok}, fail={fail})")
+        pending = {pool.submit(_task, i) for i in range(requests_count)}
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=heartbeat_seconds,
+                return_when=FIRST_COMPLETED,
+            )
+
+            if not done:
+                elapsed = time.time() - start
+                print(
+                    "  pressure heartbeat: "
+                    f"completed={completed}/{requests_count} "
+                    f"ok={ok} fail={fail} elapsed={elapsed:.1f}s"
+                )
+                continue
+
+            for fut in done:
+                completed += 1
+                if fut.result():
+                    ok += 1
+                else:
+                    fail += 1
+
+                if (
+                    completed % max(1, progress_every) == 0
+                    or completed == requests_count
+                ):
+                    elapsed = time.time() - start
+                    print(
+                        "  pressure progress: "
+                        f"{completed}/{requests_count} "
+                        f"(ok={ok}, fail={fail}, elapsed={elapsed:.1f}s)"
+                    )
+            if completed == requests_count:
+                break
     return ok, fail
 
 
@@ -277,6 +322,11 @@ def main() -> int:
     parser.add_argument("--pressure-requests", type=int, default=140, help="Number of pressure requests")
     parser.add_argument("--pressure-workers", type=int, default=6, help="Parallel workers for pressure phase")
     parser.add_argument("--pressure-prompt-words", type=int, default=900, help="Approx words per pressure prompt")
+    parser.add_argument("--pressure-timeout", type=float, default=20.0, help="HTTP timeout seconds for pressure requests")
+    parser.add_argument("--pressure-attempts", type=int, default=1, help="Retry attempts for each pressure request")
+    parser.add_argument("--pressure-retry-backoff", type=float, default=1.0, help="Backoff multiplier between pressure retries")
+    parser.add_argument("--pressure-progress-every", type=int, default=10, help="Print pressure progress every N completed requests")
+    parser.add_argument("--pressure-heartbeat-seconds", type=float, default=15.0, help="Print heartbeat if no pressure request finishes in this interval")
     parser.add_argument("--max-tokens", type=int, default=4, help="max_tokens for completion requests")
     parser.add_argument("--eviction-wait-seconds", type=float, default=120.0, help="How long to wait for eviction callback")
     args = parser.parse_args()
@@ -310,6 +360,8 @@ def main() -> int:
                 reordered[i],
                 approx_words=args.seed_prompt_words,
                 tag=f"seed-{i}-{uuid.uuid4().hex[:8]}",
+                anchor=rid,
+                family="seed",
             )
             send_vllm_completion(
                 session=session,
@@ -340,8 +392,12 @@ def main() -> int:
             requests_count=args.pressure_requests,
             workers=args.pressure_workers,
             prompt_words=args.pressure_prompt_words,
-            timeout=args.request_timeout,
+            timeout=args.pressure_timeout,
             max_tokens=args.max_tokens,
+            attempts=args.pressure_attempts,
+            retry_backoff=args.pressure_retry_backoff,
+            progress_every=args.pressure_progress_every,
+            heartbeat_seconds=args.pressure_heartbeat_seconds,
         )
         print(f"Pressure completed: ok={ok}, fail={fail}")
 

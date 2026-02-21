@@ -19,9 +19,15 @@ This creates identical prefixes that the inference engine can cache and reuse.
 
 1. **Start your inference engine:**
 ```bash
+# SGLang:
 python -m sglang.launch_server \
     --model-path Qwen/Qwen2.5-7B-Instruct \
     --port 30000
+# or vLLM:
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --port 30000 \
+    --enable-prefix-caching
 ```
 
 2. **Prepare your data:**
@@ -175,7 +181,7 @@ print(f"Standard: {results_standard['metadata']['total_time']:.2f}s")
 For semantic search with embeddings:
 
 ```bash
-# First, start an embedding server:
+# First, start an embedding server (e.g. SGLang):
 python -m sglang.launch_server \
     --model-path Alibaba-NLP/gte-Qwen2-7B-instruct \
     --is-embedding \

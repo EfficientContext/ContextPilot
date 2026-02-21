@@ -20,9 +20,12 @@ NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
 TOP_K = int(os.environ.get("LOCOMO_TOP_K", "100"))
 
 
-async def _stream_ttft(prompt, model, max_tokens=512):
+async def _stream_ttft(prompt, model, max_tokens=512, request_id=None):
     payload = {"model": model, "prompt": prompt, "max_tokens": max_tokens,
                "temperature": 0.0, "stream": True}
+    if request_id:
+        payload["rid"] = request_id          # SGLang
+        payload["request_id"] = request_id   # vLLM
     result = {"ttft": 0.0, "text": "", "success": False}
     st = time.perf_counter()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as sess:
@@ -49,8 +52,8 @@ async def _stream_ttft(prompt, model, max_tokens=512):
     return result
 
 
-def run_ttft(prompt, model, max_tokens=512):
-    return asyncio.run(_stream_ttft(prompt, model, max_tokens))
+def run_ttft(prompt, model, max_tokens=512, request_id=None):
+    return asyncio.run(_stream_ttft(prompt, model, max_tokens, request_id))
 
 
 def build_prompt(question, context_str):
@@ -140,6 +143,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         doc_ids = s[0]["top_k_doc_id"]
 
         reordered_ids = doc_ids
+        req_id = None
 
         # Reorder via ContextPilot /build
         if use_reorder and cp_available:
@@ -148,6 +152,9 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
                 br = cp_build([doc_ids], incremental=incremental)
                 if br.get("reordered_contexts"):
                     reordered_ids = br["reordered_contexts"][0]
+                # Capture request_id for eviction sync with inference engine
+                if br.get("request_ids"):
+                    req_id = br["request_ids"][0]
                 if idx < 5:
                     print(f"    /build mode={br.get('mode')} matched={br.get('matched_count')}")
             except Exception as e:
@@ -166,7 +173,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
         # Build prompt and measure TTFT
         prompt = build_prompt(qa["question"], context_str)
-        out = run_ttft(prompt, model, MAX_GEN)
+        out = run_ttft(prompt, model, MAX_GEN, request_id=req_id)
         gt = str(qa["answer"])
 
         if idx > 0:

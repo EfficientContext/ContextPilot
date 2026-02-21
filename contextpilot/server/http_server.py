@@ -946,8 +946,9 @@ async def proxy_completions(request: Request):
         # Pass request_id to inference engine so it can use the same ID for request tracking
         # Engine will notify ContextPilot via /evict callback when this request is evicted
         if request_id:
-            body["rid"] = request_id
-            logger.info(f"Proxy: forwarding request with rid={request_id}")
+            body["rid"] = request_id          # SGLang
+            body["request_id"] = request_id   # vLLM
+            logger.info(f"Proxy: forwarding request with request_id={request_id}")
         else:
             logger.info("Proxy: forwarding request without rid (no ContextPilot tracking)")
 

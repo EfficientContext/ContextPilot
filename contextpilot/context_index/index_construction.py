@@ -74,7 +74,7 @@ class ContextIndex:
     def __init__(self, 
                  linkage_method: str = "average",
                  use_gpu: bool = True,
-                 alpha: float = 0.005,
+                 alpha: float = 0.001,
                  num_workers: Optional[int] = None,
                  batch_size: int = 1000):
         """
@@ -301,7 +301,7 @@ class ContextIndex:
 def build_context_index(contexts, 
                        linkage_method: str = "average",
                        use_gpu: bool = True,
-                       alpha: float = 0.005,
+                       alpha: float = 0.001,
                        num_workers: Optional[int] = None,
                        batch_size: int = 1000) -> IndexResult:
     """
@@ -333,3 +333,5 @@ def build_context_index(contexts,
         result.reordered_prompts = result.reordered_contexts
         result.original_prompts = result.original_contexts
     return result
+
+

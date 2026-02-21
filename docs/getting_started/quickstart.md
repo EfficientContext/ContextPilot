@@ -57,16 +57,12 @@ contexts = [
 ]
 
 # --- Step A: Build the index ---
-build = requests.post(f"{CP}/build", json={"contexts": contexts}).json()
+build = requests.post(f"{CP}/reorder", json={"contexts": contexts}).json()
 print(build["mode"])         # "initial" (first build) or "incremental" (subsequent)
 print(build["request_ids"])  # one ID per context
 
 # ContextPilot reorders contexts so shared docs come first → cache reuse
-# NOTE: Field name differs between modes!
-if build["mode"] == "initial":
-    reordered = build["scheduled_reordered"]  # Initial build
-else:
-    reordered = build["reordered_contexts"]   # Incremental update
+reordered = build["reordered_contexts"]
 # e.g. [[0, 1, 2], [0, 1, 5], [0, 4, 3]]
 
 # --- Step B: Construct prompts using reordered doc order ---
@@ -102,17 +98,17 @@ Key idea: ContextPilot reorders the doc IDs so that shared documents (doc 0, 1) 
 
 ## Step 4: Incremental Update
 
-Just call `/build` again — since the index already exists, ContextPilot automatically searches it and reorders new contexts to reuse cached prefixes:
+Just call `/reorder` again — since the index already exists, ContextPilot automatically searches it and reorders new contexts to reuse cached prefixes:
 
 ```python
-build2 = requests.post(f"{CP}/build", json={
+build2 = requests.post(f"{CP}/reorder", json={
     "contexts": [[0, 1, 3]],  # new query reuses docs 0, 1
 }).json()
 
 print(build2["mode"])           # "incremental" (index already exists)
 print(build2["matched_count"])  # docs already in the index
 
-# Incremental mode uses "reordered_contexts" field
+# Unified response key
 reordered2 = build2["reordered_contexts"]
 prompt2 = make_prompt("How do plants produce and consume energy?",
                       reordered_ids=reordered2[0],
@@ -127,27 +123,33 @@ resp2 = requests.post(f"{CP}/v1/completions", json={
 
 Docs 0 and 1 are already cached, reusing their KV entries instead of recomputing.
 
-## Step 5: Deduplication (Optional)
+## Step 5: Deduplication (Multi-Turn)
 
-In multi-turn, the retriever often returns the same docs again. Add `deduplicate: true` to strip docs already sent in a previous turn:
+In multi-turn conversations, the retriever often returns the same docs again. Use `.deduplicate()` to strip docs already sent in a previous turn.
+
+> **`conversation_id` is required** — it isolates each user's document history so concurrent sessions never cross-contaminate.
 
 ```python
-# Turn 3: retriever returns docs 0, 1, 5 — but 0 and 1 were already in turn 2
-build3 = requests.post(f"{CP}/build", json={
-    "contexts": [[0, 1, 5]],
-    "deduplicate": True,
-    "parent_request_ids": [build2["request_ids"][0]],
-}).json()
+import contextpilot as cp
 
-# Check what was deduplicated
-dedup = build3["deduplication"]["results"][0]
-print(dedup["overlapping_docs"])   # [0, 1] — already sent
-print(dedup["new_docs"])           # [5]    — only this is new
-print(dedup["deduplicated_docs"])  # [5]    — prompt should only include doc 5
-print(dedup["reference_hints"])    # hints like "See Doc 0 from previous turn"
+engine = cp.ContextPilot(use_gpu=False)
+
+# Turn 1 — reorder and register docs under a conversation
+turn1_docs = [[0, 1, 2], [0, 1, 5], [3, 4, 0]]
+reordered, indices = engine.reorder(turn1_docs, conversation_id="user_42")
+
+# Turn 2 — retriever returns docs 0, 1, 5 again, plus new doc 6
+turn2_docs = [[0, 1, 5, 6]]
+results = engine.deduplicate(turn2_docs, conversation_id="user_42")
+
+r = results[0]
+print(r["overlapping_docs"])   # [0, 1, 5] — already sent in turn 1
+print(r["new_docs"])           # [6]       — only this is new
+print(r["deduplicated_docs"])  # [6]       — use this for the prompt
+print(r["reference_hints"])    # hints like "Please refer to [Doc 0]..."
 ```
 
-Without deduplication, the prompt would repeat docs 0 and 1 — wasting tokens. With it, only doc 5 is included, plus short reference hints for the repeated docs.
+Without deduplication, the prompt would repeat docs 0, 1, and 5 — wasting tokens. With it, only doc 6 is sent in full, plus short reference hints for the repeated docs.
 
 ## Step 6: String Contexts (Alternative)
 
@@ -177,7 +179,7 @@ contexts_str = [
 ]
 
 # Build with string contexts (works exactly the same!)
-build_str = requests.post(f"{CP}/build", json={"contexts": contexts_str}).json()
+build_str = requests.post(f"{CP}/reorder", json={"contexts": contexts_str}).json()
 print(build_str["input_type"])  # "string" (auto-detected)
 
 # Server automatically:
@@ -186,10 +188,7 @@ print(build_str["input_type"])  # "string" (auto-detected)
 # 3. Returns request_ids for inference tracking
 
 # Use the reordered contexts for prompts (same workflow as integers)
-if build_str["mode"] == "initial":
-    reordered_str = build_str["scheduled_reordered"]
-else:
-    reordered_str = build_str["reordered_contexts"]
+reordered_str = build_str["reordered_contexts"]
 ```
 
 **When to use strings vs integers:**
@@ -210,7 +209,7 @@ requests.post(f"{CP}/reset", json={})  # clear index
 
 ```
 ┌─────────┐                     ┌──────────────┐                ┌─────────────┐
-│  Your   │  1. POST /build     │              │                │  Inference  │
+│  Your   │  1. POST /reorder   │              │                │  Inference  │
 │  App    │────────────────────→│ ContextPilot │                │  Engine     │
 │         │  ←── request_ids ── │ :8765        │                │  :30000     │
 │         │                     │              │                │             │

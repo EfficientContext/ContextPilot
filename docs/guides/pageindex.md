@@ -58,8 +58,7 @@ python examples/pageindex_e2e_example.py \
 ## Python API
 
 ```python
-from contextpilot.context_index import build_context_index
-from contextpilot.context_ordering import InterContextScheduler
+import contextpilot as cp
 
 # Each context = list of node IDs from PageIndex tree search.
 # Important: doc order is typically NOT pre-sorted — shared nodes
@@ -73,18 +72,12 @@ contexts = [
     [17, 16, 2, 10, 1],    # shared 1,2,10 scattered
 ]
 
-# 1. Build clustering index
-result = build_context_index(contexts=contexts, use_gpu=False, alpha=0.005)
+# One call: cluster, reorder, and schedule
+engine = cp.ContextPilot(use_gpu=False)
+reordered, order = engine.reorder(contexts)
 
-# 2. Schedule execution order
-scheduler = InterContextScheduler()
-sched_reordered, sched_originals, final_mapping, groups = (
-    scheduler.schedule_contexts(result)
-)
-
-# sched_reordered[i] = reordered doc IDs for the i-th scheduled query
-# final_mapping[i]   = index into the original `contexts` list
-# groups             = list of clustered query groups
+# reordered[i]  = reordered doc IDs for the i-th scheduled query
+# order[i]      = index into the original `contexts` list
 ```
 
 ### Using with the HTTP Server
@@ -96,12 +89,12 @@ contexts = [[8, 31, 2, 1], [29, 5, 6, 3], [14, 12, 1, 10, 2], [20, 10, 2, 1], [1
 
 # Stateless scheduling
 resp = requests.post(
-    "http://localhost:8765/schedule",
+    "http://localhost:8765/reorder",
     json={"contexts": contexts}
 ).json()
 
-scheduled_order = resp["final_mapping"]
-reordered = resp["scheduled_reordered"]
+scheduled_order = resp["original_indices"]
+reordered = resp["reordered_contexts"]
 ```
 
 ## Expected Output

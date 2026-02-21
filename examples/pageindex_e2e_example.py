@@ -41,8 +41,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 # ContextPilot imports
-from contextpilot.context_index import build_context_index
-from contextpilot.context_ordering import InterContextScheduler
+import contextpilot as cp
 
 
 # ============================================================================
@@ -108,7 +107,7 @@ def run_contextpilot(
     contexts: List[List[int]],
     query_labels: List[str],
     use_gpu: bool = False,
-    alpha: float = 0.005,
+    alpha: float = 0.001,
 ) -> Dict[str, Any]:
     """
     Build a ContextPilot index and schedule contexts.
@@ -140,35 +139,23 @@ def run_contextpilot(
     if overlap:
         print(f"  Shared docs:    {overlap}")
 
-    # ── Build index ──
+    # ── Reorder with ContextPilot ──
+    engine = cp.ContextPilot(use_gpu=use_gpu, alpha=alpha)
     t0 = time.time()
-    clustering_result = build_context_index(
-        contexts=contexts, use_gpu=use_gpu, alpha=alpha
-    )
-    build_time = time.time() - t0
-    print(f"\n  Build time:     {build_time:.3f}s")
-    print(f"  Tree nodes:     {clustering_result.stats['total_nodes']}")
-
-    # ── Schedule ──
-    t0 = time.time()
-    scheduler = InterContextScheduler()
-    sched_reordered, sched_originals, final_mapping, groups = (
-        scheduler.schedule_contexts(clustering_result)
-    )
-    schedule_time = time.time() - t0
-    print(f"  Schedule time:  {schedule_time:.6f}s")
-    print(f"  Groups:         {len(groups)}")
+    reordered_contexts, original_indices = engine.reorder(contexts)
+    reorder_time = time.time() - t0
+    print(f"\n  Reorder time:   {reorder_time:.3f}s")
 
     # ── Display scheduled order ──
     print(f"\n  Scheduled execution order:")
-    for i, q_idx in enumerate(final_mapping):
+    for i, q_idx in enumerate(original_indices):
         label = query_labels[q_idx]
-        reordered = sched_reordered[i]
+        reordered = reordered_contexts[i]
         original = contexts[q_idx]
         changed = reordered != original
         lcp = 0
         if i > 0:
-            lcp = longest_common_prefix(sched_reordered[i - 1], reordered)
+            lcp = longest_common_prefix(reordered_contexts[i - 1], reordered)
         bar = "█" * (lcp * 3) if lcp > 0 else ""
         mark = " ← reordered" if changed else ""
         print(
@@ -178,7 +165,7 @@ def run_contextpilot(
 
     # ── Prefix sharing: scheduled ──
     sched_reused, sched_new = measure_prefix_sharing(
-        final_mapping, sched_reordered
+        original_indices, reordered_contexts
     )
 
     # ── Prefix sharing: naive (original order, no reordering) ──
@@ -220,12 +207,9 @@ def run_contextpilot(
         )
 
     return {
-        "final_mapping": final_mapping,
-        "groups": groups,
-        "sched_reordered": sched_reordered,
-        "sched_originals": sched_originals,
-        "build_time": build_time,
-        "schedule_time": schedule_time,
+        "original_indices": original_indices,
+        "reordered_contexts": reordered_contexts,
+        "reorder_time": reorder_time,
         "overlap_ratio": overlap_ratio,
         "prefix_sharing": {
             "scheduled": sched_reused,
@@ -332,7 +316,7 @@ def demo_disney(tree_path: Optional[str] = None):
     print("  ContextPilot Analysis")
     print(f"{'─' * 70}")
 
-    result = run_contextpilot(contexts, labels, use_gpu=False, alpha=0.005)
+    result = run_contextpilot(contexts, labels, use_gpu=False, alpha=0.001)
 
     # ── Show reordering explanation ──
     print(f"\n{'─' * 70}")
@@ -427,10 +411,10 @@ def run_pipeline(
 
     client = OpenAI()
     answers = []
-    for i, q_idx in enumerate(cp_result["final_mapping"]):
+    for i, q_idx in enumerate(cp_result["original_indices"]):
         sr = search_results[q_idx]
         query = sr["text"]
-        reordered_ids = cp_result["sched_reordered"][i]
+        reordered_ids = cp_result["reordered_contexts"][i]
 
         # Build context text from node summaries/text
         context_parts = []

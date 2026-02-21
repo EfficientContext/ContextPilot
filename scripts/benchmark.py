@@ -46,7 +46,7 @@ def benchmark_clustering_cpu(contexts, linkage_method="average"):
     index = ContextIndex(
         linkage_method=linkage_method,
         use_gpu=False,
-        alpha=0.005
+        alpha=0.001
     )
     
     start = time.time()
@@ -65,13 +65,13 @@ def benchmark_clustering_gpu(contexts, linkage_method="average"):
         return None, None
     
     # Warm-up
-    index = ContextIndex(linkage_method=linkage_method, use_gpu=True, alpha=0.005)
+    index = ContextIndex(linkage_method=linkage_method, use_gpu=True, alpha=0.001)
     _ = index.fit_transform(contexts[:min(20, len(contexts))])
     
     index = ContextIndex(
         linkage_method=linkage_method,
         use_gpu=True,
-        alpha=0.005
+        alpha=0.001
     )
     
     torch.cuda.synchronize()

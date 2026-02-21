@@ -9,7 +9,7 @@ from multiprocessing import Pool, cpu_count
 from typing import List
 
 
-def compute_distance_single(context_a: List[int], context_b: List[int], alpha: float = 0.005) -> float:
+def compute_distance_single(context_a: List[int], context_b: List[int], alpha: float = 0.001) -> float:
     """
     Compute distance between two contexts using our metric:
     distance = (1 - overlap/max_size) + alpha * avg_position_diff
@@ -49,7 +49,7 @@ def compute_distance_single(context_a: List[int], context_b: List[int], alpha: f
 
 def compute_distances_batch(queries: List[List[int]], 
                            targets: List[List[int]], 
-                           alpha: float = 0.005,
+                           alpha: float = 0.001,
                            num_workers: int = None) -> np.ndarray:
     """
     Compute distances from multiple query contexts to multiple target contexts.
@@ -233,7 +233,7 @@ def compute_batch_worker(args):
 
 
 def compute_distance_matrix_cpu_optimized(contexts: List[List[int]], 
-                                          alpha: float = 0.005,
+                                          alpha: float = 0.001,
                                           num_workers: int = None,
                                           batch_size: int = 1000) -> np.ndarray:
     """

@@ -52,12 +52,12 @@ class TestConfigClasses:
             enabled=True,
             use_gpu=True,
             linkage_method="average",
-            alpha=0.005
+            alpha=0.001
         )
         assert config.enabled is True
         assert config.use_gpu is True
         assert config.linkage_method == "average"
-        assert config.alpha == 0.005
+        assert config.alpha == 0.001
     
     def test_optimizer_config_invalid_linkage(self):
         """Test that invalid linkage method raises error."""

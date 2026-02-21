@@ -50,7 +50,7 @@ class TestManualWorkflow:
                     [8, 9, 10, 11, 12],   # Context for query 3
                 ],
                 "initial_tokens_per_context": 100,
-                "alpha": 0.005
+                "alpha": 0.001
             }
         )
         

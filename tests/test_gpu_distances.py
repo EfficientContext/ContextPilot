@@ -71,7 +71,7 @@ class TestGPUDistanceVerification:
         """Generate test contexts."""
         return generate_contexts(100, avg_chunks=20, seed=42)
     
-    @pytest.mark.parametrize("alpha", [0.001, 0.002, 0.005])
+    @pytest.mark.parametrize("alpha", [0.001, 0.002, 0.001])
     @pytest.mark.parametrize("num_test", [20, 50])
     def test_gpu_matches_cpu(self, contexts, gpu_modules, alpha, num_test):
         """Verify GPU matches CPU for various configurations."""

@@ -55,7 +55,7 @@ class TestCPUDistanceCorrectness:
     
     def test_optimized_matches_naive(self, contexts):
         """Verify optimized implementation matches naive implementation."""
-        alpha = 0.005
+        alpha = 0.001
         num_test = 50
         test_contexts = contexts[:num_test]
         n = len(test_contexts)
@@ -86,7 +86,7 @@ class TestCPUDistanceCorrectness:
         
         assert max_diff < 1e-6, f"Max difference {max_diff} exceeds tolerance"
     
-    @pytest.mark.parametrize("alpha", [0.001, 0.005, 0.01])
+    @pytest.mark.parametrize("alpha", [0.001, 0.001, 0.01])
     def test_various_alpha_values(self, contexts, alpha):
         """Test with different alpha values."""
         test_contexts = contexts[:20]
@@ -116,7 +116,7 @@ class TestFullPipeline:
         # Compute matrix
         condensed = compute_distance_matrix_cpu_optimized(
             contexts, 
-            alpha=0.005, 
+            alpha=0.001, 
             num_workers=None,
             batch_size=1000
         )

@@ -65,14 +65,14 @@ class TestBenchmarkClustering:
         index = ContextIndex(
             linkage_method="average",
             use_gpu=False,
-            alpha=0.005
+            alpha=0.001
         )
         
         # Warm-up run
         _ = index.fit_transform(benchmark_contexts_small[:10])
         
         # Timed run
-        index = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.005)
+        index = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.001)
         start = time.time()
         result = index.fit_transform(benchmark_contexts_small)
         elapsed = time.time() - start
@@ -96,7 +96,7 @@ class TestBenchmarkClustering:
         index = ContextIndex(
             linkage_method="average",
             use_gpu=False,
-            alpha=0.005
+            alpha=0.001
         )
         
         start = time.time()
@@ -127,14 +127,14 @@ class TestBenchmarkClustering:
         print("=" * 60)
         
         # Warm-up GPU
-        index = ContextIndex(linkage_method="average", use_gpu=True, alpha=0.005)
+        index = ContextIndex(linkage_method="average", use_gpu=True, alpha=0.001)
         _ = index.fit_transform(benchmark_contexts_medium[:20])
         
         # Timed run
         index = ContextIndex(
             linkage_method="average",
             use_gpu=True,
-            alpha=0.005
+            alpha=0.001
         )
         
         torch.cuda.synchronize()
@@ -166,7 +166,7 @@ class TestBenchmarkClustering:
         print("=" * 60)
         
         # CPU benchmark
-        index_cpu = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.005)
+        index_cpu = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.001)
         start = time.time()
         _ = index_cpu.fit_transform(benchmark_contexts_medium)
         cpu_time = time.time() - start
@@ -176,10 +176,10 @@ class TestBenchmarkClustering:
         # GPU benchmark (if available)
         if torch.cuda.is_available():
             # Warm-up
-            index_gpu = ContextIndex(linkage_method="average", use_gpu=True, alpha=0.005)
+            index_gpu = ContextIndex(linkage_method="average", use_gpu=True, alpha=0.001)
             _ = index_gpu.fit_transform(benchmark_contexts_medium[:20])
             
-            index_gpu = ContextIndex(linkage_method="average", use_gpu=True, alpha=0.005)
+            index_gpu = ContextIndex(linkage_method="average", use_gpu=True, alpha=0.001)
             torch.cuda.synchronize()
             start = time.time()
             _ = index_gpu.fit_transform(benchmark_contexts_medium)
@@ -208,7 +208,7 @@ class TestBenchmarkClustering:
             index = ContextIndex(
                 linkage_method=method,
                 use_gpu=False,
-                alpha=0.005
+                alpha=0.001
             )
             
             start = time.time()
@@ -238,7 +238,7 @@ class TestBenchmarkClustering:
                 for i in range(n)
             ]
             
-            index = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.005)
+            index = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.001)
             
             start = time.time()
             _ = index.fit_transform(contexts)
@@ -278,7 +278,7 @@ class TestBenchmarkScheduling:
         ]
         
         # Clustering phase
-        index = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.005)
+        index = ContextIndex(linkage_method="average", use_gpu=False, alpha=0.001)
         
         start = time.time()
         clustering_result = index.fit_transform(contexts)
@@ -328,7 +328,7 @@ class TestIndexingPerformance:
         index = ContextIndex(
             linkage_method="average",
             use_gpu=False,  # For consistent test results
-            alpha=0.005
+            alpha=0.001
         )
         
         start = time.time()
@@ -350,7 +350,7 @@ class TestIndexingPerformance:
             index = ContextIndex(
                 linkage_method="average",
                 use_gpu=False,
-                alpha=0.005
+                alpha=0.001
             )
             
             start = time.time()
@@ -386,7 +386,7 @@ class TestSchedulingPerformance:
         index = ContextIndex(
             linkage_method="average",
             use_gpu=False,
-            alpha=0.005
+            alpha=0.001
         )
         
         # Get real clustering result
@@ -421,7 +421,7 @@ class TestMemoryUsage:
             index = ContextIndex(
                 linkage_method="average",
                 use_gpu=False,
-                alpha=0.005
+                alpha=0.001
             )
             index.fit_transform(contexts)
         
@@ -481,7 +481,7 @@ class TestBatchProcessing:
         index = ContextIndex(
             linkage_method="average",
             use_gpu=False,
-            alpha=0.005
+            alpha=0.001
         )
         
         start = time.time()
@@ -494,7 +494,7 @@ class TestBatchProcessing:
             index2 = ContextIndex(
                 linkage_method="average",
                 use_gpu=False,
-                alpha=0.005
+                alpha=0.001
             )
             start = time.time()
             if len(contexts[i:i+10]) >= 2:  # Need at least 2 for clustering
@@ -523,7 +523,7 @@ class TestLatencyProfile:
         index = ContextIndex(
             linkage_method="average",
             use_gpu=False,
-            alpha=0.005
+            alpha=0.001
         )
         latencies["index_creation"] = time.time() - start
         

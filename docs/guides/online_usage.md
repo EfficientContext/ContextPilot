@@ -1,11 +1,13 @@
 # Online Usage
 
-Online mode uses the **ContextPilot Index Server** for live scheduling. Two modes are available:
+Online mode uses the **ContextPilot Index Server** for live reordering. Both modes use a single `POST /reorder` endpoint:
 
 | Mode | Use Case | Cache Tracking |
 |------|----------|----------------|
-| **Stateless** | Per-batch scheduling, no state management | ❌ |
-| **Stateful** | Live cache sync with the inference engine, eviction tracking | ✅ |
+| **Stateless** (`--stateless`) | Per-batch reordering, no state management | ❌ |
+| **Stateful** (default) | Live cache sync with the inference engine, eviction tracking | ✅ |
+
+The server auto-dispatches based on its mode — your client code is the same either way.
 
 ---
 
@@ -34,13 +36,13 @@ After scheduling:
 
 This ensures adjacent contexts have **identical prefixes** that can be cached and reused.
 
-> **Important:** Use `scheduled_contexts` (not `original_indices`) when building prompts to get the reordered document IDs.
+> **Important:** Use `reordered_contexts` (not `original_indices`) when building prompts to get the reordered document IDs.
 
 ---
 
 ## Stateless Mode
 
-Stateless mode provides **optimal batch ordering** without tracking cache state. Each `/schedule` call is independent.
+Stateless mode provides **optimal batch ordering** without tracking cache state. Each `/reorder` call is independent.
 
 **Best for:** Simple batch scheduling, microservices architecture, per-request optimization.
 
@@ -63,24 +65,16 @@ contexts = [
     [3, 6, 13, 18, 23],   # Query 3: completely different
 ]
 
-# Get optimal scheduling
-response = requests.post("http://localhost:8765/schedule", json={
-    "contexts": contexts,
-    "alpha": 0.005,
-    "use_gpu": False,
-    "linkage_method": "average"
+# One call — reorder for optimal prefix sharing
+response = requests.post("http://localhost:8765/reorder", json={
+    "contexts": contexts
 })
 result = response.json()
 
-print(f"Optimal order: {result['original_indices']}")  # e.g., [0, 2, 1, 3]
-print(f"Number of groups: {result['num_groups']}")
-
-# IMPORTANT: Use scheduled_contexts for building prompts!
-# These have BOTH:
-#   1. Contexts reordered (similar ones adjacent)
-#   2. IDs within each context reordered (shared IDs as prefix)
-scheduled_contexts = result['scheduled_contexts']
+# Use the reordered contexts and execution order
+scheduled_contexts = result['reordered_contexts']
 scheduled_order = result['original_indices']
+print(f"Optimal order: {scheduled_order}")  # e.g., [0, 2, 1, 3]
 
 # Build prompts using the reordered contexts
 # scheduled_contexts[i] corresponds to original query at scheduled_order[i]
@@ -102,13 +96,11 @@ from contextpilot.server.http_client import ContextPilotIndexClient
 
 client = ContextPilotIndexClient("http://localhost:8765")
 
-result = client.schedule(
-    contexts=[[1, 5, 10], [2, 5, 11], [1, 5, 12]],
-    alpha=0.005,
-    use_gpu=False
+reordered, order = client.reorder(
+    contexts=[[1, 5, 10], [2, 5, 11], [1, 5, 12]]
 )
 
-print(f"Scheduled order: {result['original_indices']}")
+print(f"Scheduled order: {order}")
 client.close()
 ```
 
@@ -130,9 +122,9 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
                                │
                                ▼
                         ┌─────────────────┐
-                        │ LiveContextIndex│
-                        │- Token tracking │
-                        │- LRU eviction   │
+                        │ ContextPilot     │
+                        │- Token tracking  │
+                        │- LRU eviction    │
                         └─────────────────┘
 ```
 
@@ -200,25 +192,25 @@ CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
     --port 30000
 ```
 
-### Step 1: Build the Index
+### Step 1: Reorder Contexts (Builds Index Automatically)
 
 ```python
 import requests
 
-response = requests.post("http://localhost:8765/build", json={
+response = requests.post("http://localhost:8765/reorder", json={
     "contexts": [
         [1, 5, 10, 15, 20],
         [2, 5, 11, 16, 21],
         [1, 5, 12, 17, 22],
-    ],
-    "initial_tokens_per_context": 0,
-    "alpha": 0.005,
-    "use_gpu": False
+    ]
 })
 
 result = response.json()
+reordered = result["reordered_contexts"]
+order = result["original_indices"]
 request_ids = result["request_ids"]
-print(f"Built index with {len(request_ids)} contexts")
+print(f"Reordered {len(request_ids)} contexts, mode: {result['mode']}")
+# mode="initial" on first call, "incremental" on subsequent calls
 ```
 
 ### Step 2: Send Requests via Proxy
@@ -262,15 +254,16 @@ print(f"Cleared {result['conversations_cleared']} conversations")
 
 ## Server Endpoints
 
-| Endpoint | Method | Mode | Description |
-|----------|--------|------|-------------|
-| `/health` | GET | Both | Health check |
-| `/schedule` | POST | Stateless | Schedule a batch |
-| `/build` | POST | Stateful | Build live index |
-| `/deduplicate` | POST | Stateful | Multi-turn deduplication (lightweight) |
-| `/evict` | POST | Stateful | Remove evicted requests |
-| `/reset` | POST | Stateful | Reset index and conversation tracker |
-| `/stats` | GET | Stateful | Get index statistics |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/reorder` | POST | **Primary** — reorder contexts (auto-dispatches stateless / stateful) |
+| `/health` | GET | Health check |
+| `/deduplicate` | POST | Multi-turn deduplication (lightweight, stateful only) |
+| `/evict` | POST | Remove evicted requests (stateful only) |
+| `/reset` | POST | Reset index and conversation tracker (stateful only) |
+| `/stats` | GET | Get index statistics (stateful only) |
+| `/build` | POST | _Deprecated alias → `/reorder`_ |
+| `/schedule` | POST | _Deprecated alias → `/reorder` (always stateless)_ |
 
 ---
 
@@ -299,13 +292,12 @@ import requests
 tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
 contexts = [tokenizer.encode(doc, add_special_tokens=False) for doc in documents]
 
-# 2. Schedule with ContextPilot (stateless mode)
+# 2. Reorder with ContextPilot (stateless mode)
 client = ContextPilotIndexClient("http://localhost:8765")
-result = client.schedule(contexts=contexts, alpha=0.005)
-scheduled_order = result["original_indices"]
+reordered_contexts, scheduled_order = client.reorder(contexts=contexts)
 
-# 3. Reorder and build prompts
-scheduled_prompts = [build_rag_prompt(query, docs[i]) for i in scheduled_order]
+# 3. Build prompts using reordered contexts
+scheduled_prompts = [build_rag_prompt(query, reordered_contexts[i]) for i in range(len(reordered_contexts))]
 
 # 4. Send to SGLang in scheduled order (maximizes prefix sharing)
 sglang_response = requests.post("http://localhost:30000/generate", json={

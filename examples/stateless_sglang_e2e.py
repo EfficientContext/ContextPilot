@@ -4,10 +4,10 @@ Complete End-to-End Example: ContextPilot Stateless + SGLang Inference
 
 This example shows the FULL workflow:
 1. Retrieve contexts (documents) for queries
-2. Use ContextPilot to schedule and reorder contexts:
+2. Use ContextPilot to reorder contexts:
    - Inter-context reordering: similar contexts scheduled together
    - Intra-context reordering: shared doc IDs moved to front as common prefix
-3. Build prompts with REORDERED contexts (use scheduled_contexts, not original!)
+3. Build prompts with REORDERED contexts (use reordered_contexts, not original!)
 4. Send to SGLang for inference (prefix sharing maximized via KV-cache)
 5. Get responses back in original order
 
@@ -86,11 +86,11 @@ Answer:"""
 # ContextPilot Scheduling
 # ============================================================================
 
-def schedule_contexts(contexts: List[List[int]], alpha: float = 0.005) -> Optional[Dict]:
-    """Call ContextPilot to get optimal scheduling order."""
+def schedule_contexts(contexts: List[List[int]], alpha: float = 0.001) -> Optional[Dict]:
+    """Call ContextPilot to get optimal reordering."""
     try:
         response = requests.post(
-            f"{CONTEXTPILOT_URL}/schedule",
+            f"{CONTEXTPILOT_URL}/reorder",
             json={
                 "contexts": contexts,
                 "alpha": alpha,
@@ -188,18 +188,18 @@ def run_rag_with_contextpilot(
     print(f"Processing {n} queries {'WITH' if use_contextpilot else 'WITHOUT'} ContextPilot")
     print(f"{'='*60}")
     
-    # Step 1: Get optimal scheduling from ContextPilot
+    # Step 1: Get optimal reordering from ContextPilot
     if use_contextpilot:
-        print("\n📊 Step 1: Getting optimal scheduling from ContextPilot...")
+        print("\n📊 Step 1: Getting optimal reordering from ContextPilot...")
         schedule_result = schedule_contexts(query_doc_ids)
         
         if schedule_result:
             scheduled_order = schedule_result['original_indices']
-            # IMPORTANT: Use scheduled_contexts for building prompts!
+            # IMPORTANT: Use reordered_contexts for building prompts!
             # These have BOTH:
             #   1. Contexts reordered (similar ones adjacent)
             #   2. IDs within each context reordered (shared IDs as prefix)
-            scheduled_contexts = schedule_result['scheduled_contexts']
+            reordered_contexts = schedule_result['reordered_contexts']
             num_groups = schedule_result['num_groups']
             print(f"   ✓ Optimal order: {scheduled_order}")
             print(f"   ✓ Grouped into {num_groups} execution groups")
@@ -207,19 +207,19 @@ def run_rag_with_contextpilot(
         else:
             print("   ⚠ ContextPilot unavailable, using original order")
             scheduled_order = list(range(n))
-            scheduled_contexts = query_doc_ids  # fallback to original
+            reordered_contexts = query_doc_ids  # fallback to original
     else:
         scheduled_order = list(range(n))
-        scheduled_contexts = query_doc_ids  # no reordering
+        reordered_contexts = query_doc_ids  # no reordering
         print("\n📊 Step 1: Using original order (no optimization)")
     
     # Step 2: Build prompts using the REORDERED contexts
-    # scheduled_contexts[i] has document IDs reordered for prefix sharing
+    # reordered_contexts[i] has document IDs reordered for prefix sharing
     print("\n📝 Step 2: Building prompts with reordered document IDs...")
     reordered_queries = [queries[i] for i in scheduled_order]
     
     prompts = []
-    for i, (query, reordered_doc_ids) in enumerate(zip(reordered_queries, scheduled_contexts)):
+    for i, (query, reordered_doc_ids) in enumerate(zip(reordered_queries, reordered_contexts)):
         docs = get_documents(reordered_doc_ids)  # Use the REORDERED IDs
         prompt = build_rag_prompt(query, docs)
         prompts.append(prompt)

@@ -97,5 +97,5 @@ The prepared batch contains grouped queries optimized for inference:
 
 ## See Also
 
-- [Pipeline API](../../docs/PIPELINE_API.md) - High-level Python API
-- [Batch Workflow](../../docs/BATCH_WORKFLOW.md) - Complete workflow guide
+- [API Reference](../../docs/reference/api.md) - Full endpoint and class reference
+- [Offline Usage](../../docs/guides/offline_usage.md) - Complete workflow guide

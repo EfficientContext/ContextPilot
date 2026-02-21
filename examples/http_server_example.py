@@ -61,12 +61,12 @@ def build_index():
     print(f"Building index with {len(contexts)} contexts...")
     
     response = requests.post(
-        f"{BASE_URL}/build",
+        f"{BASE_URL}/reorder",
         json={
             "contexts": contexts,
             "initial_tokens_per_context": 0,
             "use_gpu": False,
-            "alpha": 0.005,
+            "alpha": 0.001,
             "linkage_method": "average"
         },
         timeout=30.0
@@ -108,7 +108,7 @@ def get_stats():
 
 def stateless_schedule():
     """
-    Use stateless mode for one-off batch scheduling.
+    Use stateless mode for one-off batch reordering.
     
     This doesn't maintain any index - just clusters and reorders contexts.
     Useful for offline batch processing.
@@ -119,20 +119,20 @@ def stateless_schedule():
         [1, 5, 12, 17, 22],
     ]
     
-    print(f"Scheduling {len(contexts)} contexts (stateless)...")
+    print(f"Reordering {len(contexts)} contexts (stateless)...")
     
     response = requests.post(
-        f"{BASE_URL}/schedule",
+        f"{BASE_URL}/reorder",
         json={
             "contexts": contexts,
-            "alpha": 0.005,
+            "alpha": 0.001,
             "linkage_method": "average"
         },
         timeout=30.0
     )
     
     result = response.json()
-    print(f"✓ Scheduled into {len(result['groups'])} groups")
+    print(f"✓ Reordered into {len(result['groups'])} groups")
     
     return result
 
@@ -159,7 +159,7 @@ def main():
     
     # Show reordering
     print("--- Reordered Contexts ---")
-    reordered = build_result.get("reordered_contexts") or build_result.get("scheduled_reordered", [])
+    reordered = build_result.get("reordered_contexts", [])
     for i, (rid, ctx) in enumerate(zip(request_ids[:3], reordered[:3])):
         print(f"  {rid}: {ctx}")
     if len(request_ids) > 3:
@@ -201,10 +201,10 @@ def main():
     print()
     
     # Stateless scheduling example
-    print("--- Stateless Scheduling ---")
+    print("--- Stateless Reordering ---")
     try:
-        schedule_result = stateless_schedule()
-        for group in schedule_result["groups"]:
+        reorder_result = stateless_schedule()
+        for group in reorder_result["groups"]:
             print(f"  Group {group['group_id']}: {group['group_size']} contexts")
     except Exception as e:
         print(f"  Could not schedule: {e}")

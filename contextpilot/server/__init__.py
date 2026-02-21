@@ -9,7 +9,7 @@ Includes HTTP server/client for remote index access from SGLang.
 
 from .metadata import NodeMetadata
 from .eviction_heap import EvictionHeap
-from .live_index import LiveContextIndex
+from .live_index import ContextPilot
 
 # HTTP server/client (optional - requires fastapi/requests)
 try:
@@ -25,7 +25,7 @@ except ImportError:
 __all__ = [
     'NodeMetadata',
     'EvictionHeap',
-    'LiveContextIndex',
+    'ContextPilot',
     'ContextPilotIndexClient',
     'evict_tokens',
     'http_app',

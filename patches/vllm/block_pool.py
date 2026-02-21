@@ -50,6 +50,10 @@ _TRACK_ONLY_PREFIX = os.environ.get("CONTEXTPILOT_TRACK_ONLY_PREFIX", "req-")
 # vLLM prefixes request_ids with "cmpl-", "chatcmpl-", etc.
 # We strip these prefixes before sending to ContextPilot so IDs match.
 _VLLM_REQUEST_ID_PREFIX = re.compile(r"^(cmpl-|chatcmpl-|batch-)")
+# Some vLLM paths append shard/local suffixes like:
+#   req-<base>-0-<hex>
+# Normalize back to canonical ContextPilot request IDs.
+_VLLM_REQUEST_ID_SUFFIX = re.compile(r"^(req-[^-]+)-\d+-[0-9a-f]+$")
 
 EvictionCallback = Optional[Callable[[set], None]]
 
@@ -74,9 +78,9 @@ def create_contextpilot_eviction_callback() -> EvictionCallback:
         if not evicted_request_ids:
             return
 
-        # Strip vLLM's internal ID prefixes so IDs match ContextPilot's
+        # Normalize vLLM internal ID forms so IDs match ContextPilot's.
         stripped_ids = {
-            _VLLM_REQUEST_ID_PREFIX.sub("", rid)
+            _normalize_request_id(rid)
             for rid in evicted_request_ids
         }
 
@@ -114,7 +118,7 @@ def _should_track_request_id(request_id: str) -> bool:
     """Return True if this request ID should be tracked for ContextPilot sync."""
     if not request_id:
         return False
-    stripped = _VLLM_REQUEST_ID_PREFIX.sub("", request_id)
+    stripped = _normalize_request_id(request_id)
     if not stripped or stripped.startswith("HEALTH_CHECK"):
         return False
     # By default, only track ContextPilot-managed request IDs (req-*).
@@ -122,6 +126,15 @@ def _should_track_request_id(request_id: str) -> bool:
     if _TRACK_ONLY_PREFIX:
         return stripped.startswith(_TRACK_ONLY_PREFIX)
     return True
+
+
+def _normalize_request_id(request_id: str) -> str:
+    """Normalize vLLM request IDs to ContextPilot canonical form."""
+    rid = _VLLM_REQUEST_ID_PREFIX.sub("", request_id)
+    m = _VLLM_REQUEST_ID_SUFFIX.match(rid)
+    if m:
+        return m.group(1)
+    return rid
 
 
 class BlockHashToBlockMap:
@@ -378,9 +391,7 @@ class BlockPool:
             if self.eviction_callback is not None:
                 req_id = request.request_id
                 if _should_track_request_id(req_id):
-                    # Normalize ID namespace so callback payload matches
-                    # ContextPilot-side request IDs.
-                    req_id = _VLLM_REQUEST_ID_PREFIX.sub("", req_id)
+                    req_id = _normalize_request_id(req_id)
                     self._block_to_requests.setdefault(
                         block_hash_with_group_id, set()
                     ).add(req_id)

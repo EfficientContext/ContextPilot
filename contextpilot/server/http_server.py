@@ -20,6 +20,7 @@ import logging
 import time
 import asyncio
 import os
+import re
 import uuid
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -69,6 +70,19 @@ _stateless_mode: bool = False  # Stateless mode: just clustering/scheduling, no 
 _str_to_id: Dict[str, int] = {}
 _id_to_str: Dict[int, str] = {}
 _next_str_id: int = 0
+
+# Request ID normalization (engine -> ContextPilot canonical IDs)
+_ENGINE_REQ_ID_PREFIX = re.compile(r"^(cmpl-|chatcmpl-|batch-)")
+_VLLM_REQ_SUFFIX = re.compile(r"^(req-[^-]+)-\d+-[0-9a-f]+$")
+
+
+def _normalize_request_id(request_id: str) -> str:
+    """Normalize engine-specific request IDs to ContextPilot canonical form."""
+    rid = _ENGINE_REQ_ID_PREFIX.sub("", request_id or "")
+    m = _VLLM_REQ_SUFFIX.match(rid)
+    if m:
+        return m.group(1)
+    return rid
 
 
 def _init_config():
@@ -625,14 +639,25 @@ async def evict(request: EvictRequest):
         )
 
     try:
+        normalized_ids = [
+            _normalize_request_id(rid)
+            for rid in request.request_ids
+        ]
+        normalized_ids = [
+            rid for rid in normalized_ids
+            if rid and not rid.startswith("HEALTH_CHECK")
+        ]
+        # Deduplicate while preserving order for deterministic logs/responses.
+        normalized_ids = list(dict.fromkeys(normalized_ids))
+
         # Remove the evicted requests from our index
-        result = _index.remove_requests(request.request_ids)
+        result = _index.remove_requests(normalized_ids)
         
         # Also clear conversation history for evicted requests
         # This ensures ConversationTracker stays in sync with the engine's cache
         tracker = get_conversation_tracker()
         conversations_cleared = 0
-        for req_id in request.request_ids:
+        for req_id in normalized_ids:
             cleared = tracker.clear_conversation(req_id)
             conversations_cleared += cleared
 
@@ -640,12 +665,14 @@ async def evict(request: EvictRequest):
         logger.info(
             f"Eviction: removed {result['removed_count']} requests from index, "
             f"cleared {conversations_cleared} conversation entries, "
-            f"not_found={len(result['not_found'])}"
+            f"not_found={len(result['not_found'])}, "
+            f"incoming={len(request.request_ids)}, normalized={len(normalized_ids)}"
         )
 
         return {
             "status": "success",
             "conversations_cleared": conversations_cleared,
+            "normalized_request_ids": normalized_ids,
             **result,
         }
 

@@ -5,6 +5,28 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-02-21
+
+### Added
+- **vLLM APC (Automatic Prefix Caching) eviction sync patch** for vLLM — synchronizes KV cache evictions back to ContextPilot, analogous to the existing SGLang radix cache patch
+  - Patched `block_pool.py` with bidirectional block-to-request tracking and HTTP eviction callback
+  - `create_contextpilot_eviction_callback()` factory reads `CONTEXTPILOT_INDEX_URL` and POSTs to `/evict`
+  - Request ID normalization strips vLLM-specific prefixes (`cmpl-`, `chatcmpl-`, `batch-`) and suffixes to match ContextPilot canonical `req-*` IDs
+  - Health-check and internal IDs automatically filtered from tracking
+  - Zero overhead when `CONTEXTPILOT_INDEX_URL` is not set
+- Automated patch installer script (`patches/vllm/apply_patch.sh`) with timestamped backup and auto-detection of vLLM install path
+- `GET /requests` endpoint — returns all tracked request IDs for observability and e2e verification
+- `ContextPilot.get_all_request_ids()` and `ContextPilot.reset()` methods on the live index
+- End-to-end vLLM patch verifier (`examples/vllm_patch_e2e_check.py`) with fast PR-validation and stress profiles
+- Comprehensive vLLM patch test suite (14 unit tests, fully mocked — no vLLM dependency required)
+- vLLM patch documentation (`patches/vllm/README.md`) covering automated, manual, and symlink installation methods
+
+### Changed
+- `POST /evict` endpoint is now engine-agnostic — documents both SGLang and vLLM as supported engines using the same `{"request_ids": [...]}` protocol
+- `POST /reset` now also clears the global string-to-ID mapping for clean restarts
+- Server-side request ID normalization added to strip vLLM-specific prefixes and suffixes
+- Examples README updated with vLLM patch e2e check instructions and dual-engine (SGLang + vLLM) documentation
+
 ## [0.3.3.post2] - 2026-02-17
 
 ### Added

@@ -63,10 +63,11 @@ def reset_contextpilot(session: requests.Session, cp_url: str, timeout: float) -
 def reorder_two_contexts(
     session: requests.Session, cp_url: str, timeout: float
 ) -> Tuple[List[List[int]], List[int], List[str]]:
-    # Crafted pair: same docs, different order, so intra-context reorder should increase LCP.
+    # Crafted pair: large overlap + distinct tail docs, so reorder can increase
+    # prefix sharing while preserving two distinct requests.
     contexts = [
-        [101, 202, 303, 404],
-        [303, 404, 101, 202],
+        [101, 202, 303, 404, 901],
+        [303, 404, 101, 202, 902],
     ]
     payload = {
         "contexts": contexts,
@@ -86,6 +87,11 @@ def reorder_two_contexts(
         raise RuntimeError(f"/reorder missing required fields: {data}")
     if len(reordered) != 2 or len(original_indices) != 2 or len(request_ids) != 2:
         raise RuntimeError(f"Expected exactly two contexts and request IDs, got: {data}")
+    if len(set(request_ids)) != 2:
+        raise RuntimeError(
+            "Expected two distinct request_ids but got duplicates. "
+            f"request_ids={request_ids}, reordered={reordered}"
+        )
 
     for i, orig_idx in enumerate(original_indices):
         if Counter(reordered[i]) != Counter(contexts[orig_idx]):
@@ -132,6 +138,10 @@ def send_vllm_completion(
     timeout: float,
     request_id: str | None = None,
     max_tokens: int = 8,
+    attempts: int = 3,
+    retry_backoff: float = 2.0,
+    label: str = "request",
+    verbose: bool = True,
 ) -> None:
     payload = {
         "model": model,
@@ -143,8 +153,48 @@ def send_vllm_completion(
     if request_id is not None:
         payload["request_id"] = request_id
 
-    resp = session.post(f"{vllm_url}/v1/completions", json=payload, timeout=timeout)
-    require_ok(resp, "POST /v1/completions")
+    last_err: Exception | None = None
+    for i in range(1, attempts + 1):
+        if verbose:
+            print(f"  [{label}] attempt {i}/{attempts} ...")
+        try:
+            resp = session.post(
+                f"{vllm_url}/v1/completions",
+                json=payload,
+                timeout=timeout,
+            )
+            require_ok(resp, "POST /v1/completions")
+            if verbose:
+                print(f"  [{label}] success")
+            return
+        except (requests.Timeout, requests.ConnectionError, RuntimeError) as e:
+            last_err = e
+            if verbose:
+                print(f"  [{label}] attempt {i} failed: {e}")
+            if i == attempts:
+                break
+            time.sleep(retry_backoff * i)
+    raise RuntimeError(f"vLLM completion failed after {attempts} attempts: {last_err}")
+
+
+def warmup_vllm(
+    session: requests.Session,
+    vllm_url: str,
+    model: str,
+    timeout: float,
+) -> None:
+    send_vllm_completion(
+        session=session,
+        vllm_url=vllm_url,
+        model=model,
+        prompt="Warmup request. Reply with one word.",
+        timeout=timeout,
+        request_id=None,
+        max_tokens=4,
+        attempts=5,
+        retry_backoff=3.0,
+        label="warmup",
+    )
 
 
 def run_pressure(
@@ -173,6 +223,10 @@ def run_pressure(
                 timeout=timeout,
                 request_id=None,
                 max_tokens=max_tokens,
+                attempts=2,
+                retry_backoff=1.0,
+                label=f"pressure-{i}",
+                verbose=False,
             )
             return True
         except Exception:
@@ -218,12 +272,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Verify ContextPilot + vLLM patch behavior.")
     parser.add_argument("--cp-url", default="http://localhost:8765", help="ContextPilot base URL")
     parser.add_argument("--vllm-url", default="http://localhost:8000", help="vLLM base URL")
-    parser.add_argument("--request-timeout", type=float, default=60.0, help="HTTP timeout seconds")
-    parser.add_argument("--seed-prompt-words", type=int, default=900, help="Approx words for the first 2 tracked requests")
+    parser.add_argument("--request-timeout", type=float, default=120.0, help="HTTP timeout seconds")
+    parser.add_argument("--seed-prompt-words", type=int, default=220, help="Approx words for the first 2 tracked requests")
     parser.add_argument("--pressure-requests", type=int, default=140, help="Number of pressure requests")
-    parser.add_argument("--pressure-workers", type=int, default=8, help="Parallel workers for pressure phase")
-    parser.add_argument("--pressure-prompt-words", type=int, default=1200, help="Approx words per pressure prompt")
-    parser.add_argument("--max-tokens", type=int, default=8, help="max_tokens for completion requests")
+    parser.add_argument("--pressure-workers", type=int, default=6, help="Parallel workers for pressure phase")
+    parser.add_argument("--pressure-prompt-words", type=int, default=900, help="Approx words per pressure prompt")
+    parser.add_argument("--max-tokens", type=int, default=4, help="max_tokens for completion requests")
     parser.add_argument("--eviction-wait-seconds", type=float, default=120.0, help="How long to wait for eviction callback")
     args = parser.parse_args()
 
@@ -236,6 +290,8 @@ def main() -> int:
     try:
         model = get_model_id(session, args.vllm_url, timeout=args.request_timeout)
         print(f"Model: {model}")
+        warmup_vllm(session, args.vllm_url, model, timeout=args.request_timeout)
+        print("[PASS] vLLM warmup request succeeded")
 
         reset_contextpilot(session, args.cp_url, timeout=args.request_timeout)
         print("Reset ContextPilot index")
@@ -249,6 +305,7 @@ def main() -> int:
 
         target_ids = set(request_ids)
         for i, rid in enumerate(request_ids):
+            print(f"Sending tracked request {i + 1}/2 with rid={rid} ...")
             prompt = make_prompt(
                 reordered[i],
                 approx_words=args.seed_prompt_words,
@@ -262,6 +319,9 @@ def main() -> int:
                 timeout=args.request_timeout,
                 request_id=rid,
                 max_tokens=args.max_tokens,
+                attempts=4,
+                retry_backoff=2.0,
+                label=f"seed-{i + 1}",
             )
         print("[PASS] Sent two tracked requests to vLLM")
 

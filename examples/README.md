@@ -85,6 +85,35 @@ The script exits with non-zero on failure and checks:
 - no early/weird eviction before stress,
 - eviction is observed only after vLLM cache pressure.
 
+Recommended for PR validation (fast):
+
+```bash
+python examples/vllm_patch_e2e_check.py \
+  --request-timeout 60 \
+  --seed-prompt-words 40 \
+  --max-tokens 1 \
+  --pressure-workers 1 \
+  --pressure-requests 120 \
+  --pressure-prompt-words 120 \
+  --pressure-timeout 120
+```
+
+Optional stress profile (not required for every PR):
+
+```bash
+python examples/vllm_patch_e2e_check.py \
+  --request-timeout 60 \
+  --seed-prompt-words 40 \
+  --max-tokens 1 \
+  --pressure-workers 1 \
+  --pressure-requests 500 \
+  --pressure-prompt-words 200 \
+  --pressure-timeout 120 \
+  --pressure-attempts 1 \
+  --pressure-progress-every 10 \
+  --pressure-heartbeat-seconds 8
+```
+
 ### 6. PageIndex + ContextPilot (Demo)
 
 ```bash

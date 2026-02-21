@@ -1,14 +1,11 @@
 #!/bin/bash
-# install_vllm_patches.sh
 # Install ContextPilot patches to vLLM
-
 set -e
 
 echo "=============================================="
 echo "ContextPilot vLLM Patch Installer"
 echo "=============================================="
 
-# Find vLLM installation path
 VLLM_PATH=$(python -c "import vllm; print(vllm.__path__[0])" 2>/dev/null)
 
 if [ -z "$VLLM_PATH" ]; then
@@ -18,26 +15,20 @@ fi
 
 echo "Found vLLM at: $VLLM_PATH"
 
-# Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Check if patch files exist
 if [ ! -f "$SCRIPT_DIR/block_pool.py" ]; then
     echo "Error: Patch file block_pool.py not found in $SCRIPT_DIR"
     exit 1
 fi
 
-# Backup original files
 echo ""
 echo "Backing up original files..."
 BACKUP_DIR="$VLLM_PATH/v1/core/backup_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$BACKUP_DIR"
-
 cp "$VLLM_PATH/v1/core/block_pool.py" "$BACKUP_DIR/" 2>/dev/null || true
-
 echo "  Backup saved to: $BACKUP_DIR"
 
-# Copy patched files
 echo ""
 echo "Installing patches..."
 cp "$SCRIPT_DIR/block_pool.py" "$VLLM_PATH/v1/core/"

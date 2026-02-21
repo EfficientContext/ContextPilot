@@ -135,11 +135,8 @@ def llm_generate(prompt: str, max_tokens: int = 256, temperature: float = 0.0) -
 
 
 def llm_generate_batch(prompts: List[str], max_tokens: int = 256) -> List[str]:
-    """Send multiple prompts to the inference engine (sequential for compatibility)."""
-    results = []
-    for prompt in prompts:
-        results.append(llm_generate(prompt, max_tokens))
-    return results
+    """Send multiple prompts to the inference engine sequentially."""
+    return [llm_generate(prompt, max_tokens) for prompt in prompts]
 
 
 # ============================================================================

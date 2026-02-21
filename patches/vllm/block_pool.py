@@ -42,51 +42,32 @@ from vllm.v1.request import Request
 
 logger = init_logger(__name__)
 
-# ContextPilot integration
 CONTEXTPILOT_INDEX_URL = os.environ.get("CONTEXTPILOT_INDEX_URL")
 _contextpilot_enabled = CONTEXTPILOT_INDEX_URL is not None
 _TRACK_ONLY_PREFIX = os.environ.get("CONTEXTPILOT_TRACK_ONLY_PREFIX", "req-")
 
-# vLLM prefixes request_ids with "cmpl-", "chatcmpl-", etc.
-# We strip these prefixes before sending to ContextPilot so IDs match.
+# Strip vLLM ID prefixes (cmpl-, chatcmpl-, batch-) and suffixes (req-<base>-N-<hex>)
 _VLLM_REQUEST_ID_PREFIX = re.compile(r"^(cmpl-|chatcmpl-|batch-)")
-# Some vLLM paths append shard/local suffixes like:
-#   req-<base>-0-<hex>
-# Normalize back to canonical ContextPilot request IDs.
 _VLLM_REQUEST_ID_SUFFIX = re.compile(r"^(req-[^-]+)-\d+-[0-9a-f]+$")
 
 EvictionCallback = Optional[Callable[[set], None]]
 
 
 def create_contextpilot_eviction_callback() -> EvictionCallback:
-    """
-    Create an eviction callback for syncing with ContextPilot index.
-
-    This callback is invoked by BlockPool with the set of request_ids
-    whose cached blocks have been fully evicted from vLLM's KV cache.
-
-    Returns:
-        Callback function if CONTEXTPILOT_INDEX_URL is set, None otherwise.
-    """
+    """Create eviction callback if CONTEXTPILOT_INDEX_URL is set, else None."""
     if not _contextpilot_enabled:
         return None
 
     import requests as http_requests
 
     def eviction_callback(evicted_request_ids: set):
-        """Send evicted request IDs to ContextPilot index."""
         if not evicted_request_ids:
             return
 
-        # Normalize vLLM internal ID forms so IDs match ContextPilot's.
-        stripped_ids = {
-            _normalize_request_id(rid)
-            for rid in evicted_request_ids
-        }
-
-        # Filter out internal requests (health checks, etc.)
         filtered_ids = {
-            rid for rid in stripped_ids
+            rid for rid in (
+                _normalize_request_id(r) for r in evicted_request_ids
+            )
             if rid and not rid.startswith("HEALTH_CHECK")
         }
 
@@ -115,14 +96,12 @@ def create_contextpilot_eviction_callback() -> EvictionCallback:
 
 
 def _should_track_request_id(request_id: str) -> bool:
-    """Return True if this request ID should be tracked for ContextPilot sync."""
     if not request_id:
         return False
     stripped = _normalize_request_id(request_id)
     if not stripped or stripped.startswith("HEALTH_CHECK"):
         return False
-    # By default, only track ContextPilot-managed request IDs (req-*).
-    # Set CONTEXTPILOT_TRACK_ONLY_PREFIX="" to track all request IDs.
+    # CONTEXTPILOT_TRACK_ONLY_PREFIX="" tracks all request IDs.
     if _TRACK_ONLY_PREFIX:
         return stripped.startswith(_TRACK_ONLY_PREFIX)
     return True
@@ -287,12 +266,9 @@ class BlockPool:
 
         self.metrics_collector = metrics_collector
 
-        # --- ContextPilot eviction tracking ---
-        # Maps block_hash -> set of request_ids that have this block cached
+        # ContextPilot eviction tracking
         self._block_to_requests: dict[BlockHashWithGroupId, set[str]] = {}
-        # Maps request_id -> set of block_hashes belonging to this request
         self._request_to_blocks: dict[str, set[BlockHashWithGroupId]] = {}
-        # Eviction callback: auto-created from CONTEXTPILOT_INDEX_URL env var
         self.eviction_callback: EvictionCallback = (
             create_contextpilot_eviction_callback()
         )
@@ -387,7 +363,7 @@ class BlockPool:
             blk.block_hash = block_hash_with_group_id
             self.cached_block_hash_to_block.insert(block_hash_with_group_id, blk)
 
-            # ContextPilot: track which request owns this cached block
+            # ContextPilot: track request -> block ownership
             if self.eviction_callback is not None:
                 req_id = request.request_id
                 if _should_track_request_id(req_id):
@@ -448,8 +424,7 @@ class BlockPool:
 
         ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
 
-        # ContextPilot: collect fully-evicted request_ids across all blocks
-        fully_evicted: set[str] = set()
+        fully_evicted: set[str] = set()  # ContextPilot
 
         # In order to only iterate the list once, we duplicated code a bit
         if self.enable_caching:
@@ -467,7 +442,6 @@ class BlockPool:
                 if self.metrics_collector:
                     self.metrics_collector.on_block_allocated(block)
 
-        # ContextPilot: fire callback once with all evicted request_ids
         if fully_evicted and self.eviction_callback is not None:
             try:
                 self.eviction_callback(fully_evicted)
@@ -477,16 +451,7 @@ class BlockPool:
         return ret
 
     def _maybe_evict_cached_block(self, block: KVCacheBlock) -> set[str]:
-        """
-        If a block is cached in `cached_block_hash_to_block`, we reset its hash
-        metadata and evict it from the cache.
-
-        Args:
-            block: The block to evict.
-
-        Returns:
-            Set of request_ids that are fully evicted (all their blocks gone).
-        """
+        """Evict block from cache; return request_ids fully evicted."""
         fully_evicted: set[str] = set()
 
         # Clean up metrics tracking first to prevent leaks
@@ -505,9 +470,7 @@ class BlockPool:
             # eviction is not needed
             return fully_evicted
 
-        # ContextPilot: Only update request ownership when this hash is fully
-        # gone from the cache. Duplicate blocks with the same hash can exist
-        # simultaneously; evicting one copy must not evict request ownership.
+        # Only drop ownership when the last copy of this hash is evicted.
         if self.cached_block_hash_to_block.get_one_block(block_hash) is None:
             request_ids = self._block_to_requests.pop(block_hash, None)
             if request_ids:
@@ -516,7 +479,6 @@ class BlockPool:
                     if blocks_set is not None:
                         blocks_set.discard(block_hash)
                         if not blocks_set:
-                            # All cached blocks for this request are evicted
                             fully_evicted.add(rid)
                             del self._request_to_blocks[rid]
 
@@ -610,7 +572,6 @@ class BlockPool:
             evicted = self._maybe_evict_cached_block(block)
             fully_evicted.update(evicted)
 
-        # ContextPilot: fire callback with all evicted request_ids
         if fully_evicted and self.eviction_callback is not None:
             try:
                 self.eviction_callback(fully_evicted)
@@ -635,7 +596,6 @@ class BlockPool:
             )
             return False
 
-        # ContextPilot: notify about all tracked requests being evicted
         if self._request_to_blocks and self.eviction_callback is not None:
             all_requests = set(self._request_to_blocks.keys())
             try:

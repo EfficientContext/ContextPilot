@@ -566,13 +566,11 @@ class RAGPipeline:
                 **extra_request_body,
             }
             
-            # Add request ID for cache tracking in the inference engine
             if request_id:
                 if self.inference_config.backend == "vllm":
                     payload["request_id"] = request_id
                 else:
-                    # SGLang uses 'rid' field to identify requests
-                    payload["rid"] = request_id
+                    payload["rid"] = request_id  # SGLang field name
             
             output = {
                 "generated_text": "",

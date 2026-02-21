@@ -169,7 +169,6 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
                 br = cp_build([doc_ids], incremental=incremental)
                 if br.get("reordered_contexts"):
                     reordered_ids = br["reordered_contexts"][0]
-                # Capture request_id for eviction sync with inference engine
                 if br.get("request_ids"):
                     req_id = br["request_ids"][0]
                 if idx < 5:

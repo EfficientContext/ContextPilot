@@ -122,10 +122,7 @@ class MockBlockHashToBlockMap:
 # ---------------------------------------------------------------------------
 
 class TestableBlockPool:
-    """
-    Reproduces the ContextPilot-patched BlockPool logic for testing,
-    without requiring real vLLM imports.
-    """
+    """ContextPilot-patched BlockPool logic, mocked for testing."""
 
     def __init__(self, num_blocks=10, eviction_callback=None):
         self.blocks = [MockKVCacheBlock(i) for i in range(num_blocks)]
@@ -145,7 +142,6 @@ class TestableBlockPool:
         self.eviction_callback = eviction_callback
 
     def cache_full_blocks_simple(self, request_id, block_indices, block_hashes):
-        """Simplified version: cache specific blocks with given hashes."""
         for idx, bh in zip(block_indices, block_hashes):
             blk = self.blocks[idx]
             blk.block_hash = bh
@@ -164,8 +160,6 @@ class TestableBlockPool:
         if self.cached_block_hash_to_block.pop(block_hash, block.block_id) is None:
             return fully_evicted
 
-        # Duplicate cached blocks with the same hash can coexist.
-        # Only drop ownership when the hash is fully gone from cache.
         if self.cached_block_hash_to_block.get_one_block(block_hash) is None:
             request_ids = self._block_to_requests.pop(block_hash, None)
             if request_ids:
@@ -210,7 +204,6 @@ class TestableBlockPool:
         )
 
     def touch(self, blocks):
-        """Accept flat or grouped blocks for compatibility with vLLM calls."""
         if not blocks:
             return
         if isinstance(blocks[0], MockKVCacheBlock):
@@ -260,7 +253,6 @@ class TestableBlockPool:
 # ---------------------------------------------------------------------------
 
 class TestTrackingDicts:
-    """Test that _block_to_requests and _request_to_blocks stay in sync."""
 
     def test_cache_records_mapping(self):
         callback = MagicMock()
@@ -298,7 +290,6 @@ class TestTrackingDicts:
 
 
 class TestEvictionCallback:
-    """Test that the callback fires with correct request_ids."""
 
     def test_full_eviction_fires_callback(self):
         callback = MagicMock()
@@ -394,7 +385,6 @@ class TestEvictionCallback:
 
 
 class TestGetNewBlocksEviction:
-    """Test that get_new_blocks triggers eviction callback."""
 
     def test_allocating_cached_blocks_fires_callback(self):
         """When get_new_blocks pops cached blocks, eviction callback fires."""
@@ -417,7 +407,6 @@ class TestGetNewBlocksEviction:
 
 
 class TestTouchCompatibility:
-    """touch() should accept grouped blocks like upstream vLLM."""
 
     def test_touch_accepts_grouped_blocks(self):
         pool = TestableBlockPool(num_blocks=8, eviction_callback=None)
@@ -431,7 +420,6 @@ class TestTouchCompatibility:
 
 
 class TestResetPrefixCache:
-    """Test that reset_prefix_cache fires callback for all tracked requests."""
 
     def test_reset_fires_callback_for_all(self):
         callback = MagicMock()
@@ -461,7 +449,6 @@ class TestResetPrefixCache:
 
 
 class TestCallbackPrefixStripping:
-    """Test that the eviction callback strips vLLM ID prefixes."""
 
     def test_strips_cmpl_prefix(self):
         import re
@@ -483,7 +470,6 @@ class TestCallbackPrefixStripping:
 
 
 class TestHelperMethods:
-    """Test get_tracked_request_ids and is_request_in_cache."""
 
     def test_get_tracked_request_ids(self):
         callback = MagicMock()

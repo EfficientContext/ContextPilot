@@ -968,21 +968,7 @@ class ContextPilot(ContextIndex):
     # =========================================================================
     
     def remove_requests(self, request_ids: Set[str]) -> Dict[str, Any]:
-        """
-        Remove requests from the context index.
-
-        Called by the inference engine's eviction callback (SGLang or vLLM).
-
-        When the engine's cache evicts requests, it calls a callback
-        with the set of evicted request_ids. That callback invokes
-        this method to keep the context index in sync.
-
-        Args:
-            request_ids: Set of request IDs to remove (from engine callback)
-            
-        Returns:
-            Dictionary with eviction results
-        """
+        """Remove requests from the context index (called by engine eviction callback)."""
         evicted_nodes = []
         not_found = []
         

@@ -126,13 +126,12 @@ def make_prompt(
     anchor: str,
     family: str,
 ) -> str:
-    base = " ".join([f"doc_{d}" for d in doc_ids])
     words = [f"w{(i * 7919) % 100000}" for i in range(max(0, approx_words - len(doc_ids)))]
     return (
         # Family-specific first tokens reduce accidental shared prefix hashes
         # between seed and pressure requests.
         f"ANCHOR::{family}::{anchor}\n"
-        f"Context IDs: {base}\n"
+        f"Context IDs: {' '.join(f'doc_{d}' for d in doc_ids)}\n"
         f"Tag: {tag}\n"
         f"{' '.join(words)}\n"
         "Answer in one short sentence."

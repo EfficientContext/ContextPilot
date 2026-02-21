@@ -9,6 +9,7 @@ Practical code examples for using ContextPilot.
 | `simple_reorder_example.py` | Minimal "hello world" — call `/reorder` with 4 contexts | ContextPilot server (stateless) |
 | `pipeline_examples.py` | Pipeline API usage (BM25, FAISS, generation) | Corpus file |
 | `http_server_example.py` | Stateful index server (build, proxy, eviction) | ContextPilot + SGLang |
+| `vllm_patch_e2e_check.py` | Supervisor check: 2-request reorder + vLLM eviction sync | ContextPilot + patched vLLM |
 | `stateless_batch_example.py` | Stateless batch reordering (3 approaches) | ContextPilot server (stateless) |
 | `stateless_sglang_e2e.py` | Stateless reordering → SGLang inference e2e | ContextPilot + SGLang |
 | `pageindex_e2e_example.py` | PageIndex tree → ContextPilot scheduling with prefix sharing | ContextPilot (demo: none; full: PageIndex + OpenAI) |
@@ -60,7 +61,26 @@ python -m contextpilot.server.http_server --port 8765 --stateless --infer-api-ur
 python examples/stateless_sglang_e2e.py
 ```
 
-### 5. PageIndex + ContextPilot (Demo)
+### 5. vLLM Patch E2E Check (Supervisor Validation)
+
+```bash
+# Terminal 1: Start ContextPilot
+python -m contextpilot.server.http_server --port 8765
+
+# Terminal 2: Start patched vLLM (prefix caching enabled)
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-7B-Instruct --port 8000 --enable-prefix-caching
+
+# Terminal 3: Run verifier
+python examples/vllm_patch_e2e_check.py
+```
+
+The script exits with non-zero on failure and checks:
+- two-request reorder improves shared prefix,
+- no early/weird eviction before stress,
+- eviction is observed only after vLLM cache pressure.
+
+### 6. PageIndex + ContextPilot (Demo)
 
 ```bash
 # No API key needed — uses bundled Disney earnings tree (41 nodes)
@@ -82,7 +102,7 @@ export OPENAI_API_KEY="your-key"
 python examples/pageindex_e2e_example.py --tree path/to/my_tree.json -q "What was DTC revenue?"
 ```
 
-### 6. mem0 A/B Benchmark
+### 7. mem0 A/B Benchmark
 
 ```bash
 pip install mem0ai
@@ -99,6 +119,7 @@ examples/
 ├── simple_reorder_example.py     # Minimal hello world
 ├── pipeline_examples.py          # Pipeline API (BM25, FAISS, generation)
 ├── http_server_example.py        # Stateful index server
+├── vllm_patch_e2e_check.py       # vLLM patch e2e verifier
 ├── stateless_batch_example.py    # Stateless batch reordering
 ├── stateless_sglang_e2e.py       # Stateless → SGLang e2e
 ├── pageindex_e2e_example.py      # PageIndex + ContextPilot

@@ -70,19 +70,47 @@ class MockBlockHashToBlockMap:
         self._cache = {}
 
     def get_one_block(self, key):
-        return self._cache.get(key)
+        blocks = self._cache.get(key)
+        if blocks is None:
+            return None
+        if isinstance(blocks, MockKVCacheBlock):
+            return blocks
+        if isinstance(blocks, dict):
+            return next(iter(blocks.values()))
+        raise AssertionError(f"Invalid cache block type: {type(blocks)}")
 
     def insert(self, key, block):
-        self._cache[key] = block
+        blocks = self._cache.get(key)
+        if blocks is None:
+            self._cache[key] = block
+        elif isinstance(blocks, MockKVCacheBlock):
+            self._cache[key] = {
+                blocks.block_id: blocks,
+                block.block_id: block,
+            }
+        elif isinstance(blocks, dict):
+            blocks[block.block_id] = block
+        else:
+            raise AssertionError(f"Invalid cache block type: {type(blocks)}")
 
     def pop(self, key, block_id):
-        block = self._cache.pop(key, None)
-        if block is None:
+        blocks = self._cache.pop(key, None)
+        if blocks is None:
             return None
-        if isinstance(block, MockKVCacheBlock) and block.block_id == block_id:
+
+        if isinstance(blocks, MockKVCacheBlock):
+            if blocks.block_id == block_id:
+                return blocks
+            self._cache[key] = blocks
+            return None
+
+        if isinstance(blocks, dict):
+            block = blocks.pop(block_id, None)
+            if blocks:
+                self._cache[key] = blocks
             return block
-        # Put back if ID doesn't match
-        self._cache[key] = block
+
+        self._cache[key] = blocks
         return None
 
     def __len__(self):
@@ -136,15 +164,18 @@ class TestableBlockPool:
         if self.cached_block_hash_to_block.pop(block_hash, block.block_id) is None:
             return fully_evicted
 
-        request_ids = self._block_to_requests.pop(block_hash, None)
-        if request_ids:
-            for rid in request_ids:
-                blocks_set = self._request_to_blocks.get(rid)
-                if blocks_set is not None:
-                    blocks_set.discard(block_hash)
-                    if not blocks_set:
-                        fully_evicted.add(rid)
-                        del self._request_to_blocks[rid]
+        # Duplicate cached blocks with the same hash can coexist.
+        # Only drop ownership when the hash is fully gone from cache.
+        if self.cached_block_hash_to_block.get_one_block(block_hash) is None:
+            request_ids = self._block_to_requests.pop(block_hash, None)
+            if request_ids:
+                for rid in request_ids:
+                    blocks_set = self._request_to_blocks.get(rid)
+                    if blocks_set is not None:
+                        blocks_set.discard(block_hash)
+                        if not blocks_set:
+                            fully_evicted.add(rid)
+                            del self._request_to_blocks[rid]
 
         block.reset_hash()
         return fully_evicted
@@ -177,6 +208,20 @@ class TestableBlockPool:
         self.free_block_queue.append_n(
             [b for b in blocks_list if b.ref_cnt == 0 and not b.is_null]
         )
+
+    def touch(self, blocks):
+        """Accept flat or grouped blocks for compatibility with vLLM calls."""
+        if not blocks:
+            return
+        if isinstance(blocks[0], MockKVCacheBlock):
+            block_iter = blocks
+        else:
+            block_iter = (b for group in blocks for b in group)
+
+        for block in block_iter:
+            if block.ref_cnt == 0 and not block.is_null:
+                self.free_block_queue.remove(block)
+            block.ref_cnt += 1
 
     def evict_blocks(self, block_ids):
         fully_evicted = set()
@@ -297,6 +342,27 @@ class TestEvictionCallback:
         assert "req-1" in callback.call_args[0][0]
         assert not pool.is_request_in_cache("req-1")
 
+    def test_shared_hash_not_evicted_until_last_copy_removed(self):
+        callback = MagicMock()
+        pool = TestableBlockPool(num_blocks=12, eviction_callback=callback)
+
+        # req-A: shared + unique, req-B: shared only
+        pool.cache_full_blocks_simple("req-A", [1, 2], [b"h_shared", b"h_a"])
+        pool.cache_full_blocks_simple("req-B", [3], [b"h_shared"])
+
+        # Remove one shared copy + req-A unique block.
+        # h_shared is still available via req-B's block.
+        pool.evict_blocks({1, 2})
+
+        callback.assert_not_called()
+        assert pool.is_request_in_cache("req-A")
+        assert pool.is_request_in_cache("req-B")
+
+        # Remove final shared copy: now both requests are fully evicted.
+        pool.evict_blocks({3})
+        callback.assert_called_once()
+        assert callback.call_args[0][0] == {"req-A", "req-B"}
+
     def test_multiple_requests_evicted_together(self):
         callback = MagicMock()
         pool = TestableBlockPool(num_blocks=10, eviction_callback=callback)
@@ -335,16 +401,33 @@ class TestGetNewBlocksEviction:
         callback = MagicMock()
         pool = TestableBlockPool(num_blocks=10, eviction_callback=callback)
 
-        # Cache blocks 1,2,3 directly (simulating completed requests)
-        pool.cache_full_blocks_simple("req-X", [1, 2, 3], [b"h1", b"h2", b"h3"])
+        # Allocate/cache/free blocks first so they become eviction candidates.
+        blocks = pool.get_new_blocks(3)
+        block_ids = [b.block_id for b in blocks]
+        pool.cache_full_blocks_simple("req-X", block_ids, [b"h1", b"h2", b"h3"])
+        pool.free_blocks(blocks)
         assert pool.is_request_in_cache("req-X")
 
-        # Now evict via evict_blocks (the path get_new_blocks uses internally)
-        pool.evict_blocks({1, 2, 3})
+        # Force allocation of all free blocks to guarantee cached blocks are popped.
+        pool.get_new_blocks(pool.free_block_queue.num_free_blocks)
 
         callback.assert_called_once()
         assert "req-X" in callback.call_args[0][0]
         assert not pool.is_request_in_cache("req-X")
+
+
+class TestTouchCompatibility:
+    """touch() should accept grouped blocks like upstream vLLM."""
+
+    def test_touch_accepts_grouped_blocks(self):
+        pool = TestableBlockPool(num_blocks=8, eviction_callback=None)
+        blocks = pool.get_new_blocks(2)
+        pool.free_blocks(blocks)
+
+        # Upstream style: tuple[Sequence[KVCacheBlock], ...]
+        pool.touch((blocks,))
+        assert blocks[0].ref_cnt == 1
+        assert blocks[1].ref_cnt == 1
 
 
 class TestResetPrefixCache:

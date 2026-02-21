@@ -470,17 +470,20 @@ class BlockPool:
             # eviction is not needed
             return fully_evicted
 
-        # ContextPilot: check which requests lose this block
-        request_ids = self._block_to_requests.pop(block_hash, None)
-        if request_ids:
-            for rid in request_ids:
-                blocks_set = self._request_to_blocks.get(rid)
-                if blocks_set is not None:
-                    blocks_set.discard(block_hash)
-                    if not blocks_set:
-                        # All cached blocks for this request are evicted
-                        fully_evicted.add(rid)
-                        del self._request_to_blocks[rid]
+        # ContextPilot: Only update request ownership when this hash is fully
+        # gone from the cache. Duplicate blocks with the same hash can exist
+        # simultaneously; evicting one copy must not evict request ownership.
+        if self.cached_block_hash_to_block.get_one_block(block_hash) is None:
+            request_ids = self._block_to_requests.pop(block_hash, None)
+            if request_ids:
+                for rid in request_ids:
+                    blocks_set = self._request_to_blocks.get(rid)
+                    if blocks_set is not None:
+                        blocks_set.discard(block_hash)
+                        if not blocks_set:
+                            # All cached blocks for this request are evicted
+                            fully_evicted.add(rid)
+                            del self._request_to_blocks[rid]
 
         block.reset_hash()
 
@@ -499,15 +502,29 @@ class BlockPool:
             )
         return fully_evicted
 
-    def touch(self, blocks: Sequence[KVCacheBlock]) -> None:
-        """Touch a block increases its reference count by 1, and may remove
-        the block from the free queue. This is used when a block is hit by
-        another request with the same prefix.
+    def touch(
+        self,
+        blocks: Sequence[KVCacheBlock] | Sequence[Sequence[KVCacheBlock]],
+    ) -> None:
+        """Touch blocks to increase their reference counts.
+
+        vLLM calls this with grouped blocks (e.g. one sequence per KV group).
+        Accept a flat sequence as well for backwards compatibility.
 
         Args:
-            blocks: A list of blocks to touch.
+            blocks: Either a flat sequence of blocks or a sequence of block
+                sequences.
         """
-        for block in blocks:
+        if not blocks:
+            return
+
+        # vLLM uses grouped blocks: tuple[Sequence[KVCacheBlock], ...].
+        if isinstance(blocks[0], KVCacheBlock):
+            block_iter: Iterable[KVCacheBlock] = blocks  # type: ignore[assignment]
+        else:
+            block_iter = (b for group in blocks for b in group)  # type: ignore[misc]
+
+        for block in block_iter:
             # ref_cnt=0 means this block is in the free list (i.e. eviction
             # candidate), so remove it.
             if block.ref_cnt == 0 and not block.is_null:

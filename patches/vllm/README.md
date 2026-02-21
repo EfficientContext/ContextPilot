@@ -61,6 +61,15 @@ CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.a
     --port 8000
 ```
 
+By default, the patch only tracks ContextPilot-managed request IDs (`req-*`) for eviction sync.
+This avoids noisy `/evict` callbacks for non-ContextPilot/internal requests.
+
+To track all request IDs instead:
+
+```bash
+CONTEXTPILOT_TRACK_ONLY_PREFIX="" CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server ...
+```
+
 When `CONTEXTPILOT_INDEX_URL` is not set, the patch has zero overhead — no tracking dicts are populated and no callbacks fire.
 
 ## Compatibility

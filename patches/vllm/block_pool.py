@@ -45,6 +45,7 @@ logger = init_logger(__name__)
 # ContextPilot integration
 CONTEXTPILOT_INDEX_URL = os.environ.get("CONTEXTPILOT_INDEX_URL")
 _contextpilot_enabled = CONTEXTPILOT_INDEX_URL is not None
+_TRACK_ONLY_PREFIX = os.environ.get("CONTEXTPILOT_TRACK_ONLY_PREFIX", "req-")
 
 # vLLM prefixes request_ids with "cmpl-", "chatcmpl-", etc.
 # We strip these prefixes before sending to ContextPilot so IDs match.
@@ -107,6 +108,20 @@ def create_contextpilot_eviction_callback() -> EvictionCallback:
             logger.warning("ContextPilot eviction sync failed: %s", e)
 
     return eviction_callback
+
+
+def _should_track_request_id(request_id: str) -> bool:
+    """Return True if this request ID should be tracked for ContextPilot sync."""
+    if not request_id:
+        return False
+    stripped = _VLLM_REQUEST_ID_PREFIX.sub("", request_id)
+    if not stripped or stripped.startswith("HEALTH_CHECK"):
+        return False
+    # By default, only track ContextPilot-managed request IDs (req-*).
+    # Set CONTEXTPILOT_TRACK_ONLY_PREFIX="" to track all request IDs.
+    if _TRACK_ONLY_PREFIX:
+        return stripped.startswith(_TRACK_ONLY_PREFIX)
+    return True
 
 
 class BlockHashToBlockMap:
@@ -362,12 +377,16 @@ class BlockPool:
             # ContextPilot: track which request owns this cached block
             if self.eviction_callback is not None:
                 req_id = request.request_id
-                self._block_to_requests.setdefault(
-                    block_hash_with_group_id, set()
-                ).add(req_id)
-                self._request_to_blocks.setdefault(
-                    req_id, set()
-                ).add(block_hash_with_group_id)
+                if _should_track_request_id(req_id):
+                    # Normalize ID namespace so callback payload matches
+                    # ContextPilot-side request IDs.
+                    req_id = _VLLM_REQUEST_ID_PREFIX.sub("", req_id)
+                    self._block_to_requests.setdefault(
+                        block_hash_with_group_id, set()
+                    ).add(req_id)
+                    self._request_to_blocks.setdefault(
+                        req_id, set()
+                    ).add(block_hash_with_group_id)
 
             if new_hashes is not None:
                 new_hashes.append(maybe_convert_block_hash(block_hash))

@@ -5,13 +5,14 @@ Get ContextPilot running in 5 minutes.
 ## Prerequisites
 
 - ContextPilot installed ([Installation Guide](installation.md))
-- An OpenAI-compatible inference engine (e.g. [SGLang](https://github.com/sgl-project/sglang))
-- For SGLang eviction sync: apply the ContextPilot patch (`bash patches/sglang/apply_patch.sh`)
+- An OpenAI-compatible inference engine (e.g. [SGLang](https://github.com/sgl-project/sglang), [vLLM](https://github.com/vllm-project/vllm))
+- For eviction sync: apply the ContextPilot patch for your engine (`bash patches/sglang/apply_patch.sh` or `bash patches/vllm/apply_patch.sh`)
 
 ## Step 1: Start the Inference Engine
 
-This quickstart uses SGLang as an example, but ContextPilot works with any OpenAI-compatible inference engine.
+ContextPilot works with any OpenAI-compatible inference engine. Pick one:
 
+**SGLang:**
 ```bash
 python -m sglang.launch_server \
     --model-path Qwen/Qwen3-4B \
@@ -19,7 +20,13 @@ python -m sglang.launch_server \
     --schedule-policy lpm
 ```
 
-Wait for "The server is fired up and ready to roll!".
+**vLLM:**
+```bash
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen3-4B \
+    --port 30000 \
+    --enable-prefix-caching
+```
 
 > **Tip:** For eviction sync, prefix with `CONTEXTPILOT_INDEX_URL=http://localhost:8765`. This lets the inference engine notify ContextPilot when KV cache entries are evicted.
 

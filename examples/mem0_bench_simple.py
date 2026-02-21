@@ -4,24 +4,28 @@ A/B Comparison: Baseline vs ContextPilot — Prefill Latency, Cache Hit Rate, An
 Simulates a realistic **per-request** flow where each request arrives one at a time:
   1. A query comes in
   2. Retrieve relevant memories from mem0
-  3. Build prompt & send to SGLang
+  3. Build prompt & send to inference engine
   4. Next query arrives...
 
-  A) Baseline:      retrieve → build prompt (original retrieval order) → send to SGLang
-  B) ContextPilot:  retrieve → /reorder incremental (reorder memories) → build prompt → send to SGLang
+  A) Baseline:      retrieve → build prompt (original retrieval order) → send to engine
+  B) ContextPilot:  retrieve → /reorder incremental (reorder memories) → build prompt → send to engine
 
-Both runs use the SAME arrival order and send directly to SGLang.
+Both runs use the SAME arrival order and send directly to the inference engine.
 The only variable is **within-prompt memory ordering**: ContextPilot's incremental
 /reorder reorders each request's memories so that shared content with previous requests
-appears at the front (prefix), maximizing radix cache reuse.
+appears at the front (prefix), maximizing prefix cache reuse.
 
-Between runs, SGLang's radix cache and ContextPilot's index are both flushed.
+Between runs, the engine's prefix cache and ContextPilot's index are both flushed.
 
 SETUP:
-  # Terminal 1: SGLang with cache report + LPM
+  # Terminal 1: Start inference engine with cache report
+  # SGLang:
   CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
       --model-path Qwen/Qwen3-4B --tp-size 1 --schedule-policy lpm \
       --port 30000 --enable-cache-report
+  # or vLLM:
+  CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \
+      --model Qwen/Qwen3-4B --port 30000 --enable-prefix-caching
 
   # Terminal 2: ContextPilot HTTP server
   python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
@@ -44,7 +48,7 @@ from contextpilot.retriever import Mem0Retriever
 # Config
 # =============================================================================
 
-SGLANG_URL = os.environ.get("SGLANG_URL", "http://localhost:30000")
+INFERENCE_URL = os.environ.get("INFERENCE_URL", os.environ.get("SGLANG_URL", "http://localhost:30000"))
 CONTEXTPILOT_URL = os.environ.get("CONTEXTPILOT_URL", "http://localhost:8765")
 TOP_K = 5
 MAX_TOKENS = 150
@@ -151,27 +155,27 @@ def build_prompt(query: str, memory_texts: List[str]) -> str:
     )
 
 
-def flush_sglang_cache():
-    """Flush SGLang's radix cache."""
-    r = requests.post(f"{SGLANG_URL}/flush_cache", timeout=10)
+def flush_engine_cache():
+    """Flush the inference engine's prefix cache."""
+    r = requests.post(f"{INFERENCE_URL}/flush_cache", timeout=10)
     return r.status_code == 200
 
 
 def send_one(prompt: str) -> dict:
-    """Send a single request to SGLang and return response + latency."""
+    """Send a single request to the inference engine and return response + latency."""
     body = {
         "prompt": prompt,
         "max_tokens": MAX_TOKENS,
         "temperature": 0.7,
     }
     t0 = time.time()
-    resp = requests.post(f"{SGLANG_URL}/v1/completions", json=body, timeout=120).json()
+    resp = requests.post(f"{INFERENCE_URL}/v1/completions", json=body, timeout=120).json()
     latency = time.time() - t0
     return {**resp, "_latency": latency}
 
 
 def extract_metrics(resp: dict) -> dict:
-    """Extract cache/latency metrics from SGLang response."""
+    """Extract cache/latency metrics from inference engine response."""
     usage = resp.get("usage", {})
     details = usage.get("prompt_tokens_details") or {}
     prompt_tokens = usage.get("prompt_tokens", 0)
@@ -198,11 +202,11 @@ def main():
 
     # ---- Check services ----
     try:
-        r = requests.get(f"{SGLANG_URL}/v1/models", timeout=3).json()
+        r = requests.get(f"{INFERENCE_URL}/v1/models", timeout=3).json()
         model = r["data"][0]["id"]
-        print(f"\n  SGLang:       running ({model})")
+        print(f"\n  Engine:       running ({model})")
     except Exception as e:
-        print(f"\n  SGLang:       NOT RUNNING — {e}")
+        print(f"\n  Engine:       NOT RUNNING — {e}")
         sys.exit(1)
 
     try:
@@ -248,11 +252,11 @@ def main():
     # RUN A: Baseline — per-request: retrieve → build prompt → send
     # ══════════════════════════════════════════════════════════════════════════
     print(f"\n{'─' * 80}")
-    print("RUN A: BASELINE — per-request: retrieve → prompt (original order) → SGLang")
+    print("RUN A: BASELINE — per-request: retrieve → prompt (original order) → engine")
     print(f"{'─' * 80}")
 
-    print("  Flushing SGLang radix cache...")
-    if not flush_sglang_cache():
+    print("  Flushing engine prefix cache...")
+    if not flush_engine_cache():
         print("  WARNING: cache flush failed")
     time.sleep(1)
 
@@ -273,7 +277,7 @@ def main():
         mem_texts = [corpus_map.get(str(d), {}).get("text", f"[doc {d}]") for d in doc_ids]
         prompt = build_prompt(query, mem_texts)
 
-        # 3. Send to SGLang
+        # 3. Send to engine
         print(f"    [{i+1}/{n_queries}] Q{i}: retrieve {len(doc_ids)} memories → send ...", end=" ", flush=True)
         resp = send_one(prompt)
         m = extract_metrics(resp)
@@ -295,11 +299,11 @@ def main():
     # RUN B: ContextPilot — per-request: retrieve → /reorder incremental → prompt → send
     # ══════════════════════════════════════════════════════════════════════════
     print(f"\n{'─' * 80}")
-    print("RUN B: CONTEXTPILOT — per-request: retrieve → /reorder incremental → prompt → SGLang")
+    print("RUN B: CONTEXTPILOT — per-request: retrieve → /reorder incremental → prompt → engine")
     print(f"{'─' * 80}")
 
-    print("  Flushing SGLang radix cache...")
-    if not flush_sglang_cache():
+    print("  Flushing engine prefix cache...")
+    if not flush_engine_cache():
         print("  WARNING: cache flush failed")
     # Reset ContextPilot index so incremental builds start fresh
     requests.post(f"{CONTEXTPILOT_URL}/reset", json={})
@@ -337,7 +341,7 @@ def main():
         mem_texts = [corpus_map.get(str(d), {}).get("text", f"[doc {d}]") for d in reordered]
         prompt = build_prompt(query, mem_texts)
 
-        # 4. Send to SGLang
+        # 4. Send to engine
         changed = "reordered" if reordered != doc_ids else "same"
         print(f"    [{i+1}/{n_queries}] Q{i}: retrieve → /reorder [{changed}] → send ...",
               end=" ", flush=True)
@@ -436,8 +440,8 @@ def main():
   Memories per query: {TOP_K}
   Retrieval overlap:  {overlap_pct:.0%}
 
-  Flow A (Baseline):      retrieve → prompt(original order) → SGLang
-  Flow B (ContextPilot):  retrieve → /reorder(incremental) → prompt(reordered) → SGLang
+  Flow A (Baseline):      retrieve → prompt(original order) → engine
+  Flow B (ContextPilot):  retrieve → /reorder(incremental) → prompt(reordered) → engine
 
   Cache hit rate:     {b_hit_rate:.1f}% (baseline) -> {c_hit_rate:.1f}% (ContextPilot)
   Prefill saved:      {prefill_saved} tokens ({prefill_pct:.1f}% reduction)
@@ -445,7 +449,7 @@ def main():
 
   ContextPilot's incremental /reorder reorders each request's memories so that
   content shared with previously-seen requests appears at the front (prefix).
-  This maximizes SGLang's radix cache reuse across sequential requests.
+  This maximizes prefix cache reuse across sequential requests.
 """)
     print("=" * 80)
 

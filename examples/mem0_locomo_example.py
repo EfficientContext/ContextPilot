@@ -7,7 +7,7 @@ import aiohttp, openai, requests
 from contextpilot.retriever import Mem0Retriever
 from contextpilot.utils.eval_metrics import eval_answer
 
-SGLANG_URL = os.environ.get("SGLANG_URL", "http://localhost:30000")
+INFERENCE_URL = os.environ.get("INFERENCE_URL", os.environ.get("SGLANG_URL", "http://localhost:30000"))
 CONTEXTPILOT_URL = os.environ.get("CONTEXTPILOT_URL", "http://localhost:8765")
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gpt-4.1-2025-04-14")
 LOCOMO_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
@@ -20,13 +20,16 @@ NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
 TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,100")
 
 
-async def _stream_ttft(prompt, model, max_tokens=512):
+async def _stream_ttft(prompt, model, max_tokens=512, request_id=None):
     payload = {"model": model, "prompt": prompt, "max_tokens": max_tokens,
                "temperature": 0.0, "stream": True}
+    if request_id:
+        payload["rid"] = request_id          # SGLang
+        payload["request_id"] = request_id   # vLLM
     result = {"ttft": 0.0, "text": "", "success": False}
     st = time.perf_counter()
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as sess:
-        async with sess.post(f"{SGLANG_URL}/v1/completions", json=payload) as resp:
+        async with sess.post(f"{INFERENCE_URL}/v1/completions", json=payload) as resp:
             if resp.status != 200:
                 result["error"] = await resp.text()
                 return result
@@ -49,8 +52,8 @@ async def _stream_ttft(prompt, model, max_tokens=512):
     return result
 
 
-def run_ttft(prompt, model, max_tokens=512):
-    return asyncio.run(_stream_ttft(prompt, model, max_tokens))
+def run_ttft(prompt, model, max_tokens=512, request_id=None):
+    return asyncio.run(_stream_ttft(prompt, model, max_tokens, request_id))
 
 
 def build_prompt(question, context_str):
@@ -144,6 +147,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         doc_ids = s[0]["top_k_doc_id"]
 
         reordered_ids = doc_ids
+        req_id = None
         server_prefix_len, server_has_prefix, server_node_id = 0, False, -1
 
         # Query server's prefix match (same logic used by incremental build search).
@@ -165,6 +169,8 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
                 br = cp_build([doc_ids], incremental=incremental)
                 if br.get("reordered_contexts"):
                     reordered_ids = br["reordered_contexts"][0]
+                if br.get("request_ids"):
+                    req_id = br["request_ids"][0]
                 if idx < 5:
                     print(f"    /reorder mode={br.get('mode')} matched={br.get('matched_count')}")
             except Exception as e:
@@ -175,7 +181,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
 
         # Build prompt and measure TTFT
         prompt = build_prompt(qa["question"], context_str)
-        out = run_ttft(prompt, model, MAX_GEN)
+        out = run_ttft(prompt, model, MAX_GEN, request_id=req_id)
         gt = str(qa["answer"])
 
         if idx > 0:
@@ -253,11 +259,11 @@ if __name__ == "__main__":
     import pandas as pd
 
     assert os.environ.get("OPENAI_API_KEY"), "OPENAI_API_KEY not set"
-    assert requests.get(f"{SGLANG_URL}/health", timeout=3).status_code == 200, \
-        f"SGLang not reachable at {SGLANG_URL}"
+    assert requests.get(f"{INFERENCE_URL}/health", timeout=3).status_code == 200, \
+        f"Inference engine not reachable at {INFERENCE_URL}"
 
-    model = requests.get(f"{SGLANG_URL}/v1/models", timeout=5).json()["data"][0]["id"]
-    print(f"SGLang model: {model}")
+    model = requests.get(f"{INFERENCE_URL}/v1/models", timeout=5).json()["data"][0]["id"]
+    print(f"Model: {model}")
 
     try:
         cp_available = requests.get(f"{CONTEXTPILOT_URL}/health", timeout=3).status_code in (200, 503)
@@ -272,7 +278,7 @@ if __name__ == "__main__":
         urllib.request.urlretrieve(LOCOMO_URL, LOCOMO_CACHE)
     all_convs = json.loads(LOCOMO_CACHE.read_text())
 
-    # Warmup SGLang
+    # Warmup inference engine
     for _ in range(3):
         run_ttft("Hello, world.", model, max_tokens=4)
     print("Warmup done.\n")

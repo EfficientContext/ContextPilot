@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Complete End-to-End Example: ContextPilot Stateless + SGLang Inference
+Complete End-to-End Example: ContextPilot Stateless + Inference Engine
 
 This example shows the FULL workflow:
 1. Retrieve contexts (documents) for queries
@@ -8,18 +8,19 @@ This example shows the FULL workflow:
    - Inter-context reordering: similar contexts scheduled together
    - Intra-context reordering: shared doc IDs moved to front as common prefix
 3. Build prompts with REORDERED contexts (use reordered_contexts, not original!)
-4. Send to SGLang for inference (prefix sharing maximized via KV-cache)
+4. Send to inference engine (prefix sharing maximized via KV-cache)
 5. Get responses back in original order
 
 KEY INSIGHT:
   ContextPilot doesn't just reorder queries - it also reorders the doc IDs
   WITHIN each context so that shared documents appear first as a prefix.
-  This allows SGLang to cache and reuse the prefix computation.
+  This allows the inference engine to cache and reuse the prefix computation.
 
 SETUP:
-1. Start SGLang server:
+1. Start an inference engine (SGLang or vLLM):
    python -m sglang.launch_server --model meta-llama/Llama-3.1-8B-Instruct --port 30000
-   
+   # or: python -m vllm.entrypoints.openai.api_server --model meta-llama/Llama-3.1-8B-Instruct --port 30000 --enable-prefix-caching
+
 2. Start ContextPilot server (stateless mode):
    python -m contextpilot.server.http_server --port 8765 --stateless
 
@@ -37,7 +38,7 @@ from typing import List, Dict, Any, Optional
 # ============================================================================
 
 CONTEXTPILOT_URL = "http://localhost:8765"
-SGLANG_URL = "http://localhost:30000"
+INFERENCE_URL = "http://localhost:30000"
 
 
 # ============================================================================
@@ -110,57 +111,32 @@ def schedule_contexts(contexts: List[List[int]], alpha: float = 0.001) -> Option
 
 
 # ============================================================================
-# SGLang Inference
+# Inference Engine
 # ============================================================================
 
-def sglang_generate(prompt: str, max_tokens: int = 256, temperature: float = 0.0) -> str:
-    """Send a prompt to SGLang and get the response."""
+def llm_generate(prompt: str, max_tokens: int = 256, temperature: float = 0.0) -> str:
+    """Send a prompt to the inference engine and get the response."""
     try:
         response = requests.post(
-            f"{SGLANG_URL}/generate",
+            f"{INFERENCE_URL}/v1/completions",
             json={
-                "text": prompt,
-                "sampling_params": {
-                    "max_new_tokens": max_tokens,
-                    "temperature": temperature,
-                }
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
             },
             timeout=60.0
         )
         if response.status_code == 200:
-            return response.json().get("text", "")
+            return response.json()["choices"][0].get("text", "")
         else:
             return f"[Error: {response.status_code}]"
     except requests.exceptions.RequestException as e:
         return f"[Connection error: {e}]"
 
 
-def sglang_generate_batch(prompts: List[str], max_tokens: int = 256) -> List[str]:
-    """Send multiple prompts to SGLang (batched for efficiency)."""
-    # SGLang supports batch requests
-    try:
-        response = requests.post(
-            f"{SGLANG_URL}/generate",
-            json={
-                "text": prompts,
-                "sampling_params": {
-                    "max_new_tokens": max_tokens,
-                    "temperature": 0.0,
-                }
-            },
-            timeout=120.0
-        )
-        if response.status_code == 200:
-            result = response.json()
-            # Handle both single and batch responses
-            if isinstance(result, list):
-                return [r.get("text", "") for r in result]
-            else:
-                return [result.get("text", "")]
-        else:
-            return [f"[Error: {response.status_code}]"] * len(prompts)
-    except requests.exceptions.RequestException as e:
-        return [f"[Connection error: {e}]"] * len(prompts)
+def llm_generate_batch(prompts: List[str], max_tokens: int = 256) -> List[str]:
+    """Send multiple prompts to the inference engine sequentially."""
+    return [llm_generate(prompt, max_tokens) for prompt in prompts]
 
 
 # ============================================================================
@@ -229,19 +205,19 @@ def run_rag_with_contextpilot(
         print(f"       Original doc IDs:  {original_ids}")
         print(f"       Reordered doc IDs: {list(reordered_doc_ids)}")
     
-    # Step 3: Send to SGLang for inference
-    print(f"\n🚀 Step 3: Sending {len(prompts)} prompts to SGLang...")
-    
+    # Step 3: Send to inference engine
+    print(f"\n🚀 Step 3: Sending {len(prompts)} prompts to inference engine...")
+
     # Option A: Sequential (for demonstration)
     responses = []
     for i, prompt in enumerate(prompts):
         print(f"   Generating response {i+1}/{len(prompts)}...", end=" ")
-        response = sglang_generate(prompt)
+        response = llm_generate(prompt)
         responses.append(response)
         print("✓")
-    
-    # Option B: Batch (more efficient, uncomment to use)
-    # responses = sglang_generate_batch(prompts)
+
+    # Option B: Batch (uncomment to use)
+    # responses = llm_generate_batch(prompts)
     
     # Step 4: Reorder responses back to original order
     print("\n🔄 Step 4: Reordering results to original query order...")
@@ -271,7 +247,7 @@ def run_rag_with_contextpilot(
 
 def main():
     print("="*60)
-    print("ContextPilot + SGLang End-to-End RAG Example")
+    print("ContextPilot End-to-End RAG Example")
     print("="*60)
     
     # Check server availability
@@ -286,12 +262,12 @@ def main():
         contextpilot_available = False
     
     try:
-        r = requests.get(f"{SGLANG_URL}/health", timeout=2)
-        print(f"   SGLang: ✓ Ready")
-        sglang_available = True
+        r = requests.get(f"{INFERENCE_URL}/health", timeout=2)
+        print(f"   Inference engine: ✓ Ready")
+        engine_available = True
     except:
-        print(f"   SGLang: ✗ Not available at {SGLANG_URL}")
-        sglang_available = False
+        print(f"   Inference engine: ✗ Not available at {INFERENCE_URL}")
+        engine_available = False
     
     # Example queries and their retrieved documents
     # Notice: queries 0, 1, 3 share documents 1, 5 (prefix sharing opportunity!)
@@ -317,8 +293,8 @@ def main():
         print(f"   [{i}] {q[:50]}...")
         print(f"       → docs: {docs}")
     
-    if not sglang_available:
-        print("\n⚠ SGLang not available. Showing scheduling only...")
+    if not engine_available:
+        print("\n⚠ Inference engine not available. Showing scheduling only...")
         
         if contextpilot_available:
             result = schedule_contexts(query_doc_ids)
@@ -327,7 +303,7 @@ def main():
                 print(f"   Optimal order: {result['original_indices']}")
                 print(f"   Groups: {result['num_groups']}")
                 
-                print("\n💡 With this order, SGLang can reuse KV-cache prefixes:")
+                print("\n💡 With this order, the inference engine can reuse KV-cache prefixes:")
                 order = result['original_indices']
                 for i, idx in enumerate(order):
                     print(f"   Position {i}: Query {idx} (docs {query_doc_ids[idx]})")
@@ -337,7 +313,7 @@ def main():
     results = run_rag_with_contextpilot(
         queries=queries,
         query_doc_ids=query_doc_ids,
-        use_contextpilot=contextpilot_available
+        use_contextpilot=engine_available and contextpilot_available
     )
     
     # Display results

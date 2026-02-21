@@ -82,11 +82,11 @@ for i, reordered_ids in enumerate(scheduled_contexts):
     original_query_idx = scheduled_order[i]
     # Build prompt with reordered document IDs for maximum prefix sharing
     # prompt = build_prompt(queries[original_query_idx], reordered_ids)
-    # response = sglang_client.generate(prompt)
+    # response = inference_client.generate(prompt)
     pass
 
 # After inference, map results back to original order
-# final_results[scheduled_order[i]] = sglang_results[i]
+# final_results[scheduled_order[i]] = results[i]
 ```
 
 ### Using the Python Client
@@ -128,11 +128,11 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
                         └─────────────────┘
 ```
 
-### SGLang Integration
+### Inference Engine Integration
 
-Stateful mode requires patching SGLang so its radix cache notifies ContextPilot on eviction.
+Stateful mode requires patching your inference engine so its prefix cache notifies ContextPilot on eviction. Patches are available for both SGLang and vLLM.
 
-#### Install the SGLang Patch
+#### SGLang Patch
 
 ```bash
 # Automatic (recommended)
@@ -150,11 +150,22 @@ cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/ca
 cp patches/sglang/*.py $SGLANG_PATH/srt/mem_cache/
 ```
 
-The patch adds an eviction callback to `RadixCache` that POSTs evicted `request_ids` to the ContextPilot server. Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
+Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
+
+#### vLLM Patch
+
+```bash
+# Automatic (recommended)
+bash patches/vllm/apply_patch.sh
+```
+
+Compatible with vLLM **0.8.x**. See [patches/vllm/README.md](../../patches/vllm/README.md) for details.
+
+Both patches add an eviction callback that POSTs evicted `request_ids` to the ContextPilot server.
 
 #### How It Works
 
-When `CONTEXTPILOT_INDEX_URL` is set, SGLang integrates with ContextPilot at eviction time:
+When `CONTEXTPILOT_INDEX_URL` is set, the inference engine integrates with ContextPilot at eviction time:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -186,10 +197,18 @@ python -m contextpilot.server.http_server \
     --port 8765 \
     --infer-api-url http://localhost:30000
 
-# Terminal 2: Start SGLang with ContextPilot integration enabled
+# Terminal 2: Start your inference engine with ContextPilot integration enabled
+
+# Option A: SGLang
 CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
     --model-path Qwen/Qwen3-4B \
     --port 30000
+
+# Option B: vLLM
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen3-4B \
+    --port 30000 \
+    --enable-prefix-caching
 ```
 
 ### Step 1: Reorder Contexts (Builds Index Automatically)
@@ -231,7 +250,7 @@ print(result["choices"][0]["text"])
 
 ### Step 3: Eviction Sync
 
-When using SGLang with the `CONTEXTPILOT_INDEX_URL` env var, eviction sync is **automatic**. The engine's cache calls the `/evict` endpoint with evicted `request_ids` via the callback.
+When using a patched inference engine with the `CONTEXTPILOT_INDEX_URL` env var, eviction sync is **automatic**. The engine's cache calls the `/evict` endpoint with evicted `request_ids` via the callback.
 
 If you need manual eviction (e.g., for testing), use the HTTP API directly:
 
@@ -267,9 +286,9 @@ print(f"Cleared {result['conversations_cleared']} conversations")
 
 ---
 
-## Complete End-to-End Example with SGLang
+## Complete End-to-End Example
 
-For a complete working example that shows the entire workflow from documents → context scheduling → prompt building → SGLang inference, see:
+For a complete working example that shows the entire workflow from documents → context scheduling → prompt building → inference, see:
 
 📄 **[examples/stateless_sglang_e2e.py](../../examples/stateless_sglang_e2e.py)**
 
@@ -279,7 +298,7 @@ This example demonstrates:
 2. **Context Tokenization** - Converting text to token IDs for scheduling
 3. **ContextPilot Scheduling** - Optimal ordering for prefix sharing
 4. **Prompt Building** - Constructing RAG prompts with context
-5. **SGLang Inference** - Batch inference in scheduled order
+5. **Inference** - Batch inference in scheduled order (works with any OpenAI-compatible engine)
 6. **Result Reordering** - Mapping results back to original order
 
 ### Quick Preview
@@ -299,12 +318,12 @@ reordered_contexts, scheduled_order = client.reorder(contexts=contexts)
 # 3. Build prompts using reordered contexts
 scheduled_prompts = [build_rag_prompt(query, reordered_contexts[i]) for i in range(len(reordered_contexts))]
 
-# 4. Send to SGLang in scheduled order (maximizes prefix sharing)
-sglang_response = requests.post("http://localhost:30000/generate", json={
-    "text": scheduled_prompts,  # batch of prompts
-    "sampling_params": {"max_new_tokens": 256}
+# 4. Send to inference engine in scheduled order (maximizes prefix sharing)
+response = requests.post("http://localhost:30000/v1/completions", json={
+    "prompt": scheduled_prompts,
+    "max_tokens": 256
 })
-scheduled_results = sglang_response.json()
+scheduled_results = response.json()
 
 # 5. Reorder results back to original order
 final_results = [None] * len(scheduled_order)
@@ -315,10 +334,11 @@ for new_idx, orig_idx in enumerate(scheduled_order):
 ### Running the Example
 
 ```bash
-# Terminal 1: Start SGLang
+# Terminal 1: Start your inference engine (SGLang or vLLM)
 python -m sglang.launch_server --model Qwen/Qwen3-4B --port 30000
+# or: python -m vllm.entrypoints.openai.api_server --model Qwen/Qwen3-4B --port 30000 --enable-prefix-caching
 
-# Terminal 2: Start ContextPilot  
+# Terminal 2: Start ContextPilot
 python -m contextpilot.server.http_server --port 8765
 
 # Terminal 3: Run the example

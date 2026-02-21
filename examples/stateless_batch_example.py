@@ -1,12 +1,12 @@
 """
 Example: Stateless Batch Reordering with ContextPilot
 
-This shows how to use ContextPilot in STATELESS mode - just for clustering and 
-reordering contexts WITHOUT tracking SGLang's cache state.
+This shows how to use ContextPilot in STATELESS mode - just for clustering and
+reordering contexts WITHOUT tracking the inference engine's cache state.
 
 Use this when:
 1. You want to process batches independently
-2. You don't need eviction sync with SGLang
+2. You don't need eviction sync with the inference engine
 3. You just want optimal ordering for prefix sharing
 
 SETUP:
@@ -54,9 +54,9 @@ def example_with_client():
         for i, group in enumerate(result['groups']):
             print(f"  Group {i}: {group}")
         
-        # Send to SGLang in this order
+        # Send to inference engine in this order
         reordered_contexts = result['reordered_contexts']
-        print(f"\n→ Send contexts to SGLang in this order for optimal prefix sharing")
+        print(f"\n→ Send contexts to the inference engine in this order for optimal prefix sharing")
     else:
         print("Failed to reorder batch")
     
@@ -135,8 +135,8 @@ def example_direct_http():
 
 def batch_processing_workflow():
     """
-    Complete workflow: Reorder batch → Send to SGLang → Process responses.
-    
+    Complete workflow: Reorder batch → Send to inference engine → Process responses.
+
     This is the typical workflow when using ContextPilot in stateless mode
     without needing cache sync.
     """
@@ -177,7 +177,7 @@ def batch_processing_workflow():
     print(f"   ✓ {result['num_groups']} execution groups")
     
     # Step 3: Reorder your data according to the execution order
-    print("\n3. Reordering data for SGLang...")
+    print("\n3. Reordering data for inference...")
     reordered_contexts = [contexts[i] for i in execution_order]
     reordered_prompts = [original_prompts[i] for i in execution_order]
     
@@ -185,14 +185,14 @@ def batch_processing_workflow():
         orig_idx = execution_order[i]
         print(f"   Position {i}: Original query {orig_idx} - {prompt[:30]}... (docs: {ctx[:3]}...)")
     
-    # Step 4: Send to SGLang in this order
-    print("\n4. Send to SGLang in reordered order...")
-    print("   (This would be your actual SGLang API calls)")
-    
-    # Example pseudo-code for SGLang:
+    # Step 4: Send to inference engine in this order
+    print("\n4. Send to inference engine in reordered order...")
+    print("   (This would be your actual inference API calls)")
+
+    # Example pseudo-code:
     # for prompt, context in zip(reordered_prompts, reordered_contexts):
     #     full_prompt = build_prompt(prompt, context)
-    #     response = sglang_client.generate(full_prompt)
+    #     response = client.completions.create(prompt=full_prompt)
     #     results.append(response)
     
     # Step 5: Reorder results back to original order

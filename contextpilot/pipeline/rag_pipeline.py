@@ -566,10 +566,11 @@ class RAGPipeline:
                 **extra_request_body,
             }
             
-            # Add rid for request tracking in SGLang's radix cache
-            # SGLang uses 'rid' field to identify requests
             if request_id:
-                payload["rid"] = request_id
+                if self.inference_config.backend == "vllm":
+                    payload["request_id"] = request_id
+                else:
+                    payload["rid"] = request_id  # SGLang field name
             
             output = {
                 "generated_text": "",

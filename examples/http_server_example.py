@@ -5,9 +5,13 @@ This shows how to use the ContextPilot HTTP server for online inference
 with automatic KV cache management.
 
 SETUP:
-1. Start SGLang (with ContextPilot patch):
+1. Start an inference engine with ContextPilot patch:
+   # SGLang:
    CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
        --model-path Qwen/Qwen2.5-7B-Instruct --port 30000
+   # or vLLM:
+   CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \
+       --model Qwen/Qwen2.5-7B-Instruct --port 30000 --enable-prefix-caching
 
 2. Start ContextPilot server:
    python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
@@ -33,9 +37,13 @@ def check_server():
     except Exception as e:
         print(f"✗ Server not running: {e}")
         print("\nPlease start the servers first:")
-        print("  # Terminal 1: Start SGLang with ContextPilot patch")
+        print("  # Terminal 1: Start inference engine with ContextPilot patch")
+        print("  # SGLang:")
         print("  CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \\")
         print("      --model-path Qwen/Qwen2.5-7B-Instruct --port 30000")
+        print("  # or vLLM:")
+        print("  CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \\")
+        print("      --model Qwen/Qwen2.5-7B-Instruct --port 30000 --enable-prefix-caching")
         print()
         print("  # Terminal 2: Start ContextPilot server")
         print("  python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000")
@@ -186,7 +194,7 @@ def main():
             print()
     except Exception as e:
         print(f"  ⚠ Inference backend not available: {e}")
-        print("  (This is expected if SGLang is not running)")
+        print("  (This is expected if no inference engine is running)")
     print()
     
     # Show stats

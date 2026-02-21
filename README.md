@@ -133,7 +133,7 @@ for turn_idx, (query, mems) in enumerate(zip(queries, turn_memories)):
     print(f"A: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** Stateful mode works without eviction sync — `ContextPilot` tracks the previous ordering and reorders new contexts to maximize prefix cache hits. For production deployments with limited KV-cache capacity, install the [SGLang eviction patch](docs/guides/online_usage.md#sglang-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md) for HTTP server setup.
+> **Note:** Stateful mode works without eviction sync — `ContextPilot` tracks the previous ordering and reorders new contexts to maximize prefix cache hits. For production deployments with limited KV-cache capacity, install the eviction patch for your inference engine ([SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration)) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md) for HTTP server setup.
 
 **Offline / Online Stateless** — same API, just pass the full batch at once:
 

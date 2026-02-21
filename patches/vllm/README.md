@@ -96,7 +96,7 @@ When `CONTEXTPILOT_INDEX_URL` is not set, the patch has zero overhead — no tra
 
 ## Compatibility
 
-These patches are compatible with vLLM version: **0.8.x** (v1 block manager architecture).
+These patches are compatible with vLLM version: **0.15.1** (v1 block manager architecture).
 
 If you're using a different version, you may need to manually apply the changes.
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# ContextPilot patch for vLLM v0.8.x block_pool.py
+# ContextPilot patch for vLLM v0.15.1 block_pool.py
 # Adds eviction callback support for KV cache synchronization.
 #
 # Changes from vanilla vLLM:

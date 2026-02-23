@@ -67,7 +67,7 @@ jobs:
             ```
             
             ### Changes
-            See [CHANGELOG](https://github.com/SecretSettler/ContextPilot/blob/main/CHANGELOG.md) for details.
+            See [CHANGELOG](https://github.com/EfficientContext/ContextPilot/blob/main/CHANGELOG.md) for details.
           files: |
             dist/*.whl
             dist/*.tar.gz

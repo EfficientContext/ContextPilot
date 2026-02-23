@@ -27,6 +27,10 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 3. **Negligible Accuracy Loss**: Achieving significant performance improvements with minimal to no accuracy degradation across various benchmarks.
 3. **Widely Tested**: Tested with a wide range of RAG and Agentic AI applications.
 
+<div align="center">
+<img src="assets/system_description.png" alt="ContextPilot Architecture" width="800"/>
+</div>
+
 ## Target Workloads
 
 1. **Trending Topic QA** — Search and generation for breaking news and hot topics beyond model knowledge
@@ -84,8 +88,20 @@ More [detailed installation instructions](docs/getting_started/installation.md) 
 
 ### Quick Start
 
-**Stateful** — `ContextPilot` tracks cached state across turns so
-overlapping documents are moved to the prefix for KV-cache reuse:
+In long-context workloads (RAG, agentic memory, etc.), each request prepends a set of context blocks to the prompt. Different requests often include some of the **same** blocks but in different orders — so the inference engine sees different token sequences and cannot reuse its KV cache. ContextPilot adds **one call** (`cp.reorder()`) to rearrange context blocks so that shared blocks align into a common prefix, enabling cache reuse. An importance ranking preserves accuracy without affecting the prefix.
+
+| Mode | When to Use | How It Works |
+|------|-------------|--------------|
+| **Stateful** | Multi-turn (e.g., chatbot + [Mem0](https://github.com/mem0ai/mem0)) | Tracks previously cached blocks; moves overlapping ones to the prefix each turn |
+| **Stateless** | Batch / single-shot | Globally reorders and schedules all requests for maximum prefix sharing |
+
+Stateless mode can run **offline** (direct API calls, as shown below) or **online** (via HTTP server; see the [online usage guide](docs/guides/online_usage.md)).
+
+---
+
+#### Stateful Mode
+
+Multi-turn chatbot where each turn's context blocks partially overlap with previous turns. `cp.reorder()` moves shared blocks to the prefix so the engine reuses cached KV states instead of recomputing them.
 
 ```python
 from openai import OpenAI
@@ -94,29 +110,24 @@ import contextpilot as cp
 client = OpenAI(base_url="http://localhost:30000/v1", api_key="...")
 cp_live = cp.ContextPilot(use_gpu=False)
 
-# Simulated per-turn memory search (e.g. from mem0)
-# Each turn retrieves different but partially overlapping documents
-turn_memories = [
+# Simulated per-turn context blocks from Mem0 — partially overlapping across turns
+turn_contexts = [
     ["Transformers use self-attention", "GPT is based on transformers", "BERT is bidirectional"],
     ["RNNs use hidden states", "GPT is based on transformers", "LSTMs solve vanishing gradients"],
     ["Attention computes QKV", "Transformers use self-attention", "GPT is based on transformers"],
 ]
 queries = ["What are transformers?", "How do RNNs compare?", "Explain attention in detail."]
 
-for turn_idx, (query, mems) in enumerate(zip(queries, turn_memories)):
-    # 1. Reorder for prefix sharing (handles cold start & incremental)
-    # .reorder() accepts a single list or list-of-lists
-    reordered, indices = cp_live.reorder(mems)
-    ctx = reordered[0]  # single context per turn
-    # Turn 2: "GPT is based on transformers" ← moved to prefix (shared with turn 1)
-    # Turn 3: "Transformers …", "GPT …"     ← both moved to prefix
+for turn_idx, (query, blocks) in enumerate(zip(queries, turn_contexts)):
+    reordered, indices = cp_live.reorder(blocks)  # ← reorder for prefix sharing
+    ctx = reordered[0]
+    # Turn 2: "GPT is based on transformers" moves to prefix (cache hit)
+    # Turn 3: "Transformers …", "GPT …" both move to prefix
 
-    # 2. Generate answer with reordered context
     docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
-    # Map original importance order (mems) → 1-based positions in reordered ctx
     pos = {doc: i + 1 for i, doc in enumerate(ctx)}
-    importance_ranking = ">".join(str(pos[doc]) for doc in mems if doc in pos)
-    # System prompt = documents + importance ranking (after </documents>, doesn't affect prefix sharing)
+    importance_ranking = ">".join(str(pos[doc]) for doc in blocks if doc in pos)
+
     response = client.chat.completions.create(
         model="Qwen/Qwen3-4B",
         messages=[
@@ -133,15 +144,19 @@ for turn_idx, (query, mems) in enumerate(zip(queries, turn_memories)):
     print(f"A: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** Stateful mode works without eviction sync — `ContextPilot` tracks the previous ordering and reorders new contexts to maximize prefix cache hits. For production deployments with limited KV-cache capacity, install the eviction patch for your inference engine ([SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration)) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md) for HTTP server setup.
+> **Note:** For production deployments with limited KV-cache capacity, install the eviction patch for [SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md).
 
-**Offline / Online Stateless** — same API, just pass the full batch at once:
+---
+
+#### Stateless Mode
+
+Batch of requests whose context blocks overlap across queries. `cp.reorder()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse.
 
 ```python
 from openai import OpenAI
 import contextpilot as cp
 
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="...") # Your inference engine URL and API key
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="...")
 cp_batch = cp.ContextPilot(use_gpu=False)
 
 queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
@@ -151,11 +166,8 @@ all_contexts = [
     ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
 ]
 
-# One call: builds index, reorders docs for prefix sharing, and schedules execution order
-# .reorder() returns (reordered_contexts, original_indices)
-reordered_ctx, order = cp_batch.reorder(all_contexts)
+reordered_ctx, order = cp_batch.reorder(all_contexts)  # ← reorder + schedule
 
-# Build all prompts in optimized order
 messages_batch = []
 for ctx, orig_idx in zip(reordered_ctx, order):
     docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
@@ -163,7 +175,6 @@ for ctx, orig_idx in zip(reordered_ctx, order):
     importance_ranking = ">".join(
         str(pos[doc]) for doc in all_contexts[orig_idx] if doc in pos
     )
-    # System prompt = documents + importance ranking (after </documents>, doesn't affect prefix sharing)
     messages_batch.append({
         "model": "Qwen/Qwen3-4B",
         "messages": [
@@ -177,7 +188,6 @@ for ctx, orig_idx in zip(reordered_ctx, order):
         ],
     })
 
-# Send concurrently — inference engine processes them in order for max cache reuse
 import asyncio, openai
 
 async def generate_all(batch):
@@ -189,8 +199,6 @@ responses = asyncio.run(generate_all(messages_batch))
 for resp, orig_idx in zip(responses, order):
     print(f"Q: {queries[orig_idx]}\nA: {resp.choices[0].message.content}\n")
 ```
-
-> For online stateless scheduling via HTTP server, see the [online usage guide](docs/guides/online_usage.md).
 
 ## Documentation
 

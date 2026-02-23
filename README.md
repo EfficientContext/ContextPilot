@@ -103,7 +103,7 @@ Stateless mode can run **offline** (direct API calls, as shown below) or **onlin
 
 #### Stateful Mode
 
-Multi-turn chatbot where each turn's context blocks partially overlap with previous turns. `cp.reorder()` moves shared blocks to the prefix so the engine reuses cached KV states instead of recomputing them.
+Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially overlap with previous turns. `cp.reorder()` moves shared blocks to the prefix so the engine reuses cached KV states instead of recomputing them.
 
 ```python
 from openai import OpenAI

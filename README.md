@@ -31,6 +31,8 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 <img src="assets/system_description.png" alt="ContextPilot Architecture" width="800"/>
 </div>
 
+> For more details on the architecture, design principles, and implementation, please refer to our [paper](https://arxiv.org/abs/2511.03475) and the [documentation](docs/README.md).
+
 ## Target Workloads
 
 1. **Trending Topic QA** — Search and generation for breaking news and hot topics beyond model knowledge
@@ -213,4 +215,14 @@ Go hands-on with our [examples](examples/), demonstrating how to address differe
 We welcome and value all contributions! Please feel free to submit issues and pull requests.
 
 ## Citation
-We will include the paper citation soon!
+```bibtex
+@misc{contextpilot2026,
+      title={ContextPilot: Fast Long-Context Inference via Context Reuse}, 
+      author={Yinsicheng Jiang and Yeqi Huang and Liang Cheng and Cheng Deng and Xuan Sun and Luo Mai},
+      year={2026},
+      eprint={2511.03475},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2511.03475}, 
+}
+```

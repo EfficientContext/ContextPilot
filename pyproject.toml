@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "contextpilot"
 version = "0.3.4"
-description = "Efficient Retrieval-Augmented Generation with Accuracy-Preserving Context Reuse"
+description = "Fast Long-Context Inference via Context Reuse"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Yinsicheng Jiang" }, { name = "Chivier Humber" }]
+authors = [{ name = "Yinsicheng Jiang" }, { name = "Yeqi Huang" }]
 license = { text = "Apache-2.0" }
-keywords = ["rag", "llm", "context-reuse", "kv-cache", "retrieval-augmented-generation"]
+keywords = ["rag", "llm", "context-reuse", "kv-cache", "retrieval-augmented-generation", "agentic-memory", "agents"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -31,9 +31,9 @@ include = ["contextpilot*"]
 dependencies = { file = ["requirements.txt"] }
 
 [project.urls]
-Homepage = "https://github.com/SecretSettler/ContextPilot"
-Repository = "https://github.com/SecretSettler/ContextPilot"
-Issues = "https://github.com/SecretSettler/ContextPilot/issues"
+Homepage = "https://github.com/EfficientContext/ContextPilot"
+Repository = "https://github.com/EfficientContext/ContextPilot"
+Issues = "https://github.com/EfficientContext/ContextPilot/issues"
 
 [project.optional-dependencies]
 dev = ["black", "bumpver", "isort", "pip-tools", "pytest", "pytest-cov", "ipython"]

@@ -93,7 +93,7 @@ More [detailed installation instructions](docs/getting_started/installation.md) 
 
 ### Quick Start
 
-In long-context workloads (RAG, agentic memory, etc.), each request prepends a set of context blocks to the prompt. Different requests often include some of the **same** blocks but in different orders — so the inference engine sees different token sequences and cannot reuse its KV cache. ContextPilot adds **one call** (`cp.reorder()`) to rearrange context blocks so that shared blocks align into a common prefix, enabling cache reuse. An importance ranking preserves accuracy without affecting the prefix.
+Add **one call** (`cp.reorder()`) before inference to rearrange context blocks so that shared content aligns into a common prefix, enabling cache reuse. An importance ranking in the prompt preserves accuracy.
 
 | Mode | When to Use | How It Works |
 |------|-------------|--------------|

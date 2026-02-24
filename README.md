@@ -28,7 +28,7 @@ Long-context inference workloads (RAG, multi-turn chat with memory, tool-augment
 ContextPilot is a long-context optimization layer that sits between context assembly and inference, maximizing prefix sharing and eliminating duplication:
 
 1. **High Throughput & Cache Hit Ratio** — Intelligent context reuse that boosts prefill throughput and prefix cache hit ratio.
-2. **Drop-in Compatibility** — Works with RAG libraries ([PageIndex](https://github.com/VectifyAI/PageIndex)), agent memory ([Mem0](https://github.com/mem0ai/mem0)), KV cache engines ([LMCache](https://github.com/LMCache/LMCache)), and inference backends (vLLM, SGLang).
+2. **Drop-in Compatibility** — Works with RAG libraries ([PageIndex](https://github.com/VectifyAI/PageIndex)), agent memory ([Mem0](https://github.com/mem0ai/mem0)), KV cache engines ([LMCache](https://github.com/LMCache/LMCache)), and inference backends ([vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang)).
 3. **Negligible Accuracy Loss** — Significant speedups with minimal to no accuracy degradation across benchmarks.
 4. **Widely Tested** — Validated across diverse RAG and agentic AI applications.
 

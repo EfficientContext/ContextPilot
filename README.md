@@ -201,6 +201,7 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
+#### Deduplication
 ContextPilot also supports [automatic context deduplication](docs/guides/multi_turn.md) to eliminate redundant context blocks across turns (30-60% savings).
 
 ## Documentation

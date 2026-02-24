@@ -25,7 +25,7 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 1. **High Throughput & Cache Hit Ratio**: Boosting prefill throughput and prefix cache hit ratio with intelligent context reuse.
 2. **Strong Compatibility**: Strong compatibility with existing popular RAG libraries (PageIndex), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang).
 3. **Negligible Accuracy Loss**: Achieving significant performance improvements with minimal to no accuracy degradation across various benchmarks.
-3. **Widely Tested**: Tested with a wide range of RAG and Agentic AI applications.
+4. **Widely Tested**: Tested with a wide range of RAG and Agentic AI applications.
 
 <div align="center">
 <img src="assets/system_description.png" alt="ContextPilot Architecture" width="800"/>
@@ -48,7 +48,7 @@ ContextPilot is a fast optimization system on context engineering layer for agen
 <img src="assets/ds_r1_result_horizontal.png" alt="Benchmark Results" width="800"/>
 </div>
 
-ContextPilot (Stateless) on DeepSeek-R1 maintains accuracy compared to SGLang, achieving 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA.
+ContextPilot (Offline) on DeepSeek-R1 maintains accuracy compared to SGLang, achieving 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA.
 
 ### Accuracy on MT-RAG Benchmark (Online Scheduling)
 
@@ -65,7 +65,7 @@ ContextPilot (Stateless) on DeepSeek-R1 maintains accuracy compared to SGLang, a
 
 ContextPilot delivers **4-13x** improvements in cache hit rates and **1.5-3.5x** reductions in prefill latency for large-batch RAG workloads, while maintaining or improving accuracy.
 
-**Furthermore**, ContextPilot has been tested to reduce input token costs by around **36%** with GPT-5.2.
+**Furthermore**, when used with hosted API models (e.g. GPT-5.2), ContextPilot reduces the number of input tokens sent per request by around **36%**, directly lowering API costs.
 
 See [Benchmarks](docs/reference/benchmarks.md) in the documentation for GPU vs CPU performance analysis and detailed benchmark methodology.
 
@@ -94,14 +94,14 @@ In long-context workloads (RAG, agentic memory, etc.), each request prepends a s
 
 | Mode | When to Use | How It Works |
 |------|-------------|--------------|
-| **Stateful** | Multi-turn (e.g., chatbot + [Mem0](https://github.com/mem0ai/mem0)) | Tracks previously cached blocks; moves overlapping ones to the prefix each turn |
-| **Stateless** | Batch / single-shot | Globally reorders and schedules all requests for maximum prefix sharing |
+| **Online** | Multi-turn (e.g., chatbot + [Mem0](https://github.com/mem0ai/mem0)) | Tracks previously cached blocks; moves overlapping ones to the prefix each turn |
+| **Offline** | Batch / single-shot | Globally reorders and schedules all requests for maximum prefix sharing |
 
-Stateless mode can run **offline** (direct API calls, as shown below) or **online** (via HTTP server; see the [online usage guide](docs/guides/online_usage.md)).
+Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — your existing inference deployment stays unchanged. They support both direct API calls (as shown below) and HTTP server deployment (see the [online usage guide](docs/guides/online_usage.md)).
 
 ---
 
-#### Stateful Mode
+#### Online Mode
 
 Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially overlap with previous turns. `cp.reorder()` moves shared blocks to the prefix so the engine reuses cached KV states instead of recomputing them.
 
@@ -109,6 +109,7 @@ Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially o
 from openai import OpenAI
 import contextpilot as cp
 
+# vLLM default: http://localhost:8000/v1 | SGLang default: http://localhost:30000/v1
 client = OpenAI(base_url="http://localhost:30000/v1", api_key="...")
 cp_live = cp.ContextPilot(use_gpu=False)
 
@@ -146,19 +147,21 @@ for turn_idx, (query, blocks) in enumerate(zip(queries, turn_contexts)):
     print(f"A: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** For production deployments with limited KV-cache capacity, install the eviction patch for [SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale, causing it to reorder blocks for cache hits that no longer exist. To prevent this, install the eviction patch for [SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration) so the index stays in sync. See the [online usage guide](docs/guides/online_usage.md).
 
 ---
 
-#### Stateless Mode
+#### Offline Mode
 
-Batch of requests whose context blocks overlap across queries. `cp.reorder()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse.
+Batch of requests whose context blocks overlap across queries. `cp.reorder()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for detailed documentation. You can also deploy Offline mode as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
 
 ```python
-from openai import OpenAI
+import asyncio
+import openai
 import contextpilot as cp
 
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="...")
+# vLLM default: http://localhost:8000/v1 | SGLang default: http://localhost:30000/v1
+BASE_URL = "http://localhost:30000/v1"
 cp_batch = cp.ContextPilot(use_gpu=False)
 
 queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
@@ -168,39 +171,34 @@ all_contexts = [
     ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
 ]
 
-reordered_ctx, order = cp_batch.reorder(all_contexts)  # ← reorder + schedule
+reordered_ctx, order = cp_batch.reorder(all_contexts)  # ← global reorder + schedule
 
+# Build requests in the scheduled order
 messages_batch = []
 for ctx, orig_idx in zip(reordered_ctx, order):
-    docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
-    pos = {doc: i + 1 for i, doc in enumerate(ctx)}
-    importance_ranking = ">".join(
-        str(pos[doc]) for doc in all_contexts[orig_idx] if doc in pos
-    )
-    messages_batch.append({
-        "model": "Qwen/Qwen3-4B",
-        "messages": [
-            {"role": "system", "content": (
-                f"Answer the question based on the provided documents.\n\n"
-                f"<documents>\n{docs_section}\n</documents>\n\n"
-                f"Read the documents in this importance ranking: {importance_ranking}\n"
-                f"Prioritize information from higher-ranked documents."
-            )},
+    docs = "\n".join(f"[{i+1}] {d}" for i, d in enumerate(ctx))
+    pos = {d: i + 1 for i, d in enumerate(ctx)}
+    ranking = ">".join(str(pos[d]) for d in all_contexts[orig_idx] if d in pos)
+    messages_batch.append(dict(
+        model="Qwen/Qwen3-4B",
+        messages=[
+            {"role": "system", "content": f"Answer based on the documents.\n\n"
+             f"<documents>\n{docs}\n</documents>\n\n"
+             f"Importance ranking: {ranking}"},
             {"role": "user", "content": queries[orig_idx]},
         ],
-    })
+    ))
 
-import asyncio, openai
+# Send all requests concurrently
+async def generate_all():
+    ac = openai.AsyncOpenAI(base_url=BASE_URL, api_key="...")
+    return await asyncio.gather(*[ac.chat.completions.create(**r) for r in messages_batch])
 
-async def generate_all(batch):
-    aclient = openai.AsyncOpenAI(base_url="http://localhost:30000/v1", api_key="...")
-    tasks = [aclient.chat.completions.create(**req) for req in batch]
-    return await asyncio.gather(*tasks)
-
-responses = asyncio.run(generate_all(messages_batch))
-for resp, orig_idx in zip(responses, order):
-    print(f"Q: {queries[orig_idx]}\nA: {resp.choices[0].message.content}\n")
+for resp, idx in zip(asyncio.run(generate_all()), order):
+    print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
+
+> **Tip:** ContextPilot also supports [automatic context deduplication](docs/guides/multi_turn.md) to eliminate redundant context blocks across turns (30-60% savings).
 
 ## Documentation
 
@@ -208,7 +206,7 @@ Check out the ContextPilot [documentation](docs/README.md) for comprehensive gui
 
 ## Examples
 
-Go hands-on with our [examples](examples/), demonstrating how to address different use cases with ContextPilot.
+Go hands-on with our [examples](examples/), including [Mem0 integration](examples/mem0_locomo_example.py), [PageIndex RAG](examples/pageindex_e2e_example.py), and [offline batch scheduling](examples/offline/).
 
 ## Contributing
 

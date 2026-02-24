@@ -21,7 +21,7 @@
 
 ## About
 
-Long-context inference workloads — RAG, agentic memory, tool-augmented generation — build prompts by prepending retrieved documents, memory entries, or tool outputs as context blocks. Across requests these blocks often **overlap** but arrive in **different orders**, and may also contain **duplicated** content across turns. The inference engine sees different token sequences each time, causing prefix cache misses and redundant KV-state recomputation.
+Long-context inference workloads — from RAG-based QA to multi-turn conversations with long-term memory — build prompts by prepending retrieved documents, memory entries, or tool outputs as context blocks. Across requests these blocks often **overlap** but arrive in **different orders**, and may also contain **duplicated** content across turns. The inference engine sees different token sequences each time, causing prefix cache misses and redundant KV-state recomputation.
 
 ContextPilot is a lightweight context optimization layer that maximizes prefix sharing and reduces redundancy across requests:
 

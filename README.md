@@ -228,7 +228,7 @@ See the ContextPilot [documentation](docs/README.md) for comprehensive guides.
 
 ## Examples
 
-See our [examples](examples/): [Mem0 integration](examples/mem0_locomo_example.py), [PageIndex RAG](examples/pageindex_e2e_example.py), and [offline batch scheduling](examples/offline/).
+See our guides for [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), and [multi-turn deduplication](docs/guides/multi_turn.md).
 
 ## Contributing
 

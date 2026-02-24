@@ -21,7 +21,10 @@
 
 ## About
 
-ContextPilot is a fast optimization system on context engineering layer for agentic workloads:
+Long-context inference workloads — RAG, agentic memory, tool-augmented generation — build prompts by prepending retrieved documents, memory entries, or tool outputs as context blocks. Across requests these blocks often **overlap** but arrive in **different orders**, and may also contain **duplicated** content across turns. The inference engine sees different token sequences each time, causing prefix cache misses and redundant KV-state recomputation.
+
+ContextPilot is a lightweight context optimization layer that maximizes prefix sharing and reduces redundancy across requests:
+
 1. **High Throughput & Cache Hit Ratio**: Boosting prefill throughput and prefix cache hit ratio with intelligent context reuse.
 2. **Strong Compatibility**: Strong compatibility with existing popular RAG libraries (PageIndex), Agentic memory layer (Mem0), KV cache optimization engine (LMCache), and Inference engines (vLLM and SGLang).
 3. **Negligible Accuracy Loss**: Achieving significant performance improvements with minimal to no accuracy degradation across various benchmarks.
@@ -65,7 +68,7 @@ ContextPilot (Offline) on DeepSeek-R1 maintains accuracy compared to SGLang, ach
 
 ContextPilot delivers **4-13x** improvements in cache hit rates and **1.5-3.5x** reductions in prefill latency for large-batch RAG workloads, while maintaining or improving accuracy.
 
-**Furthermore**, when used with hosted API models (e.g. GPT-5.2), ContextPilot reduces the number of input tokens sent per request by around **36%**, directly lowering API costs.
+**Furthermore**, hosted API providers (e.g. OpenAI) charge less for cached input tokens than uncached ones. By increasing cache hit ratio, ContextPilot has been tested to reduce input token costs by around **36%** on GPT-5.2.
 
 See [Benchmarks](docs/reference/benchmarks.md) in the documentation for GPU vs CPU performance analysis and detailed benchmark methodology.
 

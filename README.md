@@ -7,7 +7,7 @@
   [![PyPI](https://img.shields.io/pypi/v/contextpilot)](https://pypi.org/project/contextpilot/)
   [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-  <p><strong>4–13× cache hits | 1.5–3× lower prefill | ~36% token savings</strong> across vLLM, SGLang, and RAG/agent stacks.</p>
+  <p><strong>4–13× cache hits | 1.5–3× faster prefill | ~36% token savings</strong> across vLLM, SGLang, RAG, AI Agents, and more.</p>
 
 </div>
 
@@ -22,7 +22,7 @@
 
 ## About
 
-Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many context blocks. Across requests, these blocks often overlap but get reordered or duplicated, changing token prefixes and triggering cache misses and redundant KV recomputation. Common examples include Trending Topic QA, Closed-Domain Long-Context QA, Large-Batch Long-Context Execution, and multi-turn conversations with long-term memory.
+Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many context blocks. Across requests, these blocks often overlap but get reordered or duplicated, changing token prefixes and triggering cache misses and redundant KV recomputation. Common examples include (1) Trending Topic QA, (2) Closed-Domain Long-Context QA, (3) Batched Long-Context Inference, (4) multi-turn conversations with long-term memory and many more.
 
 ContextPilot sits between context assembly and inference to maximize prefix reuse and remove duplicates:
 
@@ -31,13 +31,23 @@ ContextPilot sits between context assembly and inference to maximize prefix reus
 3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
 4. **Widely tested** — validated across diverse RAG and agentic workloads.
 
-It maintains a **Context Index** of cached content, then per request applies **Reorder** (align shared blocks into a common prefix) and/or **Deduplicate** (replace repeats with reference hints), plus **cache-aware scheduling** to maximize prefix sharing. The optimized prompt is sent via the OpenAI-compatible API; `POST /evict` keeps the index synced when KV cache is reclaimed.
+It maintains a **Context Index** of cached content, then per request applies **Reorder** (align shared blocks into a common prefix) and/or **Deduplicate** (replace repeats with reference hints), plus **cache-aware scheduling** to maximize prefix sharing. The optimized prompt is sent via the OpenAI-compatible API; `POST /evict` keeps the index synced when KV cache is reclaimed. See its design overview below.
 
 <div align="center">
 <img src="assets/system_description.png" alt="ContextPilot Architecture" width="600"/>
 </div>
 
-> For design details, see our [paper](https://arxiv.org/abs/2511.03475) and the [documentation](docs/README.md).
+> For more design details, see [Paper](https://arxiv.org/abs/2511.03475) and [Documentation](docs/README.md).
+
+## Performance at a Glance
+
+<div align="center">
+<img src="assets/ds_r1_result_horizontal.png" alt="Benchmark Results" width="800"/>
+</div>
+
+ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU cluster with minimal accuracy impact: **64.68% vs 64.15% F1** on MultihopRAG and **41.08% vs 40.20% F1** on NarrativeQA. 
+
+On consumer-grade or professional-grade GPUs (e.g., 4090, A6000), ContextPilot delivers consistent speedups across popular LLMs and long-context workloads—see the Evaluation section of the [Paper](https://arxiv.org/abs/2511.03475) for full performance results.
 
 ## Installation
 
@@ -187,14 +197,6 @@ See [documentation](docs/README.md) for more APIs.
 ### Adoption Examples
 
 See many useful adoption examples: [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), and [multi-turn deduplication](docs/guides/multi_turn.md).
-
-## Performance
-
-<div align="center">
-<img src="assets/ds_r1_result_horizontal.png" alt="Benchmark Results" width="800"/>
-</div>
-
-ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a large GPU cluster with minimal accuracy impact: 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA. See [Benchmarks](docs/reference/benchmarks.md) for more results.
 
 ## Citation
 ```bibtex

@@ -1,13 +1,13 @@
 <div align="center">
-  <img src="assets/about.png" alt="ContextPilot Logo" width="800"/>
+  <img src="assets/about.png" alt="ContextPilot Logo" width="600"/>
 
-  <h1><strong>ContextPilot: Fast Long-Context Inference via Context Reuse</strong></h1>
+  <h2><strong>ContextPilot: Fast Long-Context Inference via Context Reuse</strong></h2>
 
   [![Python](https://img.shields.io/badge/python-≥3.10-blue)](https://www.python.org/)
   [![PyPI](https://img.shields.io/pypi/v/contextpilot)](https://pypi.org/project/contextpilot/)
   [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-  <p>A lightweight middleware that accelerates long-context inference by optimizing context blocks before they reach the inference engine, turning prefix cache misses into hits. Drop-in compatible with vLLM, SGLang, and any RAG/agent pipeline. <strong>4-13x higher cache hit ratio | Up to 3x lower prefill latency | ~36% input token cost savings on hosted APIs.</strong></p>
+  <p><strong>4–13× cache hits | 1.5–3× lower prefill | ~36% token savings</strong> across vLLM, SGLang, and RAG/agent stacks.</p>
 
 </div>
 
@@ -19,80 +19,27 @@
 
 - [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.
-- [2025/12] ContextPilot v0.2.0 released.
 
 ## About
 
-Long-context inference workloads (RAG, multi-turn chat with memory, tool-augmented agents) build prompts by prepending gathered context blocks (documents, memory entries, tool outputs, etc.) — often tens to hundreds of thousands of tokens. Across requests these blocks often **overlap** but arrive in **different orders**, and may be **duplicated** across turns. The inference engine sees a different token sequence each time, causing prefix cache misses and redundant KV-state recomputation over long contexts.
+Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many context blocks. Across requests, these blocks often overlap but get reordered or duplicated, changing token prefixes and triggering cache misses and redundant KV recomputation. Common examples include Trending Topic QA, Closed-Domain Long-Context QA, Large-Batch Long-Context Execution, and multi-turn conversations with long-term memory.
 
-ContextPilot is a long-context optimization layer that sits between context assembly and inference, maximizing prefix sharing and eliminating duplication:
+ContextPilot sits between context assembly and inference to maximize prefix reuse and remove duplicates:
 
-1. **High Throughput & Cache Hit Ratio** — Intelligent context reuse that boosts prefill throughput and prefix cache hit ratio.
-2. **Drop-in Compatibility** — Works with RAG libraries ([PageIndex](https://github.com/VectifyAI/PageIndex)), agent memory ([Mem0](https://github.com/mem0ai/mem0)), KV cache engines ([LMCache](https://github.com/LMCache/LMCache)), and inference backends ([vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang)).
-3. **Negligible Accuracy Loss** — Significant speedups with minimal to no accuracy degradation across benchmarks.
-4. **Widely Tested** — Validated across diverse RAG and agentic AI applications.
+1. **Higher throughput & cache hits** — boosts prefill throughput and prefix cache hit ratio via context reuse.  
+2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang).  
+3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
+4. **Widely tested** — validated across diverse RAG and agentic workloads.
 
-<div align="center">
-<img src="assets/system_description.png" alt="ContextPilot Architecture" width="800"/>
-</div>
-
-Context blocks from upstream stores (vector DBs, agent memory, etc.) pass through ContextPilot, which maintains a **Context Index** of what the engine has cached. On each request, **Context Index Operations** — **Reorder** (align shared blocks into a common prefix) or **Deduplicate** (replace repeated blocks with reference hints) — optimize the context, and **Cache-aware Scheduling** determines the execution order to maximize prefix sharing. The optimized prompt is forwarded via the standard OpenAI-compatible API; an eviction callback (`POST /evict`) keeps the index in sync when the engine reclaims KV-cache memory.
-
-> For details on architecture, design, and implementation, see our [paper](https://arxiv.org/abs/2511.03475) and the [documentation](docs/README.md).
-
-## Core Concepts
-
-ContextPilot currently provides two core optimizations — **reorder** or **deduplicate** — targeting different sources of inefficiency in long-context workloads.
-
-### Reorder
-
-`cp.reorder()` places **shared blocks at the beginning** of the prompt so consecutive requests share the longest possible common prefix, enabling KV-cache reuse. To preserve answer quality, ContextPilot injects an **importance ranking** so the model still prioritizes blocks in their original relevance order.
-
-### Deduplicate
-
-In multi-turn conversations, successive turns frequently gather **many of the same context blocks**, wasting tokens and compute.
-
-`cp.deduplicate()` compares the current turn's context blocks against prior turns (tracked by `conversation_id`). Duplicate blocks are replaced with lightweight **reference hints** (e.g., *"See Doc 3 from previous context"*); only genuinely new blocks are sent in full — typically reducing duplicated tokens by **30-60%**.
-
-## Target Workloads
-
-1. **Trending Topic QA** — Search and generation for breaking news beyond model knowledge.
-2. **Closed-Domain Long-Context QA** — QA over specialized corpora (novels, financial reports, legal docs) with search or in-context lookup.
-3. **Large-Batch Long-Context Execution** — High-throughput inference where many requests share overlapping contexts.
-4. **Multi-Turn Conversations with Long-Term Memory** — Persistent context reuse across turns (e.g., [Mem0](https://github.com/mem0ai/mem0)).
-
-## Benchmark and Performance
-
-### System Performance
+It maintains a **Context Index** of cached content, then per request applies **Reorder** (align shared blocks into a common prefix) and/or **Deduplicate** (replace repeats with reference hints), plus **cache-aware scheduling** to maximize prefix sharing. The optimized prompt is sent via the OpenAI-compatible API; `POST /evict` keeps the index synced when KV cache is reclaimed.
 
 <div align="center">
-<img src="assets/ds_r1_result_horizontal.png" alt="Benchmark Results" width="800"/>
+<img src="assets/system_description.png" alt="ContextPilot Architecture" width="600"/>
 </div>
 
-ContextPilot (Offline) on DeepSeek-R1 matches or slightly improves accuracy compared to SGLang, achieving 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA.
+> For design details, see our [paper](https://arxiv.org/abs/2511.03475) and the [documentation](docs/README.md).
 
-### Accuracy on MT-RAG Benchmark (Online Scheduling)
-
-<div align="center">
-
-| Method | Qwen3-4B | Llama3.1-8B | Qwen3-30B-A3B |
-|--------|----------|-------------|-----------|
-| LMCache | 62.56 | **68.46** | 75.12 |
-| CacheBlend | 50.33 | 56.52 | X |
-| RadixCache | 62.56 | **68.46** | 75.12 |
-| **ContextPilot** | **64.27** | 68.12 | **75.81** |
-
-</div>
-
-Compared to vanilla RadixCache (SGLang default), ContextPilot delivers **4-13x** higher cache hit rates and **up to 3x** lower prefill latency on large-batch long-context RAG workloads, while maintaining accuracy (Llama3.1-8B: 68.12 vs 68.46, within noise margin).
-
-Hosted API providers charge less for cached input tokens. By increasing the cache hit ratio, ContextPilot reduces input token costs by **~36%** on GPT-5.2 (measured on MT-RAG).
-
-See [Benchmarks](docs/reference/benchmarks.md) for GPU vs CPU performance analysis and detailed methodology.
-
-## Getting Started
-
-### Installation
+## Installation
 
 **Requirements:** Python >= 3.10
 
@@ -109,7 +56,21 @@ pip install -e .
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
-### Quick Start
+## Getting Started
+
+ContextPilot offers two core optimizations—**reorder** and **deduplicate**—to reduce long-context inefficiencies.
+
+### Context Ordering
+
+`cp.reorder()` places **shared blocks at the beginning** of the prompt so consecutive requests share the longest possible common prefix, enabling KV-cache reuse. To preserve answer quality, ContextPilot injects an **importance ranking** so the model still prioritizes blocks in their original relevance order.
+
+### Context Deduplication
+
+In multi-turn conversations, successive turns frequently gather **many of the same context blocks**, wasting tokens and compute.
+
+`cp.deduplicate()` compares the current turn's context blocks against prior turns (tracked by `conversation_id`). Duplicate blocks are replaced with lightweight **reference hints** (e.g., *"See Doc 3 from previous context"*); only genuinely new blocks are sent in full — typically reducing duplicated tokens by **30-60%**. See [automatic context deduplication](docs/guides/multi_turn.md).
+
+### Quick Start with Context Ordering
 
 Add **one call** (`cp.reorder()`) before inference to rearrange context blocks so that shared content aligns into a common prefix, enabling cache reuse. An importance ranking in the prompt preserves accuracy.
 
@@ -122,7 +83,7 @@ Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no 
 
 ---
 
-#### Online Mode
+#### Accelerating Online Inference
 
 Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially overlap. `cp.reorder()` moves shared blocks to the prefix so the engine reuses cached KV states.
 
@@ -172,7 +133,7 @@ for turn_idx, (query, blocks) in enumerate(zip(queries, turn_contexts)):
 
 ---
 
-#### Offline Mode
+#### Accelerating Offline Inference
 
 Batch of requests with overlapping context blocks. `cp.reorder()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
 
@@ -219,30 +180,33 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
-#### Deduplication
-ContextPilot also supports [automatic context deduplication](docs/guides/multi_turn.md) to eliminate duplicated context blocks across turns (30-60% savings).
+### API Documentation
 
-## Documentation
+See [documentation](docs/README.md) for more APIs.
 
-See the ContextPilot [documentation](docs/README.md) for comprehensive guides.
+### Adoption Examples
 
-## Examples
+See many useful adoption examples: [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), and [multi-turn deduplication](docs/guides/multi_turn.md).
 
-See our guides for [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), and [multi-turn deduplication](docs/guides/multi_turn.md).
+## Performance
+
+<div align="center">
+<img src="assets/ds_r1_result_horizontal.png" alt="Benchmark Results" width="800"/>
+</div>
+
+ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a large GPU cluster with minimal accuracy impact: 64.68% vs 64.15% F1 on MultihopRAG and 41.08% vs 40.20% F1 on NarrativeQA. See [Benchmarks](docs/reference/benchmarks.md) for more results.
+
+## Citation
+```bibtex
+@inproceedings{contextpilot2026,
+  title     = {ContextPilot: Fast Long-Context Inference via Context Reuse},
+  author    = {Jiang, Yinsicheng and Huang, Yeqi and Cheng, Liang and Deng, Cheng and Sun, Xuan and Mai, Luo},
+  booktitle = {Proceedings of the 9th Conference on Machine Learning and Systems (MLSys 2026)},
+  year      = {2026},
+  url       = {https://arxiv.org/abs/2511.03475}
+}
+```
 
 ## Contributing
 
 We welcome and value all contributions! Please feel free to submit issues and pull requests.
-
-## Citation
-```bibtex
-@misc{contextpilot2026,
-      title={ContextPilot: Fast Long-Context Inference via Context Reuse}, 
-      author={Yinsicheng Jiang and Yeqi Huang and Liang Cheng and Cheng Deng and Xuan Sun and Luo Mai},
-      year={2026},
-      eprint={2511.03475},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2511.03475}, 
-}
-```

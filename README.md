@@ -102,7 +102,7 @@ pip install contextpilot
 
 Or install from source:
 ```bash
-git clone https://github.com/Edinburgh-AgenticAI/ContextPilot.git
+git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
 pip install -e .
 ```

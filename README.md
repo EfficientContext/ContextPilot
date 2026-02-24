@@ -25,7 +25,7 @@
 
 Long-context inference workloads (RAG, multi-turn chat with memory, tool-augmented agents) build prompts by prepending gathered context blocks (documents, memory entries, tool outputs, etc.) — often tens to hundreds of thousands of tokens. Across requests these blocks often **overlap** but arrive in **different orders**, and may be **duplicated** across turns. The inference engine sees a different token sequence each time, causing prefix cache misses and redundant KV-state recomputation over long contexts.
 
-ContextPilot is a long-context optimization layer that sits between context assembly and inference, maximizing prefix sharing and eliminating redundancy:
+ContextPilot is a long-context optimization layer that sits between context assembly and inference, maximizing prefix sharing and eliminating duplication:
 
 1. **High Throughput & Cache Hit Ratio** — Intelligent context reuse that boosts prefill throughput and prefix cache hit ratio.
 2. **Drop-in Compatibility** — Works with RAG libraries ([PageIndex](https://github.com/VectifyAI/PageIndex)), agent memory ([Mem0](https://github.com/mem0ai/mem0)), KV cache engines ([LMCache](https://github.com/LMCache/LMCache)), and inference backends (vLLM, SGLang).
@@ -42,7 +42,7 @@ Context blocks from upstream stores (vector DBs, agent memory, etc.) pass throug
 
 ## Core Concepts
 
-ContextPilot currently provides two core optimizations — **reorder** or **deduplicate** — targeting different sources of redundancy in long-context workloads.
+ContextPilot currently provides two core optimizations — **reorder** or **deduplicate** — targeting different sources of inefficiency in long-context workloads.
 
 ### Reorder
 
@@ -52,7 +52,7 @@ ContextPilot currently provides two core optimizations — **reorder** or **dedu
 
 In multi-turn conversations, successive turns frequently gather **many of the same context blocks**, wasting tokens and compute.
 
-`cp.deduplicate()` compares the current turn's context blocks against prior turns (tracked by `conversation_id`). Duplicate blocks are replaced with lightweight **reference hints** (e.g., *"See Doc 3 from previous context"*); only genuinely new blocks are sent in full — typically reducing redundant tokens by **30-60%**.
+`cp.deduplicate()` compares the current turn's context blocks against prior turns (tracked by `conversation_id`). Duplicate blocks are replaced with lightweight **reference hints** (e.g., *"See Doc 3 from previous context"*); only genuinely new blocks are sent in full — typically reducing duplicated tokens by **30-60%**.
 
 ## Target Workloads
 
@@ -220,7 +220,7 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
 ```
 
 #### Deduplication
-ContextPilot also supports [automatic context deduplication](docs/guides/multi_turn.md) to eliminate redundant context blocks across turns (30-60% savings).
+ContextPilot also supports [automatic context deduplication](docs/guides/multi_turn.md) to eliminate duplicated context blocks across turns (30-60% savings).
 
 ## Documentation
 

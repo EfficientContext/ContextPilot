@@ -36,13 +36,13 @@ ContextPilot is a long-context optimization layer that sits between context asse
 <img src="assets/system_description.png" alt="ContextPilot Architecture" width="800"/>
 </div>
 
-Context blocks from upstream stores (vector DBs, agent memory, etc.) pass through ContextPilot, which maintains a **Context Index** of what the engine has cached. On each request, **Context Index Operations** — **Reorder** (align shared blocks into a common prefix) and **Deduplicate** (replace repeated blocks with reference hints) — optimize the context, and **Cache-aware Scheduling** determines the execution order to maximize prefix sharing. The optimized prompt is forwarded via the standard OpenAI-compatible API; an eviction callback (`POST /evict`) keeps the index in sync when the engine reclaims KV-cache memory.
+Context blocks from upstream stores (vector DBs, agent memory, etc.) pass through ContextPilot, which maintains a **Context Index** of what the engine has cached. On each request, **Context Index Operations** — **Reorder** (align shared blocks into a common prefix) or **Deduplicate** (replace repeated blocks with reference hints) — optimize the context, and **Cache-aware Scheduling** determines the execution order to maximize prefix sharing. The optimized prompt is forwarded via the standard OpenAI-compatible API; an eviction callback (`POST /evict`) keeps the index in sync when the engine reclaims KV-cache memory.
 
 > For details on architecture, design, and implementation, see our [paper](https://arxiv.org/abs/2511.03475) and the [documentation](docs/README.md).
 
 ## Core Concepts
 
-ContextPilot currently provides two core optimizations — **reorder** and **deduplicate** — targeting different sources of redundancy in long-context workloads.
+ContextPilot currently provides two core optimizations — **reorder** or **deduplicate** — targeting different sources of redundancy in long-context workloads.
 
 ### Reorder
 

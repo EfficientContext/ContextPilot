@@ -41,6 +41,8 @@ It maintains a **Context Index** of cached content, then per request applies **R
 
 ## Performance at a Glance
 
+ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU cluster with minimal accuracy impact: **1.8× prefill throughput** and **12× cache hit ratio** on MultihopRAG (**64.68% vs 64.15% F1**), **1.5× prefill throughput** and **6× cache hit ratio** on NarrativeQA (**41.08% vs 40.20% F1**).
+
 **MultihopRAG**
 
 | Method | Hardware | Prefill TP (tok/s) | Cache Hit | F1 (%) |
@@ -62,8 +64,6 @@ It maintains a **Context Index** of cached content, then per request applies **R
 | ContextPilot w/o Annotations | 32×H20 | 24,686 | 35.71% | 40.38 |
 | **ContextPilot (Ours)** | **16×H20** | **13,201** | **38.24%** | **41.08** |
 | **ContextPilot (Ours)** | **32×H20** | **24,686** | **35.71%** | **41.08** |
-
-ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU cluster with minimal accuracy impact: **1.8× prefill throughput** and **12× cache hit ratio** on MultihopRAG (**64.68% vs 64.15% F1**), **1.5× prefill throughput** and **6× cache hit ratio** on NarrativeQA (**41.08% vs 40.20% F1**).
 
 On consumer-grade or professional-grade GPUs (e.g., 4090, A6000), ContextPilot delivers consistent speedups across popular LLMs and long-context workloads — see the Evaluation section of the [Paper](https://arxiv.org/abs/2511.03475) for full performance results.
 

@@ -41,7 +41,9 @@ It maintains a **Context Index** of cached content, then per request applies **R
 
 ## Performance at a Glance
 
-**Qwen3-32B on 4×A6000** — academic RAG setting with a single-node multi-GPU setup.
+ContextPilot is validated across three representative settings: single-node academic RAG, multi-node production MoE inference, and multi-turn memory-augmented chat. In every case it delivers significant speedups with comparable answer quality.
+
+**Qwen3-32B on 4×A6000** — single-node academic RAG with a 32B model on 4 consumer GPUs.
 
 | Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
 |-----------|--------|--------------------|-----------|--------|
@@ -50,9 +52,9 @@ It maintains a **Context Index** of cached content, then per request applies **R
 | NarrativeQA | SGLang | 7,921 | 5.91% | 28.41 |
 | NarrativeQA | **ContextPilot (Ours)** | **12,117** | **20.82%** | **29.64** |
 
-ContextPilot achieves **~2× prefill throughput** and **4–7× cache hit ratio** with improved F1 on both benchmarks.
+**~2× prefill throughput**, **4–7× cache hit ratio**, and +4 F1 on MultihopRAG — effectively doubling GPU utilization without adding hardware.
 
-**DeepSeek-R1-671B on 16×H20** — production-scale MoE inference on a multi-node GPU cluster.
+**DeepSeek-R1-671B on 16×H20** — production-scale 671B MoE inference on a multi-node GPU cluster.
 
 | Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
 |-----------|--------|--------------------|-----------|--------|
@@ -61,7 +63,7 @@ ContextPilot achieves **~2× prefill throughput** and **4–7× cache hit ratio*
 | NarrativeQA | SGLang | 8,687 | 6.08% | 40.20 |
 | NarrativeQA | **ContextPilot (Ours)** | **13,201** | **38.24%** | **41.08** |
 
-ContextPilot achieves **1.5–1.8× prefill throughput** and **6–12× cache hit ratio** with comparable or better F1.
+**1.5–1.8× prefill throughput** and **6–12× cache hit ratio** with comparable or better F1 — at cluster scale, this translates to significant GPU-hour and cost savings.
 
 **Qwen3-4B on 1×A6000** — multi-turn memory chat with [Mem0](https://github.com/mem0ai/mem0) on the [LoCoMo](https://github.com/snap-research/locomo) benchmark.
 
@@ -72,7 +74,7 @@ ContextPilot achieves **1.5–1.8× prefill throughput** and **6–12× cache hi
 | 100 | SGLang | 0.1012 | 0.437 |
 | 100 | **ContextPilot (Ours)** | **0.0554** | 0.420 |
 
-ContextPilot reduces TTFT by **1.2–1.8×** while maintaining comparable judge scores.
+Up to **1.8× faster time-to-first-token** at top-k=100 while maintaining comparable answer quality — noticeably snappier responses in interactive chat.
 
 ## Installation
 

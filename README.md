@@ -47,8 +47,8 @@ ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU
 
 | Method | Hardware | Prefill TP (tok/s) | Cache Hit | F1 (%) |
 |--------|----------|--------------------|-----------|--------|
-| RadixCache | 16×H20 | 9,636 | 5.12% | 64.15 |
-| RadixCache | 32×H20 | 18,406 | 4.17% | 64.15 |
+| SGLang | 16×H20 | 9,636 | 5.12% | 64.15 |
+| SGLang | 32×H20 | 18,406 | 4.17% | 64.15 |
 | ContextPilot w/o Annotations | 16×H20 | 17,498 | 60.37% | 64.09 |
 | ContextPilot w/o Annotations | 32×H20 | 33,072 | 58.41% | 64.09 |
 | **ContextPilot (Ours)** | **16×H20** | **17,498** | **60.37%** | **64.68** |
@@ -58,8 +58,8 @@ ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU
 
 | Method | Hardware | Prefill TP (tok/s) | Cache Hit | F1 (%) |
 |--------|----------|--------------------|-----------|--------|
-| RadixCache | 16×H20 | 8,687 | 6.08% | 40.20 |
-| RadixCache | 32×H20 | 16,247 | 5.14% | 40.20 |
+| SGLang | 16×H20 | 8,687 | 6.08% | 40.20 |
+| SGLang | 32×H20 | 16,247 | 5.14% | 40.20 |
 | ContextPilot w/o Annotations | 16×H20 | 13,201 | 38.24% | 40.38 |
 | ContextPilot w/o Annotations | 32×H20 | 24,686 | 35.71% | 40.38 |
 | **ContextPilot (Ours)** | **16×H20** | **13,201** | **38.24%** | **41.08** |

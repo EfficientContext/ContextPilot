@@ -71,13 +71,71 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
-### Advanced: `cp.reorder()` and `cp.deduplicate()`
+### Advanced: Using `cp.reorder()` with Custom Prompts
 
-If you need more control over the reordering and prompt construction (e.g., custom prompt templates, manual importance ranking), you can use the lower-level APIs directly:
+If you need full control over prompt construction (e.g., custom templates, manual importance ranking), use `cp.reorder()` directly. It returns the reordered contexts and execution order — you build the prompts yourself.
 
-- **`cp.reorder()`** — returns reordered contexts and execution order, letting you build prompts yourself. See the [online usage guide](../guides/online_usage.md) and [offline usage guide](../guides/offline_usage.md).
-- **`cp.deduplicate()`** — removes already-seen documents in multi-turn conversations and returns reference hints. See the [multi-turn deduplication guide](../guides/multi_turn.md).
-- **Full API reference** — see [API docs](../reference/api.md).
+```python
+from openai import OpenAI
+import contextpilot as cp
+
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
+cp_live = cp.ContextPilot(use_gpu=False)
+
+turn_contexts = [
+    ["Transformers use self-attention", "GPT is based on transformers", "BERT is bidirectional"],
+    ["RNNs use hidden states", "GPT is based on transformers", "LSTMs solve vanishing gradients"],
+    ["Attention computes QKV", "Transformers use self-attention", "GPT is based on transformers"],
+]
+queries = ["What are transformers?", "How do RNNs compare?", "Explain attention in detail."]
+
+for turn_idx, (query, blocks) in enumerate(zip(queries, turn_contexts)):
+    reordered, indices = cp_live.reorder(blocks)  # reorder for prefix sharing
+    ctx = reordered[0]
+
+    # Build prompt manually with reordered docs + importance ranking
+    docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
+    pos = {doc: i + 1 for i, doc in enumerate(ctx)}
+    importance_ranking = ">".join(str(pos[doc]) for doc in blocks if doc in pos)
+
+    response = client.chat.completions.create(
+        model="Qwen/Qwen3-4B",
+        messages=[
+            {"role": "system", "content": (
+                f"Answer the question based on the provided documents.\n\n"
+                f"<documents>\n{docs_section}\n</documents>\n\n"
+                f"Read the documents in this importance ranking: {importance_ranking}\n"
+                f"Prioritize information from higher-ranked documents."
+            )},
+            {"role": "user", "content": query},
+        ],
+    )
+    print(f"[Turn {turn_idx+1}] Q: {query}")
+    print(f"A: {response.choices[0].message.content}\n")
+```
+
+### Advanced: `cp.deduplicate()` for Multi-Turn Deduplication
+
+In multi-turn conversations, `cp.deduplicate()` removes already-seen documents and returns lightweight reference hints — typically reducing duplicated tokens by 30-60%.
+
+```python
+engine = cp.ContextPilot(use_gpu=False)
+
+# Turn 1 — reorder and register docs
+turn1_docs = [["Doc A", "Doc B", "Doc C"]]
+reordered, indices = engine.reorder(turn1_docs, conversation_id="user_42")
+
+# Turn 2 — deduplicate against Turn 1
+turn2_docs = [["Doc A", "Doc B", "Doc D"]]
+results = engine.deduplicate(turn2_docs, conversation_id="user_42")
+
+r = results[0]
+print(r["new_docs"])           # ["Doc D"] — only this is new
+print(r["overlapping_docs"])   # ["Doc A", "Doc B"] — already sent
+print(r["reference_hints"])    # hints like "Please refer to [Doc ...]..."
+```
+
+For more details, see the [multi-turn deduplication guide](../guides/multi_turn.md) and the [API reference](../reference/api.md).
 
 ---
 

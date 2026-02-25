@@ -146,9 +146,52 @@ engine = cp.ContextPilot(use_gpu=False)
 
 ### Methods
 
+#### `optimize()`
+
+Reorder contexts and return ready-to-use OpenAI messages. This is the simplest way to use ContextPilot — it handles reordering and prompt assembly in one call.
+
+```python
+messages = engine.optimize(
+    docs=["Doc about ML", "Doc about AI", "Doc about DL"],
+    query="What is ML?",
+    conversation_id="user_42",       # optional, for multi-turn
+    system_instruction="Be concise.", # optional, prepended to system message
+)
+# messages is a list of dicts ready for client.chat.completions.create()
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `docs` | List[str] | Required | List of document strings |
+| `query` | str | Required | The user question |
+| `conversation_id` | str \| None | `None` | Conversation key for multi-turn deduplication |
+| `system_instruction` | str \| None | `None` | Extra instruction prepended to the system message |
+
+**Returns:** `List[Dict[str, str]]` — a list of message dicts (`role` / `content`) ready for the OpenAI chat completions API.
+
+#### `optimize_batch()`
+
+Batch-optimize contexts and return messages in scheduled execution order.
+
+```python
+messages_batch, order = engine.optimize_batch(
+    all_docs=[["Doc A", "Doc B"], ["Doc B", "Doc C"]],
+    all_queries=["What is A?", "What is C?"],
+)
+# messages_batch[i] corresponds to all_queries[order[i]]
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `all_docs` | List[List[str]] | Required | Documents for each query |
+| `all_queries` | List[str] | Required | One query per entry in `all_docs` |
+| `system_instruction` | str \| None | `None` | Extra instruction prepended to every system message |
+
+**Returns:** `(messages_batch, original_indices)` — a 2-tuple where `messages_batch[i]` corresponds to `all_queries[original_indices[i]]`.
+
 #### `reorder()`
 
-Reorder contexts for optimal KV-cache prefix sharing.
+Reorder contexts for optimal KV-cache prefix sharing. Use this when you need full control over prompt construction.
 
 ```python
 reordered, indices = engine.reorder(
@@ -197,6 +240,24 @@ results = engine.deduplicate(
 **Raises:**
 - `TypeError` if `conversation_id` is not provided
 - `ValueError` if `conversation_id` is empty or has no prior `.reorder()` history
+
+---
+
+## Module-Level Convenience Functions
+
+These use a shared singleton `ContextPilot` instance internally — no need to create one yourself.
+
+```python
+import contextpilot as cp
+
+# Single query
+messages = cp.optimize(docs, query, conversation_id="user_42")
+
+# Batch
+messages_batch, order = cp.optimize_batch(all_docs, all_queries)
+```
+
+Signatures and parameters are identical to [`ContextPilot.optimize()`](#optimize) and [`ContextPilot.optimize_batch()`](#optimize_batch) above.
 
 ---
 

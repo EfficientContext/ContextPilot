@@ -45,25 +45,21 @@ ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU
 
 **MultihopRAG**
 
-| Method | Hardware | Prefill TP (tok/s) | Cache Hit | F1 (%) |
-|--------|----------|--------------------|-----------|--------|
-| SGLang | 16×H20 | 9,636 | 5.12% | 64.15 |
-| SGLang | 32×H20 | 18,406 | 4.17% | 64.15 |
-| ContextPilot w/o Annotations | 16×H20 | 17,498 | 60.37% | 64.09 |
-| ContextPilot w/o Annotations | 32×H20 | 33,072 | 58.41% | 64.09 |
-| **ContextPilot (Ours)** | **16×H20** | **17,498** | **60.37%** | **64.68** |
-| **ContextPilot (Ours)** | **32×H20** | **33,072** | **58.41%** | **64.68** |
+| Hardware | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
+|----------|--------|--------------------|-----------|--------|
+| 16×H20 | SGLang | 9,636 | 5.12% | 64.15 |
+| 16×H20 | **ContextPilot (Ours)** | **17,498** | **60.37%** | **64.68** |
+| 32×H20 | SGLang | 18,406 | 4.17% | 64.15 |
+| 32×H20 | **ContextPilot (Ours)** | **33,072** | **58.41%** | **64.68** |
 
 **NarrativeQA**
 
-| Method | Hardware | Prefill TP (tok/s) | Cache Hit | F1 (%) |
-|--------|----------|--------------------|-----------|--------|
-| SGLang | 16×H20 | 8,687 | 6.08% | 40.20 |
-| SGLang | 32×H20 | 16,247 | 5.14% | 40.20 |
-| ContextPilot w/o Annotations | 16×H20 | 13,201 | 38.24% | 40.38 |
-| ContextPilot w/o Annotations | 32×H20 | 24,686 | 35.71% | 40.38 |
-| **ContextPilot (Ours)** | **16×H20** | **13,201** | **38.24%** | **41.08** |
-| **ContextPilot (Ours)** | **32×H20** | **24,686** | **35.71%** | **41.08** |
+| Hardware | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
+|----------|--------|--------------------|-----------|--------|
+| 16×H20 | SGLang | 8,687 | 6.08% | 40.20 |
+| 16×H20 | **ContextPilot (Ours)** | **13,201** | **38.24%** | **41.08** |
+| 32×H20 | SGLang | 16,247 | 5.14% | 40.20 |
+| 32×H20 | **ContextPilot (Ours)** | **24,686** | **35.71%** | **41.08** |
 
 On consumer-grade or professional-grade GPUs (e.g., 4090, A6000), ContextPilot delivers consistent speedups across popular LLMs and long-context workloads — see the Evaluation section of the [Paper](https://arxiv.org/abs/2511.03475) for full performance results.
 

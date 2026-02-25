@@ -71,7 +71,19 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
-### Advanced: Using `cp.reorder()` with Custom Prompts
+## Advanced Usage
+
+### Context Ordering
+
+`cp.reorder()` places **shared blocks at the beginning** of the prompt so consecutive requests share the longest possible common prefix, enabling KV-cache reuse. To preserve answer quality, ContextPilot injects an **importance ranking** so the model still prioritizes blocks in their original relevance order.
+
+### Context Deduplication
+
+In multi-turn conversations, successive turns frequently gather **many of the same context blocks**, wasting tokens and compute.
+
+`cp.deduplicate()` compares the current turn's context blocks against prior turns (tracked by `conversation_id`). Duplicate blocks are replaced with lightweight **reference hints** (e.g., *"See Doc 3 from previous context"*); only genuinely new blocks are sent in full — typically reducing duplicated tokens by **30-60%**. See [automatic context deduplication](../guides/multi_turn.md).
+
+### Using `cp.reorder()` with Custom Prompts
 
 If you need full control over prompt construction (e.g., custom templates, manual importance ranking), use `cp.reorder()` directly. It returns the reordered contexts and execution order — you build the prompts yourself.
 

@@ -41,13 +41,31 @@ It maintains a **Context Index** of cached content, then per request applies **R
 
 ## Performance at a Glance
 
-<div align="center">
-<img src="assets/ds_r1_result_horizontal.png" alt="Benchmark Results" width="800"/>
-</div>
+**MultihopRAG**
 
-ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU cluster with minimal accuracy impact: **64.68% vs 64.15% F1** on MultihopRAG and **41.08% vs 40.20% F1** on NarrativeQA. 
+| Method | Hardware | Prefill TP (tok/s) | Cache Hit | F1 (%) |
+|--------|----------|--------------------|-----------|--------|
+| Vanilla | 16×H20 | 9,636 | 5.12% | 64.15 |
+| Vanilla | 32×H20 | 18,406 | 4.17% | 64.15 |
+| ContextPilot w/o Annotations | 16×H20 | 17,498 | 60.37% | 64.09 |
+| ContextPilot w/o Annotations | 32×H20 | 33,072 | 58.41% | 64.09 |
+| **ContextPilot (Ours)** | **16×H20** | **17,498** | **60.37%** | **64.68** |
+| **ContextPilot (Ours)** | **32×H20** | **33,072** | **58.41%** | **64.68** |
 
-On consumer-grade or professional-grade GPUs (e.g., 4090, A6000), ContextPilot delivers consistent speedups across popular LLMs and long-context workloads—see the Evaluation section of the [Paper](https://arxiv.org/abs/2511.03475) for full performance results.
+**NarrativeQA**
+
+| Method | Hardware | Prefill TP (tok/s) | Cache Hit | F1 (%) |
+|--------|----------|--------------------|-----------|--------|
+| Vanilla | 16×H20 | 8,687 | 6.08% | 40.20 |
+| Vanilla | 32×H20 | 16,247 | 5.14% | 40.20 |
+| ContextPilot w/o Annotations | 16×H20 | 13,201 | 38.24% | 40.38 |
+| ContextPilot w/o Annotations | 32×H20 | 24,686 | 35.71% | 40.38 |
+| **ContextPilot (Ours)** | **16×H20** | **13,201** | **38.24%** | **41.08** |
+| **ContextPilot (Ours)** | **32×H20** | **24,686** | **35.71%** | **41.08** |
+
+ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU cluster with minimal accuracy impact: **1.8× prefill throughput** and **12× cache hit ratio** on MultihopRAG (**64.68% vs 64.15% F1**), **1.5× prefill throughput** and **6× cache hit ratio** on NarrativeQA (**41.08% vs 40.20% F1**).
+
+On consumer-grade or professional-grade GPUs (e.g., 4090, A6000), ContextPilot delivers consistent speedups across popular LLMs and long-context workloads — see the Evaluation section of the [Paper](https://arxiv.org/abs/2511.03475) for full performance results.
 
 ## Installation
 
@@ -67,18 +85,6 @@ pip install -e .
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
 ## Getting Started
-
-ContextPilot offers two core optimizations—**reorder** and **deduplicate**—to reduce long-context inefficiencies.
-
-### Context Ordering
-
-`cp.reorder()` places **shared blocks at the beginning** of the prompt so consecutive requests share the longest possible common prefix, enabling KV-cache reuse. To preserve answer quality, ContextPilot injects an **importance ranking** so the model still prioritizes blocks in their original relevance order.
-
-### Context Deduplication
-
-In multi-turn conversations, successive turns frequently gather **many of the same context blocks**, wasting tokens and compute.
-
-`cp.deduplicate()` compares the current turn's context blocks against prior turns (tracked by `conversation_id`). Duplicate blocks are replaced with lightweight **reference hints** (e.g., *"See Doc 3 from previous context"*); only genuinely new blocks are sent in full — typically reducing duplicated tokens by **30-60%**. See [automatic context deduplication](docs/guides/multi_turn.md).
 
 ### Quick Start with Context Ordering
 

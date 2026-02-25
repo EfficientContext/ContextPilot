@@ -41,27 +41,38 @@ It maintains a **Context Index** of cached content, then per request applies **R
 
 ## Performance at a Glance
 
-ContextPilot significantly speeds up DeepSeek-R1-671B offline inference on a GPU cluster with minimal accuracy impact: **1.8× prefill throughput** and **12× cache hit ratio** on MultihopRAG (**64.68% vs 64.15% F1**), **1.5× prefill throughput** and **6× cache hit ratio** on NarrativeQA (**41.08% vs 40.20% F1**).
+**Qwen3-32B on 4×A6000** — academic RAG setting with a single-node multi-GPU setup.
 
-**MultihopRAG**
+| Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
+|-----------|--------|--------------------|-----------|--------|
+| MultihopRAG | SGLang | 7,290 | 4.64% | 60.42 |
+| MultihopRAG | **ContextPilot (Ours)** | **14,214** | **33.97%** | **64.39** |
+| NarrativeQA | SGLang | 7,921 | 5.91% | 28.41 |
+| NarrativeQA | **ContextPilot (Ours)** | **12,117** | **20.82%** | **29.64** |
 
-| Hardware | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
-|----------|--------|--------------------|-----------|--------|
-| 16×H20 | SGLang | 9,636 | 5.12% | 64.15 |
-| 16×H20 | **ContextPilot (Ours)** | **17,498** | **60.37%** | **64.68** |
-| 32×H20 | SGLang | 18,406 | 4.17% | 64.15 |
-| 32×H20 | **ContextPilot (Ours)** | **33,072** | **58.41%** | **64.68** |
+ContextPilot achieves **~2× prefill throughput** and **4–7× cache hit ratio** with improved F1 on both benchmarks.
 
-**NarrativeQA**
+**DeepSeek-R1-671B on 16×H20** — production-scale MoE inference on a multi-node GPU cluster.
 
-| Hardware | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
-|----------|--------|--------------------|-----------|--------|
-| 16×H20 | SGLang | 8,687 | 6.08% | 40.20 |
-| 16×H20 | **ContextPilot (Ours)** | **13,201** | **38.24%** | **41.08** |
-| 32×H20 | SGLang | 16,247 | 5.14% | 40.20 |
-| 32×H20 | **ContextPilot (Ours)** | **24,686** | **35.71%** | **41.08** |
+| Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
+|-----------|--------|--------------------|-----------|--------|
+| MultihopRAG | SGLang | 9,636 | 5.12% | 64.15 |
+| MultihopRAG | **ContextPilot (Ours)** | **17,498** | **60.37%** | **64.68** |
+| NarrativeQA | SGLang | 8,687 | 6.08% | 40.20 |
+| NarrativeQA | **ContextPilot (Ours)** | **13,201** | **38.24%** | **41.08** |
 
-On consumer-grade or professional-grade GPUs (e.g., 4090, A6000), ContextPilot delivers consistent speedups across popular LLMs and long-context workloads — see the Evaluation section of the [Paper](https://arxiv.org/abs/2511.03475) for full performance results.
+ContextPilot achieves **1.5–1.8× prefill throughput** and **6–12× cache hit ratio** with comparable or better F1.
+
+**Qwen3-4B on 1×A6000** — multi-turn memory chat with [Mem0](https://github.com/mem0ai/mem0) on the [LoCoMo](https://github.com/snap-research/locomo) benchmark.
+
+| Top-k | Method | TTFT (s) | LLM Judge |
+|-------|--------|----------|-----------|
+| 20 | SGLang | 0.0377 | 0.440 |
+| 20 | **ContextPilot (Ours)** | **0.0315** | **0.460** |
+| 100 | SGLang | 0.1012 | 0.437 |
+| 100 | **ContextPilot (Ours)** | **0.0554** | 0.420 |
+
+ContextPilot reduces TTFT by **1.2–1.8×** while maintaining comparable judge scores.
 
 ## Installation
 
@@ -153,7 +164,7 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
-For a detailed walkthrough with concrete examples, see the [Quick Start Guide](docs/getting_started/quickstart.md). For more fine-grained control, you can also use `cp.reorder()` and `cp.deduplicate()` directly — see the [API reference](docs/reference/api.md) and [multi-turn deduplication guide](docs/guides/multi_turn.md).
+For a detailed walkthrough with concrete examples, see the [Quick Start Guide](docs/getting_started/quickstart.md). For more fine-grained control, you can also use `cp_instance.reorder()` and `cp_instance.deduplicate()` directly — see the [API reference](docs/reference/api.md) and [multi-turn deduplication guide](docs/guides/multi_turn.md).
 
 ### Adoption Examples
 

@@ -19,7 +19,7 @@ from openai import OpenAI
 import contextpilot as cp
 
 client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
-cp_live = cp.ContextPilot(use_gpu=False)
+cp_instance = cp.ContextPilot(use_gpu=False)
 
 # Per-turn contexts — partially overlapping across turns
 turn_contexts = [
@@ -30,7 +30,7 @@ turn_contexts = [
 queries = ["What are transformers?", "How do RNNs compare?", "Explain attention in detail."]
 
 for turn_idx, (query, contexts) in enumerate(zip(queries, turn_contexts)):
-    messages = cp_live.optimize(contexts, query, conversation_id="user_42")
+    messages = cp_instance.optimize(contexts, query, conversation_id="user_42")
     # Turn 2: "GPT is based on transformers" moves to prefix (cache hit)
     # Turn 3: "Transformers …", "GPT …" both move to prefix
 
@@ -50,7 +50,7 @@ import openai
 import contextpilot as cp
 
 BASE_URL = "http://localhost:30000/v1"
-cp_batch = cp.ContextPilot(use_gpu=False)
+cp_instance = cp.ContextPilot(use_gpu=False)
 
 queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
 all_contexts = [
@@ -59,7 +59,7 @@ all_contexts = [
     ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
 ]
 
-messages_batch, order = cp_batch.optimize_batch(all_contexts, queries)
+messages_batch, order = cp_instance.optimize_batch(all_contexts, queries)
 
 async def generate_all():
     ac = openai.AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
@@ -80,7 +80,7 @@ from openai import OpenAI
 import contextpilot as cp
 
 client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
-cp_live = cp.ContextPilot(use_gpu=False)
+cp_instance = cp.ContextPilot(use_gpu=False)
 
 turn_contexts = [
     ["Transformers use self-attention", "GPT is based on transformers", "BERT is bidirectional"],
@@ -90,7 +90,7 @@ turn_contexts = [
 queries = ["What are transformers?", "How do RNNs compare?", "Explain attention in detail."]
 
 for turn_idx, (query, blocks) in enumerate(zip(queries, turn_contexts)):
-    reordered, indices = cp_live.reorder(blocks)  # reorder for prefix sharing
+    reordered, indices = cp_instance.reorder(blocks)  # reorder for prefix sharing
     ctx = reordered[0]
 
     # Build prompt manually with reordered docs + importance ranking

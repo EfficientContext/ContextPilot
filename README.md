@@ -82,7 +82,7 @@ In multi-turn conversations, successive turns frequently gather **many of the sa
 
 ### Quick Start with Context Ordering
 
-Add **one call** (`cp_live.optimize()`) before inference to rearrange context blocks so that shared content aligns into a common prefix, enabling cache reuse. An importance ranking in the prompt preserves accuracy.
+Add **one call** (`cp_instance.optimize()`) before inference to rearrange context blocks so that shared content aligns into a common prefix, enabling cache reuse. An importance ranking in the prompt preserves accuracy.
 
 | Mode | When to Use | How It Works |
 |------|-------------|--------------|
@@ -95,7 +95,7 @@ Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no 
 
 #### Accelerating Online Inference
 
-Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially overlap. `cp_live.optimize()` moves shared blocks to the prefix so the engine reuses cached KV states.
+Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially overlap. `cp_instance.optimize()` moves shared blocks to the prefix so the engine reuses cached KV states.
 
 ```python
 from openai import OpenAI
@@ -104,12 +104,12 @@ import contextpilot as cp
 
 client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
 # Step 2: Create a ContextPilot instance
-cp_live = cp.ContextPilot(use_gpu=False)
+cp_instance = cp.ContextPilot(use_gpu=False)
 
 for query in queries:
     contexts = get_contexts(query)                         # Mem0, Retriever, ...
     # Step 3: Optimize context ordering and build ready-to-use messages
-    messages = cp_live.optimize(contexts, query)
+    messages = cp_instance.optimize(contexts, query)
 
     response = client.chat.completions.create(
         model="Qwen/Qwen3-4B",
@@ -124,7 +124,7 @@ for query in queries:
 
 #### Accelerating Offline Inference
 
-Batch of requests with overlapping context blocks. `cp_batch.optimize_batch()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
+Batch of requests with overlapping context blocks. `cp_instance.optimize_batch()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
 
 ```python
 import asyncio
@@ -134,11 +134,11 @@ import contextpilot as cp
 
 BASE_URL = "http://localhost:30000/v1"
 # Step 2: Create a ContextPilot instance
-cp_batch = cp.ContextPilot(use_gpu=False)
+cp_instance = cp.ContextPilot(use_gpu=False)
 
 all_contexts = [get_contexts(q) for q in queries]          # Mem0, Retriever, ...
 # Step 3: Optimize — reorder, schedule, and build prompts in one call
-messages_batch, order = cp_batch.optimize_batch(all_contexts, queries)
+messages_batch, order = cp_instance.optimize_batch(all_contexts, queries)
 
 # Send all requests concurrently
 async def generate_all():

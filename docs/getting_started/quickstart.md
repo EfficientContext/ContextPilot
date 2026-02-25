@@ -8,6 +8,83 @@ Get ContextPilot running in 5 minutes.
 - An OpenAI-compatible inference engine (e.g. [SGLang](https://github.com/sgl-project/sglang), [vLLM](https://github.com/vllm-project/vllm))
 - For eviction sync: apply the ContextPilot patch for your engine (`bash patches/sglang/apply_patch.sh` or `bash patches/vllm/apply_patch.sh`)
 
+## Using `cp.optimize()` (Simplest)
+
+The fastest way to integrate ContextPilot — create a `ContextPilot` instance and call `.optimize()` to handle context reordering and prompt assembly automatically.
+
+### Online: Multi-Turn Inference
+
+```python
+from openai import OpenAI
+import contextpilot as cp
+
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
+cp_live = cp.ContextPilot(use_gpu=False)
+
+# Per-turn contexts — partially overlapping across turns
+turn_contexts = [
+    ["Transformers use self-attention", "GPT is based on transformers", "BERT is bidirectional"],
+    ["RNNs use hidden states", "GPT is based on transformers", "LSTMs solve vanishing gradients"],
+    ["Attention computes QKV", "Transformers use self-attention", "GPT is based on transformers"],
+]
+queries = ["What are transformers?", "How do RNNs compare?", "Explain attention in detail."]
+
+for turn_idx, (query, contexts) in enumerate(zip(queries, turn_contexts)):
+    messages = cp_live.optimize(contexts, query, conversation_id="user_42")
+    # Turn 2: "GPT is based on transformers" moves to prefix (cache hit)
+    # Turn 3: "Transformers …", "GPT …" both move to prefix
+
+    response = client.chat.completions.create(
+        model="Qwen/Qwen3-4B",
+        messages=messages,
+    )
+    print(f"[Turn {turn_idx+1}] Q: {query}")
+    print(f"A: {response.choices[0].message.content}\n")
+```
+
+### Offline: Batch Inference
+
+```python
+import asyncio
+import openai
+import contextpilot as cp
+
+BASE_URL = "http://localhost:30000/v1"
+cp_batch = cp.ContextPilot(use_gpu=False)
+
+queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
+all_contexts = [
+    ["Doc about AI", "Doc about ML", "Doc about computing"],
+    ["Doc about neural nets", "Doc about deep learning"],
+    ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
+]
+
+messages_batch, order = cp_batch.optimize_batch(all_contexts, queries)
+
+async def generate_all():
+    ac = openai.AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
+    return await asyncio.gather(*[ac.chat.completions.create(
+        model="Qwen/Qwen3-4B", messages=m
+    ) for m in messages_batch])
+
+for resp, idx in zip(asyncio.run(generate_all()), order):
+    print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
+```
+
+### Advanced: `cp.reorder()` and `cp.deduplicate()`
+
+If you need more control over the reordering and prompt construction (e.g., custom prompt templates, manual importance ranking), you can use the lower-level APIs directly:
+
+- **`cp.reorder()`** — returns reordered contexts and execution order, letting you build prompts yourself. See the [online usage guide](../guides/online_usage.md) and [offline usage guide](../guides/offline_usage.md).
+- **`cp.deduplicate()`** — removes already-seen documents in multi-turn conversations and returns reference hints. See the [multi-turn deduplication guide](../guides/multi_turn.md).
+- **Full API reference** — see [API docs](../reference/api.md).
+
+---
+
+## Using the HTTP Server
+
+For distributed deployments or language-agnostic integration, ContextPilot can also run as an HTTP server.
+
 ## Step 1: Start the Inference Engine
 
 ContextPilot works with any OpenAI-compatible inference engine. Pick one:

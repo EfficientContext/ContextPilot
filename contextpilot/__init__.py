@@ -38,6 +38,8 @@ from .context_ordering import (
 
 from .server.live_index import ContextPilot
 
+from .api import optimize, optimize_batch
+
 from .retriever import (
     BM25Retriever,
     FAISSRetriever,
@@ -47,7 +49,7 @@ from .retriever import (
     MEM0_AVAILABLE,
 )
 
-__version__ = "0.3.4"
+__version__ = "0.3.5"
 
 __all__ = [
     # High-level pipeline API
@@ -63,6 +65,10 @@ __all__ = [
     'IntraContextOrderer',
     'ContextPilot',
     
+    # Convenience functions
+    'optimize',
+    'optimize_batch',
+
     # Retrievers
     'BM25Retriever',
     'FAISSRetriever',

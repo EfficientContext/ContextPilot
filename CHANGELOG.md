@@ -5,6 +5,18 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-02-25
+
+### Added
+- **`ContextPilot.optimize()`** — convenience method that handles context reordering and prompt assembly in one call, returning ready-to-use OpenAI `messages`
+- **`ContextPilot.optimize_batch()`** — batch version that globally schedules execution order and builds prompts for all queries
+- **`cp.optimize()` / `cp.optimize_batch()`** — module-level convenience functions (`contextpilot/api.py`) using a shared singleton instance
+- Exported `optimize` and `optimize_batch` from the top-level `contextpilot` package
+
+### Changed
+- README Quick Start rewritten as a drop-in pattern (Step 1/2/3) — no internal concepts exposed; Online and Offline examples use `optimize()` / `optimize_batch()`
+- `docs/getting_started/quickstart.md` updated with detailed `cp.optimize()` examples (Online multi-turn, Offline batch) and pointers to `cp.reorder()` / `cp.deduplicate()` for advanced usage
+
 ## [0.3.4] - 2026-02-21
 
 ### Added

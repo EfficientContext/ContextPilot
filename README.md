@@ -82,7 +82,7 @@ In multi-turn conversations, successive turns frequently gather **many of the sa
 
 ### Quick Start with Context Ordering
 
-Add **one call** (`cp.reorder()`) before inference to rearrange context blocks so that shared content aligns into a common prefix, enabling cache reuse. An importance ranking in the prompt preserves accuracy.
+Add **one call** (`cp_live.optimize()`) before inference to rearrange context blocks so that shared content aligns into a common prefix, enabling cache reuse. An importance ranking in the prompt preserves accuracy.
 
 | Mode | When to Use | How It Works |
 |------|-------------|--------------|
@@ -95,48 +95,27 @@ Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no 
 
 #### Accelerating Online Inference
 
-Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially overlap. `cp.reorder()` moves shared blocks to the prefix so the engine reuses cached KV states.
+Multi-turn chatbot with Mem0 or RAG where each turn's context blocks partially overlap. `cp_live.optimize()` moves shared blocks to the prefix so the engine reuses cached KV states.
 
 ```python
 from openai import OpenAI
+# Step 1: Import ContextPilot
 import contextpilot as cp
 
-# vLLM default: http://localhost:8000/v1 | SGLang default: http://localhost:30000/v1
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="...")
+client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
+# Step 2: Create a ContextPilot instance
 cp_live = cp.ContextPilot(use_gpu=False)
 
-# Simulated per-turn context blocks from Mem0 — partially overlapping across turns
-turn_contexts = [
-    ["Transformers use self-attention", "GPT is based on transformers", "BERT is bidirectional"],
-    ["RNNs use hidden states", "GPT is based on transformers", "LSTMs solve vanishing gradients"],
-    ["Attention computes QKV", "Transformers use self-attention", "GPT is based on transformers"],
-]
-queries = ["What are transformers?", "How do RNNs compare?", "Explain attention in detail."]
-
-for turn_idx, (query, blocks) in enumerate(zip(queries, turn_contexts)):
-    reordered, indices = cp_live.reorder(blocks)  # ← reorder for prefix sharing
-    ctx = reordered[0]
-    # Turn 2: "GPT is based on transformers" moves to prefix (cache hit)
-    # Turn 3: "Transformers …", "GPT …" both move to prefix
-
-    docs_section = "\n".join(f"[{i+1}] {doc}" for i, doc in enumerate(ctx))
-    pos = {doc: i + 1 for i, doc in enumerate(ctx)}
-    importance_ranking = ">".join(str(pos[doc]) for doc in blocks if doc in pos)
+for query in queries:
+    contexts = get_contexts(query)                         # Mem0, Retriever, ...
+    # Step 3: Optimize context ordering and build ready-to-use messages
+    messages = cp_live.optimize(contexts, query)
 
     response = client.chat.completions.create(
         model="Qwen/Qwen3-4B",
-        messages=[
-            {"role": "system", "content": (
-                f"Answer the question based on the provided documents.\n\n"
-                f"<documents>\n{docs_section}\n</documents>\n\n"
-                f"Read the documents in this importance ranking: {importance_ranking}\n"
-                f"Prioritize information from higher-ranked documents."
-            )},
-            {"role": "user", "content": query},
-        ],
+        messages=messages,
     )
-    print(f"[Turn {turn_idx+1}] Q: {query}")
-    print(f"A: {response.choices[0].message.content}\n")
+    print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
 > **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Install the eviction patch for [SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md).
@@ -145,54 +124,34 @@ for turn_idx, (query, blocks) in enumerate(zip(queries, turn_contexts)):
 
 #### Accelerating Offline Inference
 
-Batch of requests with overlapping context blocks. `cp.reorder()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
+Batch of requests with overlapping context blocks. `cp_batch.optimize_batch()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
 
 ```python
 import asyncio
 import openai
+# Step 1: Import ContextPilot
 import contextpilot as cp
 
-# vLLM default: http://localhost:8000/v1 | SGLang default: http://localhost:30000/v1
 BASE_URL = "http://localhost:30000/v1"
+# Step 2: Create a ContextPilot instance
 cp_batch = cp.ContextPilot(use_gpu=False)
 
-queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
-all_contexts = [
-    ["Doc about AI", "Doc about ML", "Doc about computing"],
-    ["Doc about neural nets", "Doc about deep learning"],
-    ["Doc about ML", "Doc about AI", "Doc about deep learning basics"],
-]
-
-reordered_ctx, order = cp_batch.reorder(all_contexts)  # ← global reorder + schedule
-
-# Build requests in the scheduled order
-messages_batch = []
-for ctx, orig_idx in zip(reordered_ctx, order):
-    docs = "\n".join(f"[{i+1}] {d}" for i, d in enumerate(ctx))
-    pos = {d: i + 1 for i, d in enumerate(ctx)}
-    ranking = ">".join(str(pos[d]) for d in all_contexts[orig_idx] if d in pos)
-    messages_batch.append(dict(
-        model="Qwen/Qwen3-4B",
-        messages=[
-            {"role": "system", "content": f"Answer based on the documents.\n\n"
-             f"<documents>\n{docs}\n</documents>\n\n"
-             f"Importance ranking: {ranking}"},
-            {"role": "user", "content": queries[orig_idx]},
-        ],
-    ))
+all_contexts = [get_contexts(q) for q in queries]          # Mem0, Retriever, ...
+# Step 3: Optimize — reorder, schedule, and build prompts in one call
+messages_batch, order = cp_batch.optimize_batch(all_contexts, queries)
 
 # Send all requests concurrently
 async def generate_all():
-    ac = openai.AsyncOpenAI(base_url=BASE_URL, api_key="...")
-    return await asyncio.gather(*[ac.chat.completions.create(**r) for r in messages_batch])
+    ac = openai.AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
+    return await asyncio.gather(*[ac.chat.completions.create(
+        model="Qwen/Qwen3-4B", messages=m
+    ) for m in messages_batch])
 
 for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
-### API Documentation
-
-See [documentation](docs/README.md) for more APIs.
+For a detailed walkthrough with concrete examples, see the [Quick Start Guide](docs/getting_started/quickstart.md). For more fine-grained control, you can also use `cp.reorder()` and `cp.deduplicate()` directly — see the [API reference](docs/reference/api.md) and [multi-turn deduplication guide](docs/guides/multi_turn.md).
 
 ### Adoption Examples
 

@@ -67,14 +67,14 @@ ContextPilot is validated across three representative settings: single-node acad
 
 **Qwen3-4B on 1×A6000** — multi-turn memory chat with [Mem0](https://github.com/mem0ai/mem0) on the [LoCoMo](https://github.com/snap-research/locomo) benchmark.
 
-| Top-k | Method | TTFT (s) | LLM Judge |
-|-------|--------|----------|-----------|
-| 20 | SGLang | 0.0377 | 0.440 |
-| 20 | **ContextPilot (Ours)** | **0.0315** | **0.460** |
-| 100 | SGLang | 0.1012 | 0.437 |
-| 100 | **ContextPilot (Ours)** | **0.0554** | 0.420 |
+| Context Size | Method | TTFT (s) | LLM Judge |
+|--------------|--------|----------|-----------|
+| 20 memories | SGLang | 0.0377 | 0.440 |
+| 20 memories | **ContextPilot (Ours)** | **0.0315** | **0.460** |
+| 100 memories | SGLang | 0.1012 | 0.437 |
+| 100 memories | **ContextPilot (Ours)** | **0.0554** | 0.420 |
 
-**1.2–1.8× faster time-to-first-token** with comparable answer quality.
+**1.2–1.8× faster time-to-first-token** with comparable answer quality. We include the 100-memory setting to evaluate long-context performance, as the full LoCoMo conversation contains only ~26k tokens of memory context. Judge scores at 100 memories are lower than at 20 for both methods, as retrieving more memories introduces noise that dilutes relevant context. The 0.420 judge score is without annotation.
 
 ## Installation
 

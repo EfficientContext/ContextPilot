@@ -76,7 +76,7 @@ ContextPilot is validated across three representative settings: single-node acad
 
 **1.2–1.8× faster time-to-first-token** with comparable answer quality.
 
-We include the 100-memory setting to stress-test long-context performance, as the full LoCoMo conversation contains only ~26k tokens of memory context. Judge scores at 100 memories are lower than at 20 for both methods, as more memories introduces noise that dilutes relevant context.
+We include the 100-memory setting to stress-test long-context performance, as the full LoCoMo dataset contains only ~26k tokens of all memory context. Judge scores at 100 memories are lower than at 20 for both methods, as more memories introduces noise that dilutes relevant context.
 
 >ContextPilot results in mem0 table are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 

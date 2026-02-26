@@ -17,10 +17,10 @@ from typing import List, Optional, Dict, Any, Tuple
 logger = logging.getLogger(__name__)
 
 # XML wrapper tag names we recognize (outer wrapper)
-_KNOWN_WRAPPER_TAGS = {"documents", "contexts", "docs", "passages", "references"}
+_KNOWN_WRAPPER_TAGS = {"documents", "contexts", "docs", "passages", "references", "files"}
 
 # XML item tag names we recognize (inner items)
-_KNOWN_ITEM_TAGS = {"document", "context", "doc", "passage", "reference"}
+_KNOWN_ITEM_TAGS = {"document", "context", "doc", "passage", "reference", "file"}
 
 # Numbered pattern: [1] ... [2] ... etc.
 _NUMBERED_RE = re.compile(r"\[(\d+)\]\s*")
@@ -34,11 +34,12 @@ class InterceptConfig:
     """Configuration parsed from X-ContextPilot-* headers."""
 
     enabled: bool = True
-    mode: str = "auto"  # xml_tag, separator, numbered, auto
+    mode: str = "auto"  # xml_tag, separator, numbered, markdown_header, auto
     tag: str = "document"  # XML tag name for xml_tag mode
     separator: str = "---"  # Delimiter for separator mode
     alpha: float = 0.001
     linkage_method: str = "average"
+    scope: str = "all"  # "system", "tool_results", "all"
 
 
 @dataclass
@@ -58,6 +59,34 @@ class ExtractionResult:
     original_content: str = ""
 
 
+@dataclass
+class ToolResultLocation:
+    """Identifies a tool_result's position in the messages array."""
+    msg_index: int
+    block_index: int = -1        # -1 = content is string
+    inner_block_index: int = -1  # For Anthropic nested content blocks
+
+
+@dataclass
+class MultiExtractionResult:
+    """Aggregates extractions from system prompt and tool_result messages."""
+    system_extraction: Optional[Tuple["ExtractionResult", int]] = None
+    tool_extractions: List[Tuple["ExtractionResult", ToolResultLocation]] = field(default_factory=list)
+
+    @property
+    def has_extractions(self) -> bool:
+        return self.system_extraction is not None or len(self.tool_extractions) > 0
+
+    @property
+    def total_documents(self) -> int:
+        total = 0
+        if self.system_extraction:
+            total += len(self.system_extraction[0].documents)
+        for ext, _ in self.tool_extractions:
+            total += len(ext.documents)
+        return total
+
+
 def parse_intercept_headers(headers: Dict[str, str]) -> InterceptConfig:
     """Parse X-ContextPilot-* headers into an InterceptConfig."""
     def get(name: str, default: str = "") -> str:
@@ -71,6 +100,10 @@ def parse_intercept_headers(headers: Dict[str, str]) -> InterceptConfig:
     enabled_str = get("enabled", "true").lower()
     enabled = enabled_str not in ("false", "0", "no")
 
+    scope = get("scope", "all").lower()
+    if scope not in ("system", "tool_results", "all"):
+        scope = "all"
+
     return InterceptConfig(
         enabled=enabled,
         mode=get("mode", "auto").lower(),
@@ -78,6 +111,7 @@ def parse_intercept_headers(headers: Dict[str, str]) -> InterceptConfig:
         separator=get("separator", "---"),
         alpha=float(get("alpha", "0.001")),
         linkage_method=get("linkage", "average"),
+        scope=scope,
     )
 
 
@@ -221,12 +255,61 @@ def _extract_separator(
     )
 
 
+def _extract_markdown_headers(
+    text: str, config: InterceptConfig
+) -> Optional[ExtractionResult]:
+    """Extract documents by splitting on markdown headers (# or ##).
+
+    Each header + its body becomes one document. Requires >= 2 sections.
+    Text before the first header is preserved as prefix.
+    """
+    # Split on lines that start with # or ## (but not ### or deeper)
+    parts = re.split(r"(?=^#{1,2}\s)", text, flags=re.MULTILINE)
+    # parts[0] is text before first header (prefix), rest are sections
+    if not parts:
+        return None
+
+    prefix = ""
+    sections = []
+    for part in parts:
+        stripped = part.strip()
+        if not stripped:
+            continue
+        if re.match(r"^#{1,2}\s", stripped):
+            sections.append(stripped)
+        else:
+            # Text before first header
+            prefix = part
+
+    if len(sections) < 2:
+        return None
+
+    return ExtractionResult(
+        documents=sections,
+        prefix=prefix,
+        suffix="",
+        mode="markdown_header",
+        original_content=text,
+    )
+
+
+def _reconstruct_markdown_headers(
+    extraction: ExtractionResult, reordered_docs: List[str]
+) -> str:
+    """Reconstruct markdown-header-split content."""
+    parts = []
+    if extraction.prefix.strip():
+        parts.append(extraction.prefix.rstrip())
+    parts.extend(reordered_docs)
+    return "\n\n".join(parts)
+
+
 def extract_documents(
     text: str, config: InterceptConfig
 ) -> Optional[ExtractionResult]:
     """Extract documents from text using the configured mode.
 
-    Auto-detection priority: xml_tag > numbered > separator.
+    Auto-detection priority: xml_tag > numbered > separator > markdown_header.
     Returns None if no documents are found (caller should bypass).
     """
     if config.mode == "xml_tag":
@@ -235,6 +318,8 @@ def extract_documents(
         return _extract_numbered(text, config)
     elif config.mode == "separator":
         return _extract_separator(text, config)
+    elif config.mode == "markdown_header":
+        return _extract_markdown_headers(text, config)
     else:
         # Auto mode: try each in priority order
         result = _extract_xml_tags(text, config)
@@ -244,6 +329,9 @@ def extract_documents(
         if result:
             return result
         result = _extract_separator(text, config)
+        if result:
+            return result
+        result = _extract_markdown_headers(text, config)
         if result:
             return result
         return None
@@ -257,7 +345,7 @@ def reconstruct_content(
 ) -> str:
     """Reconstruct the message content with reordered documents.
 
-    Preserves the original format (XML tags, numbering, separators).
+    Preserves the original format (XML tags, numbering, separators, markdown headers).
     """
     if extraction.mode == "xml_tag":
         return _reconstruct_xml(extraction, reordered_docs)
@@ -265,6 +353,8 @@ def reconstruct_content(
         return _reconstruct_numbered(extraction, reordered_docs)
     elif extraction.mode == "separator":
         return _reconstruct_separator(extraction, reordered_docs)
+    elif extraction.mode == "markdown_header":
+        return _reconstruct_markdown_headers(extraction, reordered_docs)
     else:
         # Should not happen, but fallback
         return extraction.original_content
@@ -409,3 +499,142 @@ def reconstruct_anthropic_messages(
                     block["text"] = new_content
                     break
     return body
+
+
+# ── Tool result extraction ─────────────────────────────────────────────────
+
+
+def extract_from_openai_tool_results(
+    body: Dict[str, Any], config: InterceptConfig
+) -> List[Tuple[ExtractionResult, ToolResultLocation]]:
+    """Extract documents from OpenAI tool result messages (role=="tool").
+
+    Returns a list of (ExtractionResult, ToolResultLocation) for each tool
+    result message that contains extractable documents.
+    """
+    messages = body.get("messages")
+    if not messages or not isinstance(messages, list):
+        return []
+
+    results = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") not in ("tool", "toolResult"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            extraction = extract_documents(content, config)
+            if extraction and len(extraction.documents) >= 2:
+                loc = ToolResultLocation(msg_index=i)
+                results.append((extraction, loc))
+        elif isinstance(content, list):
+            for j, block in enumerate(content):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    extraction = extract_documents(block.get("text", ""), config)
+                    if extraction and len(extraction.documents) >= 2:
+                        loc = ToolResultLocation(msg_index=i, block_index=j)
+                        results.append((extraction, loc))
+    return results
+
+
+def extract_from_anthropic_tool_results(
+    body: Dict[str, Any], config: InterceptConfig
+) -> List[Tuple[ExtractionResult, ToolResultLocation]]:
+    """Extract documents from Anthropic tool_result content blocks.
+
+    Anthropic tool results appear as messages with role=="user" containing
+    content blocks of type=="tool_result".
+    """
+    messages = body.get("messages")
+    if not messages or not isinstance(messages, list):
+        return []
+
+    results = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for j, block in enumerate(content):
+            if not isinstance(block, dict) or block.get("type") not in ("tool_result", "toolResult"):
+                continue
+            tr_content = block.get("content", "")
+            if isinstance(tr_content, str):
+                extraction = extract_documents(tr_content, config)
+                if extraction and len(extraction.documents) >= 2:
+                    loc = ToolResultLocation(msg_index=i, block_index=j)
+                    results.append((extraction, loc))
+            elif isinstance(tr_content, list):
+                for k, inner in enumerate(tr_content):
+                    if isinstance(inner, dict) and inner.get("type") == "text":
+                        extraction = extract_documents(inner.get("text", ""), config)
+                        if extraction and len(extraction.documents) >= 2:
+                            loc = ToolResultLocation(msg_index=i, block_index=j, inner_block_index=k)
+                            results.append((extraction, loc))
+    return results
+
+
+# ── Tool result reconstruction ─────────────────────────────────────────────
+
+
+def reconstruct_openai_tool_result(
+    body: Dict[str, Any],
+    extraction: ExtractionResult,
+    reordered_docs: List[str],
+    location: ToolResultLocation,
+) -> None:
+    """Reconstruct an OpenAI tool result message in-place."""
+    new_content = reconstruct_content(extraction, reordered_docs)
+    msg = body["messages"][location.msg_index]
+    if location.block_index == -1:
+        msg["content"] = new_content
+    else:
+        msg["content"][location.block_index]["text"] = new_content
+
+
+def reconstruct_anthropic_tool_result(
+    body: Dict[str, Any],
+    extraction: ExtractionResult,
+    reordered_docs: List[str],
+    location: ToolResultLocation,
+) -> None:
+    """Reconstruct an Anthropic tool_result content block in-place."""
+    new_content = reconstruct_content(extraction, reordered_docs)
+    msg = body["messages"][location.msg_index]
+    block = msg["content"][location.block_index]
+    if location.inner_block_index == -1:
+        block["content"] = new_content
+    else:
+        block["content"][location.inner_block_index]["text"] = new_content
+
+
+# ── Aggregate extraction ───────────────────────────────────────────────────
+
+
+def extract_all_openai(
+    body: Dict[str, Any], config: InterceptConfig
+) -> MultiExtractionResult:
+    """Extract documents from both system message and tool results (OpenAI format)."""
+    result = MultiExtractionResult()
+    if config.scope in ("system", "all"):
+        sys_result = extract_from_openai_chat(body, config)
+        if sys_result:
+            result.system_extraction = sys_result
+    if config.scope in ("tool_results", "all"):
+        result.tool_extractions = extract_from_openai_tool_results(body, config)
+    return result
+
+
+def extract_all_anthropic(
+    body: Dict[str, Any], config: InterceptConfig
+) -> MultiExtractionResult:
+    """Extract documents from both system prompt and tool results (Anthropic format)."""
+    result = MultiExtractionResult()
+    if config.scope in ("system", "all"):
+        sys_extraction = extract_from_anthropic_messages(body, config)
+        if sys_extraction and len(sys_extraction.documents) >= 2:
+            # Use -1 as sentinel for "system field" (not in messages array)
+            result.system_extraction = (sys_extraction, -1)
+    if config.scope in ("tool_results", "all"):
+        result.tool_extractions = extract_from_anthropic_tool_results(body, config)
+    return result

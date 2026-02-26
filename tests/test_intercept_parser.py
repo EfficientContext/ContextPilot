@@ -1,15 +1,24 @@
 """Unit tests for contextpilot.server.intercept_parser."""
 
+import copy
 import pytest
 from contextpilot.server.intercept_parser import (
     InterceptConfig,
     ExtractionResult,
+    ToolResultLocation,
+    MultiExtractionResult,
     parse_intercept_headers,
     extract_documents,
     extract_from_openai_chat,
     extract_from_anthropic_messages,
+    extract_from_openai_tool_results,
+    extract_from_anthropic_tool_results,
+    extract_all_openai,
+    extract_all_anthropic,
     reconstruct_openai_chat,
     reconstruct_anthropic_messages,
+    reconstruct_openai_tool_result,
+    reconstruct_anthropic_tool_result,
     reconstruct_content,
 )
 
@@ -56,6 +65,18 @@ class TestParseHeaders:
         headers = {"X-ContextPilot-Separator": "==="}
         config = parse_intercept_headers(headers)
         assert config.separator == "==="
+
+    def test_scope_header(self):
+        config = parse_intercept_headers({"X-ContextPilot-Scope": "tool_results"})
+        assert config.scope == "tool_results"
+
+    def test_scope_default(self):
+        config = parse_intercept_headers({})
+        assert config.scope == "all"
+
+    def test_scope_invalid_falls_back(self):
+        config = parse_intercept_headers({"X-ContextPilot-Scope": "invalid"})
+        assert config.scope == "all"
 
 
 # ============================================================================
@@ -452,3 +473,466 @@ class TestAnthropicMessagesFormat:
         text_block = new_body["system"][0]["text"]
         assert "<document>Q</document>" in text_block
         assert "<document>P</document>" in text_block
+
+
+# ============================================================================
+# Markdown header extraction
+# ============================================================================
+
+
+class TestMarkdownHeaderExtraction:
+    def test_basic_split(self):
+        text = "# Section A\nContent A\n\n# Section B\nContent B"
+        config = InterceptConfig(mode="markdown_header")
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "markdown_header"
+        assert len(result.documents) == 2
+        assert "# Section A" in result.documents[0]
+        assert "# Section B" in result.documents[1]
+
+    def test_h2_headers(self):
+        text = "## Part 1\nText 1\n\n## Part 2\nText 2\n\n## Part 3\nText 3"
+        config = InterceptConfig(mode="markdown_header")
+        result = extract_documents(text, config)
+        assert result is not None
+        assert len(result.documents) == 3
+
+    def test_prefix_preserved(self):
+        text = "Some preamble\n\n# First\nA\n\n# Second\nB"
+        config = InterceptConfig(mode="markdown_header")
+        result = extract_documents(text, config)
+        assert result is not None
+        assert "preamble" in result.prefix
+        assert len(result.documents) == 2
+
+    def test_single_header_returns_none(self):
+        text = "# Only One Section\nSome content here"
+        config = InterceptConfig(mode="markdown_header")
+        result = extract_documents(text, config)
+        assert result is None
+
+    def test_auto_priority_xml_over_markdown(self):
+        text = "<documents><document>A</document><document>B</document></documents>"
+        config = InterceptConfig(mode="auto")
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "xml_tag"
+
+    def test_auto_falls_back_to_markdown(self):
+        text = "# Topic A\nContent about A\n\n# Topic B\nContent about B"
+        config = InterceptConfig(mode="auto")
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "markdown_header"
+
+    def test_roundtrip(self):
+        text = "Preamble\n\n# Alpha\nContent A\n\n# Beta\nContent B"
+        config = InterceptConfig(mode="markdown_header")
+        result = extract_documents(text, config)
+        assert result is not None
+        rebuilt = reconstruct_content(result, list(reversed(result.documents)))
+        assert "# Beta" in rebuilt
+        assert "# Alpha" in rebuilt
+        # Prefix preserved
+        assert "Preamble" in rebuilt
+
+
+# ============================================================================
+# File XML tags
+# ============================================================================
+
+
+class TestFileXmlTags:
+    def test_files_wrapper(self):
+        text = "<files><file>file1.py content</file><file>file2.py content</file></files>"
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "xml_tag"
+        assert result.wrapper_tag == "files"
+        assert result.item_tag == "file"
+        assert result.documents == ["file1.py content", "file2.py content"]
+
+    def test_file_tags_without_wrapper(self):
+        text = "<file>A</file>\n<file>B</file>"
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.item_tag == "file"
+
+
+# ============================================================================
+# OpenAI tool result extraction
+# ============================================================================
+
+
+class TestOpenAIToolResultExtraction:
+    def test_single_tool_result(self):
+        body = {
+            "messages": [
+                {"role": "system", "content": "You are a helper."},
+                {"role": "user", "content": "Search for X"},
+                {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1"}]},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "<documents><document>Result A</document><document>Result B</document></documents>"},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        assert len(results) == 1
+        ext, loc = results[0]
+        assert ext.documents == ["Result A", "Result B"]
+        assert loc.msg_index == 3
+        assert loc.block_index == -1
+
+    def test_multiple_tool_results(self):
+        body = {
+            "messages": [
+                {"role": "system", "content": "You are a helper."},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "[1] Doc A [2] Doc B"},
+                {"role": "tool", "tool_call_id": "tc2",
+                 "content": "[1] Doc C [2] Doc D [3] Doc E"},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        assert len(results) == 2
+        assert results[0][0].documents == ["Doc A", "Doc B"]
+        assert results[1][0].documents == ["Doc C", "Doc D", "Doc E"]
+
+    def test_skip_no_docs(self):
+        body = {
+            "messages": [
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "No documents here, just a plain response."},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        assert len(results) == 0
+
+    def test_skip_single_doc(self):
+        body = {
+            "messages": [
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "<documents><document>Only one</document></documents>"},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        assert len(results) == 0
+
+    def test_content_blocks_format(self):
+        body = {
+            "messages": [
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": [
+                     {"type": "text", "text": "<docs><doc>X</doc><doc>Y</doc></docs>"}
+                 ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        assert len(results) == 1
+        assert results[0][1].block_index == 0
+
+    def test_camelcase_toolresult_role(self):
+        """OpenClaw internal format uses role='toolResult' (camelCase)."""
+        body = {
+            "messages": [
+                {"role": "toolResult", "toolCallId": "tc1",
+                 "content": [
+                     {"type": "text", "text": "<documents><document>A</document><document>B</document></documents>"}
+                 ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        assert len(results) == 1
+        assert results[0][0].documents == ["A", "B"]
+
+
+# ============================================================================
+# Anthropic tool result extraction
+# ============================================================================
+
+
+class TestAnthropicToolResultExtraction:
+    def test_string_content(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": "<documents><document>Res A</document><document>Res B</document></documents>"},
+                ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_anthropic_tool_results(body, config)
+        assert len(results) == 1
+        ext, loc = results[0]
+        assert ext.documents == ["Res A", "Res B"]
+        assert loc.msg_index == 0
+        assert loc.block_index == 0
+        assert loc.inner_block_index == -1
+
+    def test_content_blocks(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": [
+                         {"type": "text", "text": "[1] Alpha [2] Beta [3] Gamma"}
+                     ]},
+                ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_anthropic_tool_results(body, config)
+        assert len(results) == 1
+        ext, loc = results[0]
+        assert ext.documents == ["Alpha", "Beta", "Gamma"]
+        assert loc.inner_block_index == 0
+
+    def test_no_tool_result(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there"},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_anthropic_tool_results(body, config)
+        assert len(results) == 0
+
+    def test_multiple_tool_results_in_one_message(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": "<docs><doc>A</doc><doc>B</doc></docs>"},
+                    {"type": "tool_result", "tool_use_id": "tu2",
+                     "content": "<docs><doc>C</doc><doc>D</doc></docs>"},
+                ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_anthropic_tool_results(body, config)
+        assert len(results) == 2
+
+    def test_camelcase_toolresult_type(self):
+        """OpenClaw internal format uses type='toolResult' (camelCase)."""
+        body = {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "toolResult", "toolUseId": "tu1",
+                     "content": "<docs><doc>X</doc><doc>Y</doc></docs>"},
+                ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_anthropic_tool_results(body, config)
+        assert len(results) == 1
+        assert results[0][0].documents == ["X", "Y"]
+
+
+# ============================================================================
+# Tool result reconstruction
+# ============================================================================
+
+
+class TestToolResultReconstruction:
+    def test_openai_string_roundtrip(self):
+        body = {
+            "messages": [
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "<documents><document>A</document><document>B</document></documents>"},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        ext, loc = results[0]
+        body_copy = copy.deepcopy(body)
+        reconstruct_openai_tool_result(body_copy, ext, ["B", "A"], loc)
+        content = body_copy["messages"][0]["content"]
+        assert "<document>B</document>" in content
+        assert content.index("<document>B</document>") < content.index("<document>A</document>")
+
+    def test_openai_blocks_roundtrip(self):
+        body = {
+            "messages": [
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": [
+                     {"type": "text", "text": "[1] X [2] Y [3] Z"}
+                 ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_openai_tool_results(body, config)
+        ext, loc = results[0]
+        body_copy = copy.deepcopy(body)
+        reconstruct_openai_tool_result(body_copy, ext, ["Z", "X", "Y"], loc)
+        text = body_copy["messages"][0]["content"][0]["text"]
+        assert "[1] Z" in text
+
+    def test_anthropic_string_roundtrip(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": "<docs><doc>P</doc><doc>Q</doc></docs>"},
+                ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_anthropic_tool_results(body, config)
+        ext, loc = results[0]
+        body_copy = copy.deepcopy(body)
+        reconstruct_anthropic_tool_result(body_copy, ext, ["Q", "P"], loc)
+        content = body_copy["messages"][0]["content"][0]["content"]
+        assert "<doc>Q</doc>" in content
+
+    def test_anthropic_nested_blocks_roundtrip(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": [
+                         {"type": "text", "text": "[1] First [2] Second"}
+                     ]},
+                ]},
+            ],
+        }
+        config = InterceptConfig()
+        results = extract_from_anthropic_tool_results(body, config)
+        ext, loc = results[0]
+        body_copy = copy.deepcopy(body)
+        reconstruct_anthropic_tool_result(body_copy, ext, ["Second", "First"], loc)
+        text = body_copy["messages"][0]["content"][0]["content"][0]["text"]
+        assert "[1] Second" in text
+
+
+# ============================================================================
+# Scope filtering
+# ============================================================================
+
+
+class TestScopeFiltering:
+    def _make_openai_body(self):
+        return {
+            "messages": [
+                {"role": "system", "content": "<documents><document>SysA</document><document>SysB</document></documents>"},
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1"}]},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "<documents><document>ToolA</document><document>ToolB</document></documents>"},
+            ],
+        }
+
+    def _make_anthropic_body(self):
+        return {
+            "system": "<documents><document>SysX</document><document>SysY</document></documents>",
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Hello"},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu1", "name": "search", "input": {}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": "<documents><document>ToolX</document><document>ToolY</document></documents>"},
+                ]},
+            ],
+        }
+
+    def test_openai_scope_system_only(self):
+        body = self._make_openai_body()
+        config = InterceptConfig(scope="system")
+        result = extract_all_openai(body, config)
+        assert result.system_extraction is not None
+        assert len(result.tool_extractions) == 0
+
+    def test_openai_scope_tool_results_only(self):
+        body = self._make_openai_body()
+        config = InterceptConfig(scope="tool_results")
+        result = extract_all_openai(body, config)
+        assert result.system_extraction is None
+        assert len(result.tool_extractions) == 1
+
+    def test_openai_scope_all(self):
+        body = self._make_openai_body()
+        config = InterceptConfig(scope="all")
+        result = extract_all_openai(body, config)
+        assert result.system_extraction is not None
+        assert len(result.tool_extractions) == 1
+        assert result.total_documents == 4
+
+    def test_anthropic_scope_system_only(self):
+        body = self._make_anthropic_body()
+        config = InterceptConfig(scope="system")
+        result = extract_all_anthropic(body, config)
+        assert result.system_extraction is not None
+        assert len(result.tool_extractions) == 0
+
+    def test_anthropic_scope_tool_results_only(self):
+        body = self._make_anthropic_body()
+        config = InterceptConfig(scope="tool_results")
+        result = extract_all_anthropic(body, config)
+        assert result.system_extraction is None
+        assert len(result.tool_extractions) == 1
+
+    def test_anthropic_scope_all(self):
+        body = self._make_anthropic_body()
+        config = InterceptConfig(scope="all")
+        result = extract_all_anthropic(body, config)
+        assert result.system_extraction is not None
+        assert len(result.tool_extractions) == 1
+        assert result.total_documents == 4
+
+
+# ============================================================================
+# OpenClaw system prompt pattern
+# ============================================================================
+
+
+class TestOpenClawSystemPromptPattern:
+    def test_openclaw_files_pattern(self):
+        """Simulate OpenClaw's system prompt with <files><file> tags."""
+        text = (
+            "You are an AI assistant.\n"
+            "<files>\n"
+            "<file>path/to/file1.py\nclass Foo:\n    pass</file>\n"
+            "<file>path/to/file2.py\ndef bar():\n    return 42</file>\n"
+            "<file>path/to/file3.py\nimport os\nos.path.join('a', 'b')</file>\n"
+            "</files>\n"
+            "Answer the user's questions based on the files above."
+        )
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "xml_tag"
+        assert result.wrapper_tag == "files"
+        assert result.item_tag == "file"
+        assert len(result.documents) == 3
+        assert "class Foo" in result.documents[0]
+        assert "Answer the user" in result.suffix
+
+    def test_openclaw_markdown_header_pattern(self):
+        """Simulate OpenClaw's tool result with markdown headers."""
+        text = (
+            "# Search Results\n"
+            "## Result 1: Introduction to Python\n"
+            "Python is a high-level programming language.\n\n"
+            "## Result 2: Python Data Types\n"
+            "Python has several built-in data types.\n\n"
+            "## Result 3: Python Functions\n"
+            "Functions are reusable blocks of code."
+        )
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "markdown_header"
+        assert len(result.documents) >= 3

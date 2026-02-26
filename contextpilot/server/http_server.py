@@ -16,6 +16,7 @@ Environment variables (alternative to CLI args):
 """
 
 import argparse
+import copy
 import logging
 import time
 import asyncio
@@ -47,7 +48,11 @@ from .conversation_tracker import (
 from .intercept_parser import (
     parse_intercept_headers, extract_from_openai_chat,
     extract_from_anthropic_messages, reconstruct_openai_chat,
-    reconstruct_anthropic_messages, InterceptConfig, ExtractionResult,
+    reconstruct_anthropic_messages, reconstruct_content,
+    extract_documents, InterceptConfig, ExtractionResult,
+    MultiExtractionResult, ToolResultLocation,
+    extract_all_openai, extract_all_anthropic,
+    reconstruct_openai_tool_result, reconstruct_anthropic_tool_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -983,12 +988,40 @@ _OPENAI_CHAT = "openai_chat"
 _ANTHROPIC_MESSAGES = "anthropic_messages"
 
 
+def _reorder_documents(docs: List[str], config: InterceptConfig) -> List[str]:
+    """Reorder a list of document strings using ContextPilot clustering.
+
+    Returns the reordered document list.
+    """
+    temp_index = ContextPilot(
+        alpha=config.alpha,
+        use_gpu=False,
+        linkage_method=config.linkage_method,
+    )
+    str_to_id: Dict[str, int] = {}
+    id_to_str: Dict[int, str] = {}
+    next_id = 0
+    converted = []
+    for doc in docs:
+        sid = str_to_id.get(doc)
+        if sid is None:
+            sid = next_id
+            str_to_id[doc] = sid
+            id_to_str[sid] = doc
+            next_id += 1
+        converted.append(sid)
+
+    sched_result = temp_index.schedule_only(contexts=[converted])
+    reordered_ids = sched_result["reordered_contexts"][0]
+    return [id_to_str[i] for i in reordered_ids]
+
+
 async def _intercept_and_forward(request: Request, api_format: str):
     """Intercept an LLM API request, reorder documents, and forward.
 
     1. Parse X-ContextPilot-* headers → InterceptConfig
-    2. Extract documents from system message/prompt
-    3. Reorder via ContextPilot.reorder(docs)
+    2. Extract documents from system message/prompt and tool_results
+    3. Reorder each extraction via ContextPilot clustering
     4. Reconstruct request body with reordered docs
     5. Forward to actual LLM backend, streaming or not
     If extraction fails at any step → forward original request unmodified.
@@ -1013,58 +1046,70 @@ async def _intercept_and_forward(request: Request, api_format: str):
     # Parse intercept config from headers
     headers = dict(request.headers)
     config = parse_intercept_headers(headers)
-    reordered = False
+    total_reordered = 0
+    system_count = 0
+    tool_result_count = 0
 
     if config.enabled:
         try:
-            extraction = None
-            sys_idx = None
+            body = copy.deepcopy(body)
 
             if api_format == _OPENAI_CHAT:
-                result = extract_from_openai_chat(body, config)
-                if result:
-                    extraction, sys_idx = result
+                multi = extract_all_openai(body, config)
             elif api_format == _ANTHROPIC_MESSAGES:
-                extraction = extract_from_anthropic_messages(body, config)
+                multi = extract_all_anthropic(body, config)
+            else:
+                multi = MultiExtractionResult()
 
-            if extraction and len(extraction.documents) >= 2:
-                docs = extraction.documents
-                # Stateless reorder: create temp ContextPilot, get optimal order
-                temp_index = ContextPilot(
-                    alpha=config.alpha,
-                    use_gpu=False,
-                    linkage_method=config.linkage_method,
-                )
-                # Build string-to-id mapping
-                str_to_id = {}
-                id_to_str = {}
-                next_id = 0
-                converted = []
-                for doc in docs:
-                    sid = str_to_id.get(doc)
-                    if sid is None:
-                        sid = next_id
-                        str_to_id[doc] = sid
-                        id_to_str[sid] = doc
-                        next_id += 1
-                    converted.append(sid)
+            # Reorder system extraction
+            if multi.system_extraction:
+                extraction, sys_idx = multi.system_extraction
+                if len(extraction.documents) >= 2:
+                    reordered_docs = _reorder_documents(extraction.documents, config)
+                    if api_format == _OPENAI_CHAT:
+                        new_content = reconstruct_content(extraction, reordered_docs)
+                        msg = body["messages"][sys_idx]
+                        if isinstance(msg.get("content"), str):
+                            msg["content"] = new_content
+                        elif isinstance(msg.get("content"), list):
+                            for block in msg["content"]:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    if extract_documents(block.get("text", ""), InterceptConfig()):
+                                        block["text"] = new_content
+                                        break
+                    elif api_format == _ANTHROPIC_MESSAGES:
+                        new_content = reconstruct_content(extraction, reordered_docs)
+                        if isinstance(body.get("system"), str):
+                            body["system"] = new_content
+                        elif isinstance(body.get("system"), list):
+                            for block in body["system"]:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    if extract_documents(block.get("text", ""), InterceptConfig()):
+                                        block["text"] = new_content
+                                        break
+                    total_reordered += len(extraction.documents)
+                    system_count = 1
 
-                sched_result = temp_index.schedule_only(contexts=[converted])
-                reordered_ids = sched_result["reordered_contexts"][0]
-                reordered_docs = [id_to_str[i] for i in reordered_ids]
+            # Reorder tool result extractions
+            for extraction, location in multi.tool_extractions:
+                if len(extraction.documents) >= 2:
+                    reordered_docs = _reorder_documents(extraction.documents, config)
+                    if api_format == _OPENAI_CHAT:
+                        reconstruct_openai_tool_result(body, extraction, reordered_docs, location)
+                    elif api_format == _ANTHROPIC_MESSAGES:
+                        reconstruct_anthropic_tool_result(body, extraction, reordered_docs, location)
+                    total_reordered += len(extraction.documents)
+                    tool_result_count += 1
 
-                # Reconstruct body
-                if api_format == _OPENAI_CHAT:
-                    body = reconstruct_openai_chat(body, extraction, reordered_docs, sys_idx)
-                elif api_format == _ANTHROPIC_MESSAGES:
-                    body = reconstruct_anthropic_messages(body, extraction, reordered_docs)
-                reordered = True
+            if total_reordered > 0:
                 logger.info(
-                    f"Intercept ({api_format}): reordered {len(docs)} documents"
+                    f"Intercept ({api_format}): reordered {total_reordered} documents "
+                    f"from {system_count} system + {tool_result_count} tool_results"
                 )
 
         except Exception as e:
             logger.warning(f"Intercept extraction/reorder failed, forwarding original: {e}")
+            total_reordered = 0
 
     # Determine target URL
     if api_format == _OPENAI_CHAT:
@@ -1105,10 +1150,15 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 target_url, json=body, headers=outbound_headers
             ) as resp:
                 result = await resp.json()
-                if reordered and resp.status == 200:
+                if total_reordered > 0 and resp.status == 200:
                     result["_contextpilot"] = {
                         "intercepted": True,
                         "documents_reordered": True,
+                        "total_documents": total_reordered,
+                        "sources": {
+                            "system": system_count,
+                            "tool_results": tool_result_count,
+                        },
                     }
                 return JSONResponse(content=result, status_code=resp.status)
 

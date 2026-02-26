@@ -48,27 +48,27 @@ ContextPilot is validated across three representative settings: single-node acad
 | Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
 |-----------|--------|--------------------|-----------|--------|
 | MultihopRAG | SGLang | 7,290 | 4.64% | 60.42 |
-| MultihopRAG | **SGLang + ContextPilot** | **14,214** | **33.97%** | **64.39** |
+|              | **SGLang + ContextPilot** | **14,214** | **33.97%** | **64.39** |
 | NarrativeQA | SGLang | 7,921 | 5.91% | 28.41 |
-| NarrativeQA | **SGLang + ContextPilot** | **12,117** | **20.82%** | **29.64** |
+|              | **SGLang + ContextPilot** | **12,117** | **20.82%** | **29.64** |
 
 **DeepSeek-R1-671B on 16×H20** — production-scale 671B MoE inference on a multi-node GPU cluster.
 
 | Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
 |-----------|--------|--------------------|-----------|--------|
 | MultihopRAG | SGLang | 9,636 | 5.12% | 64.15 |
-| MultihopRAG | **SGLang + ContextPilot** | **17,498** | **60.37%** | **64.68** |
+|            | **SGLang + ContextPilot** | **17,498** | **60.37%** | **64.68** |
 | NarrativeQA | SGLang | 8,687 | 6.08% | 40.20 |
-| NarrativeQA | **SGLang + ContextPilot** | **13,201** | **38.24%** | **41.08** |
+|            | **SGLang + ContextPilot** | **13,201** | **38.24%** | **41.08** |
 
 **Qwen3-4B on 1×A6000** — multi-turn memory chat with [Mem0](https://github.com/mem0ai/mem0) on the [LoCoMo](https://github.com/snap-research/locomo) benchmark.
 
 | Context Size | Method | TTFT (s) | LLM Judge |
 |--------------|--------|----------|-----------|
 | 20 memories | SGLang | 0.0377 | 0.440 |
-| 20 memories | **SGLang + ContextPilot** | **0.0315** | **0.460** |
+|            | **SGLang + ContextPilot** | **0.0315** | **0.460** |
 | 100 memories | SGLang | 0.1012 | 0.437 |
-| 100 memories | **SGLang + ContextPilot** | **0.0554** | 0.420 |
+|            | **SGLang + ContextPilot** | **0.0554** | 0.420 |
 
 >ContextPilot results in mem0 table are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 

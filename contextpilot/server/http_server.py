@@ -39,10 +39,15 @@ except ImportError:
 
 from .live_index import ContextPilot
 from .conversation_tracker import (
-    ConversationTracker, 
+    ConversationTracker,
     DeduplicationResult,
     get_conversation_tracker,
     reset_conversation_tracker
+)
+from .intercept_parser import (
+    parse_intercept_headers, extract_from_openai_chat,
+    extract_from_anthropic_messages, reconstruct_openai_chat,
+    reconstruct_anthropic_messages, InterceptConfig, ExtractionResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -967,6 +972,161 @@ async def proxy_completions(request: Request):
     except Exception as e:
         logger.error(f"Error in proxy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# HTTP Intercept Proxy Endpoints
+# ============================================================================
+
+# API format constants
+_OPENAI_CHAT = "openai_chat"
+_ANTHROPIC_MESSAGES = "anthropic_messages"
+
+
+async def _intercept_and_forward(request: Request, api_format: str):
+    """Intercept an LLM API request, reorder documents, and forward.
+
+    1. Parse X-ContextPilot-* headers → InterceptConfig
+    2. Extract documents from system message/prompt
+    3. Reorder via ContextPilot.reorder(docs)
+    4. Reconstruct request body with reordered docs
+    5. Forward to actual LLM backend, streaming or not
+    If extraction fails at any step → forward original request unmodified.
+    """
+    if _infer_api_url is None:
+        _init_config()
+
+    infer_api_url = _infer_api_url or os.environ.get(
+        "CONTEXTPILOT_INFER_API_URL", "http://localhost:30000"
+    )
+    if not infer_api_url:
+        raise HTTPException(
+            status_code=503,
+            detail="Inference API URL not configured.",
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # Parse intercept config from headers
+    headers = dict(request.headers)
+    config = parse_intercept_headers(headers)
+    reordered = False
+
+    if config.enabled:
+        try:
+            extraction = None
+            sys_idx = None
+
+            if api_format == _OPENAI_CHAT:
+                result = extract_from_openai_chat(body, config)
+                if result:
+                    extraction, sys_idx = result
+            elif api_format == _ANTHROPIC_MESSAGES:
+                extraction = extract_from_anthropic_messages(body, config)
+
+            if extraction and len(extraction.documents) >= 2:
+                docs = extraction.documents
+                # Stateless reorder: create temp ContextPilot, get optimal order
+                temp_index = ContextPilot(
+                    alpha=config.alpha,
+                    use_gpu=False,
+                    linkage_method=config.linkage_method,
+                )
+                # Build string-to-id mapping
+                str_to_id = {}
+                id_to_str = {}
+                next_id = 0
+                converted = []
+                for doc in docs:
+                    sid = str_to_id.get(doc)
+                    if sid is None:
+                        sid = next_id
+                        str_to_id[doc] = sid
+                        id_to_str[sid] = doc
+                        next_id += 1
+                    converted.append(sid)
+
+                sched_result = temp_index.schedule_only(contexts=[converted])
+                reordered_ids = sched_result["reordered_contexts"][0]
+                reordered_docs = [id_to_str[i] for i in reordered_ids]
+
+                # Reconstruct body
+                if api_format == _OPENAI_CHAT:
+                    body = reconstruct_openai_chat(body, extraction, reordered_docs, sys_idx)
+                elif api_format == _ANTHROPIC_MESSAGES:
+                    body = reconstruct_anthropic_messages(body, extraction, reordered_docs)
+                reordered = True
+                logger.info(
+                    f"Intercept ({api_format}): reordered {len(docs)} documents"
+                )
+
+        except Exception as e:
+            logger.warning(f"Intercept extraction/reorder failed, forwarding original: {e}")
+
+    # Determine target URL
+    if api_format == _OPENAI_CHAT:
+        target_url = f"{infer_api_url}/v1/chat/completions"
+    elif api_format == _ANTHROPIC_MESSAGES:
+        target_url = f"{infer_api_url}/v1/messages"
+    else:
+        target_url = f"{infer_api_url}/v1/chat/completions"
+
+    # Build outbound headers: forward auth, strip X-ContextPilot-*
+    outbound_headers = {}
+    for k, v in headers.items():
+        kl = k.lower()
+        if kl.startswith("x-contextpilot-"):
+            continue
+        if kl in ("authorization", "x-api-key", "anthropic-version", "content-type"):
+            outbound_headers[k] = v
+
+    is_stream = body.get("stream", False)
+
+    try:
+        if is_stream:
+            # Streaming: passthrough SSE chunks
+            async def _stream_generator():
+                async with _aiohttp_session.post(
+                    target_url, json=body, headers=outbound_headers
+                ) as resp:
+                    async for chunk in resp.content.iter_any():
+                        yield chunk
+
+            return StreamingResponse(
+                _stream_generator(),
+                media_type="text/event-stream",
+            )
+        else:
+            # Non-streaming: forward JSON
+            async with _aiohttp_session.post(
+                target_url, json=body, headers=outbound_headers
+            ) as resp:
+                result = await resp.json()
+                if reordered and resp.status == 200:
+                    result["_contextpilot"] = {
+                        "intercepted": True,
+                        "documents_reordered": True,
+                    }
+                return JSONResponse(content=result, status_code=resp.status)
+
+    except aiohttp.ClientError as e:
+        logger.error(f"Error forwarding intercepted request: {e}")
+        raise HTTPException(status_code=502, detail=f"Backend error: {str(e)}")
+
+
+@app.post("/v1/chat/completions")
+async def intercept_openai_chat(request: Request):
+    """Intercept OpenAI chat completions: extract docs, reorder, forward."""
+    return await _intercept_and_forward(request, _OPENAI_CHAT)
+
+
+@app.post("/v1/messages")
+async def intercept_anthropic_messages(request: Request):
+    """Intercept Anthropic messages: extract docs, reorder, forward."""
+    return await _intercept_and_forward(request, _ANTHROPIC_MESSAGES)
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST"])

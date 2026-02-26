@@ -74,7 +74,7 @@ ContextPilot is validated across three representative settings: single-node acad
 | 100 memories | SGLang | 0.1012 | 0.437 |
 | 100 memories | **ContextPilot (Ours)** | **0.0554** | 0.420 |
 
-**1.2–1.8× faster time-to-first-token** with comparable answer quality. We include the 100-memory setting to evaluate long-context performance, as the full LoCoMo conversation contains only ~26k tokens of memory context. Judge scores at 100 memories are lower than at 20 for both methods, as more memories introduces noise that dilutes relevant context. The 0.420 judge score is without annotation.
+**1.2–1.8× faster time-to-first-token** with comparable answer quality. We include the 100-memory setting to evaluate long-context performance, as the full LoCoMo conversation contains only ~26k tokens of memory context. Judge scores at 100 memories are lower than at 20 for both methods, as more memories introduces noise that dilutes relevant context. All ContextPilot results here are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 
 ## Installation
 

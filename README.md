@@ -65,8 +65,6 @@ ContextPilot is validated across three representative settings: single-node acad
 
 | Context Size | Method | TTFT (s) | LLM Judge |
 |--------------|--------|----------|-----------|
-| 20 memories | SGLang | 0.0377 | 0.440 |
-|            | **SGLang + ContextPilot** | **0.0315** | **0.460** |
 | 100 memories | SGLang | 0.1012 | 0.437 |
 |            | **SGLang + ContextPilot** | **0.0554** | 0.420 |
 

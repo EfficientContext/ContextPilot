@@ -327,3 +327,161 @@ class TestHeaderForwarding:
         # X-ContextPilot-* should be stripped
         for k in outbound:
             assert not k.lower().startswith("x-contextpilot-")
+
+
+# ============================================================================
+# Tool result intercept
+# ============================================================================
+
+
+class TestToolResultIntercept:
+    def test_openai_tool_result_reordered(self, client, mock_session):
+        """OpenAI tool results with docs get reordered."""
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are a helper."},
+                {"role": "user", "content": "Search for X"},
+                {"role": "assistant", "content": None,
+                 "tool_calls": [{"id": "tc1", "type": "function",
+                                 "function": {"name": "search", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": (
+                     "<documents>\n"
+                     "<document>Tool Doc A</document>\n"
+                     "<document>Tool Doc B</document>\n"
+                     "<document>Tool Doc C</document>\n"
+                     "</documents>"
+                 )},
+                {"role": "user", "content": "Now summarize."},
+            ],
+        }
+        resp = client.post("/v1/chat/completions", json=body)
+        assert resp.status_code == 200
+        result = resp.json()
+        meta = result.get("_contextpilot", {})
+        assert meta.get("intercepted") is True
+        assert meta.get("documents_reordered") is True
+        assert meta.get("sources", {}).get("tool_results", 0) >= 1
+        # Forwarded body should have reordered tool content
+        forwarded = mock_session._last_json
+        tool_content = forwarded["messages"][3]["content"]
+        assert "<document>" in tool_content
+
+    def test_anthropic_tool_result_reordered(self, client, mock_session):
+        """Anthropic tool_result content blocks get reordered."""
+        body = {
+            "model": "claude-3-opus-20240229",
+            "system": "You are a helper.",
+            "messages": [
+                {"role": "user", "content": "Search for X"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu1", "name": "search",
+                     "input": {"query": "X"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": (
+                         "<documents>\n"
+                         "<document>Anthropic Doc A</document>\n"
+                         "<document>Anthropic Doc B</document>\n"
+                         "<document>Anthropic Doc C</document>\n"
+                         "</documents>"
+                     )},
+                ]},
+                {"role": "user", "content": "Now summarize."},
+            ],
+        }
+        resp = client.post("/v1/messages", json=body)
+        assert resp.status_code == 200
+        result = resp.json()
+        meta = result.get("_contextpilot", {})
+        assert meta.get("intercepted") is True
+        assert meta.get("sources", {}).get("tool_results", 0) >= 1
+        # Forwarded body should have reordered tool_result content
+        forwarded = mock_session._last_json
+        tr_content = forwarded["messages"][2]["content"][0]["content"]
+        assert "<document>" in tr_content
+
+    def test_openai_system_and_tool_results(self, client, mock_session):
+        """Both system docs and tool result docs get reordered."""
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": (
+                    "<documents>\n"
+                    "<document>Sys A</document>\n"
+                    "<document>Sys B</document>\n"
+                    "<document>Sys C</document>\n"
+                    "</documents>"
+                )},
+                {"role": "user", "content": "Search"},
+                {"role": "assistant", "content": None,
+                 "tool_calls": [{"id": "tc1"}]},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "[1] Tool A [2] Tool B [3] Tool C"},
+                {"role": "user", "content": "Summarize"},
+            ],
+        }
+        resp = client.post("/v1/chat/completions", json=body)
+        assert resp.status_code == 200
+        result = resp.json()
+        meta = result.get("_contextpilot", {})
+        assert meta.get("intercepted") is True
+        assert meta["sources"]["system"] == 1
+        assert meta["sources"]["tool_results"] == 1
+        assert meta["total_documents"] == 6
+
+    def test_scope_system_skips_tool_results(self, client, mock_session):
+        """scope=system should only reorder system docs, not tool results."""
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": (
+                    "<documents>\n"
+                    "<document>Sys A</document>\n"
+                    "<document>Sys B</document>\n"
+                    "</documents>"
+                )},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "<documents><document>T1</document><document>T2</document></documents>"},
+            ],
+        }
+        resp = client.post(
+            "/v1/chat/completions",
+            json=body,
+            headers={"X-ContextPilot-Scope": "system"},
+        )
+        assert resp.status_code == 200
+        result = resp.json()
+        meta = result.get("_contextpilot", {})
+        assert meta.get("intercepted") is True
+        assert meta["sources"]["system"] == 1
+        assert meta["sources"]["tool_results"] == 0
+
+    def test_scope_tool_results_skips_system(self, client, mock_session):
+        """scope=tool_results should only reorder tool result docs."""
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": (
+                    "<documents>\n"
+                    "<document>Sys A</document>\n"
+                    "<document>Sys B</document>\n"
+                    "</documents>"
+                )},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": "<documents><document>T1</document><document>T2</document></documents>"},
+            ],
+        }
+        resp = client.post(
+            "/v1/chat/completions",
+            json=body,
+            headers={"X-ContextPilot-Scope": "tool_results"},
+        )
+        assert resp.status_code == 200
+        result = resp.json()
+        meta = result.get("_contextpilot", {})
+        assert meta.get("intercepted") is True
+        assert meta["sources"]["system"] == 0
+        assert meta["sources"]["tool_results"] == 1

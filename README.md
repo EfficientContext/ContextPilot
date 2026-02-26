@@ -7,7 +7,7 @@
   [![PyPI](https://img.shields.io/pypi/v/contextpilot)](https://pypi.org/project/contextpilot/)
   [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-  <p><strong>4–13× cache hits | 1.5–3× faster prefill | ~36% token savings</strong> across vLLM, SGLang, RAG, AI Agents, and more.</p>
+  <p><strong>4–12× cache hits | 1.5–3× faster prefill | ~36% token savings</strong> across vLLM, SGLang, RAG, AI Agents, and more.</p>
 
 </div>
 
@@ -74,7 +74,11 @@ ContextPilot is validated across three representative settings: single-node acad
 | 100 memories | SGLang | 0.1012 | 0.437 |
 | 100 memories | **ContextPilot (Ours)** | **0.0554** | 0.420 |
 
-**1.2–1.8× faster time-to-first-token** with comparable answer quality. We include the 100-memory setting to evaluate long-context performance, as the full LoCoMo conversation contains only ~26k tokens of memory context. Judge scores at 100 memories are lower than at 20 for both methods, as more memories introduces noise that dilutes relevant context. All ContextPilot results here are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
+**1.2–1.8× faster time-to-first-token** with comparable answer quality.
+
+We include the 100-memory setting to stress-test long-context performance, as the full LoCoMo conversation contains only ~26k tokens of memory context. Judge scores at 100 memories are lower than at 20 for both methods, as more memories introduces noise that dilutes relevant context.
+
+>ContextPilot results in mem0 table are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 
 ## Installation
 

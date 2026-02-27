@@ -130,38 +130,36 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
 
 ### Inference Engine Integration
 
-Stateful mode requires patching your inference engine so its prefix cache notifies ContextPilot on eviction. Patches are available for both SGLang and vLLM.
+Stateful mode requires the inference engine to notify ContextPilot when KV-cache entries are evicted. **No engine patches are needed** — ContextPilot automatically hooks into SGLang at runtime via a `.pth` import hook.
 
-#### SGLang Patch
+#### SGLang (automatic, zero-patch)
+
+Just set the `CONTEXTPILOT_INDEX_URL` environment variable when starting SGLang:
 
 ```bash
-# Automatic (recommended)
-bash patches/sglang/apply_patch.sh
-
-# Or manually:
-SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
-
-# Backup originals
-cp $SGLANG_PATH/srt/mem_cache/radix_cache.py $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak
-cp $SGLANG_PATH/srt/mem_cache/common.py $SGLANG_PATH/srt/mem_cache/common.py.bak
-cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak
-
-# Copy patched files
-cp patches/sglang/*.py $SGLANG_PATH/srt/mem_cache/
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 sglang serve --model-path Qwen/Qwen3-4B --port 30000
 ```
 
-Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
+That's it. ContextPilot's `.pth` hook automatically monkey-patches SGLang's `RadixCache` at import time to add eviction tracking. You will see this in the SGLang logs:
 
-#### vLLM Patch
+```
+[ContextPilot] Applying monkey-patches to SGLang RadixCache …
+[ContextPilot] SGLang RadixCache monkey-patched successfully
+```
+
+**Requirements:** ContextPilot and SGLang must be installed in the **same Python environment**. If you used `pip install -e .`, run `python -m contextpilot.install_hook` once to install the `.pth` file.
+
+Compatible with SGLang **0.5.x**.
+
+#### vLLM (manual patch)
+
+vLLM still requires a manual patch:
 
 ```bash
-# Automatic (recommended)
 bash patches/vllm/apply_patch.sh
 ```
 
 Compatible with vLLM **0.15.1**. See [patches/vllm/README.md](../../patches/vllm/README.md) for details.
-
-Both patches add an eviction callback that POSTs evicted `request_ids` to the ContextPilot server.
 
 #### How It Works
 

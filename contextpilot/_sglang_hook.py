@@ -201,7 +201,7 @@ def _apply_radix_cache_patches(module, index_url: str):
 
     def _patched_insert_helper(self, node, key, value, priority=0, **kwargs):
         evictable_before = self.evictable_size_
-        result = _orig_insert_helper(self, node, key, value, priority)
+        result = _orig_insert_helper(self, node, key, value, priority, **kwargs)
         rid = self._current_rid
         if rid is not None and self.evictable_size_ > evictable_before:
             # New tokens were added — the tree now has a new leaf.

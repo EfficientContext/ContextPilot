@@ -22,7 +22,7 @@ ContextPilot server  :8765   ← reorders contexts for max prefix reuse
 your application
 ```
 
-The **eviction proxy** (`contextpilot_edge/proxy_server.py`) is the new Mac-specific layer. It:
+The **benchmarking** test (`/Users/cheng/Github/ContextPilot/tests/test_llama_cpp.py`) is an example. During the inference over the benchmark, we can have the following features:
 
 - Translates OpenAI-compatible `/v1/chat/completions` requests into llama.cpp's native `/completion` format
 - Reads `cache_n` / `prompt_n` from llama.cpp's timing response to measure exact KV-cache reuse per request

@@ -147,19 +147,38 @@ That's it. ContextPilot's `.pth` hook automatically monkey-patches SGLang's `Rad
 [ContextPilot] SGLang RadixCache monkey-patched successfully
 ```
 
-**Requirements:** ContextPilot and SGLang must be installed in the **same Python environment**. If you used `pip install -e .`, run `python -m contextpilot.install_hook` once to install the `.pth` file.
+**Requirements:** If you used `pip install -e .`, run `python -m contextpilot.install_hook` once to install the `.pth` file.
+
+**Distributed setup** (SGLang and ContextPilot on different machines): You don't need to install the full `contextpilot` package on the SGLang machine. Copy the standalone install script instead:
+
+```bash
+# On the SGLang machine:
+wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/scripts/install_engine_hook.py
+wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/_sglang_hook.py
+python install_engine_hook.py
+
+# Then start SGLang pointing to the remote ContextPilot server:
+CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 sglang serve --model-path Qwen/Qwen3-4B
+```
 
 Compatible with SGLang **0.5.x**.
 
-#### vLLM (manual patch)
+#### vLLM (automatic, zero-patch)
 
-vLLM still requires a manual patch:
+Same approach — just set the environment variable:
 
 ```bash
-bash patches/vllm/apply_patch.sh
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 vllm serve Qwen/Qwen3-4B --port 30000 --enable-prefix-caching
 ```
 
-Compatible with vLLM **0.15.1**. See [patches/vllm/README.md](../../patches/vllm/README.md) for details.
+ContextPilot's `.pth` hook automatically monkey-patches vLLM's `BlockPool` at import time. You will see this in the vLLM logs:
+
+```
+[ContextPilot] Applying monkey-patches to vLLM BlockPool …
+[ContextPilot] vLLM BlockPool monkey-patched successfully
+```
+
+Compatible with vLLM **0.15.x** (v1 block manager architecture).
 
 #### How It Works
 

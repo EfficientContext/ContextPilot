@@ -32,26 +32,32 @@ corpus_origin = load_dataset("yixuantt/MultiHopRAG", "corpus")
 qa = load_dataset("yixuantt/MultiHopRAG", "MultiHopRAG")
 
 # === Step 2: Create corpus.jsonl with title included in text ===
-corpus = []
-chunk_id = 0
+corpus_docs = []
 seen_paragraph_prefixes = set()
 
 for entry in corpus_origin:
     for p in corpus_origin[entry]:
         paragraph_text = p["body"]
-        
-        # Calculate the first 50% of characters
+        title = p.get("title", "Untitled")
+
+        # Calculate the first 50% of characters for deduplication
         prefix_length = len(paragraph_text) // 2
         paragraph_prefix = paragraph_text[:prefix_length]
-        
+
         # Skip if we've seen this prefix before
         if paragraph_prefix in seen_paragraph_prefixes:
             continue
-        
-        # Add this prefix to our seen set
-        seen_paragraph_prefixes.add(paragraph_prefix)
 
-all_chunks = chunk_documents(list(seen_paragraph_prefixes), out_file=args.corpus_path)
+        seen_paragraph_prefixes.add(paragraph_prefix)
+        corpus_docs.append({"title": title, "text": paragraph_text})
+
+all_chunks = chunk_documents(corpus_docs)
+
+# Save corpus to disk (chunk_documents only returns chunks, doesn't write)
+with open(args.corpus_path, "w") as f:
+    for chunk in all_chunks:
+        f.write(json.dumps(chunk) + "\n")
+print(f"Corpus saved to {args.corpus_path} ({len(all_chunks)} chunks)")
 
 # === Step 3: Create queries.jsonl ===
 queries = []
@@ -59,9 +65,9 @@ query_id = 0
 for entry in qa:
     for q in qa[entry]:
         queries.append({
-            "id": query_id,
-            "question": q["query"],
-            "answers": [q["answer"]] + q.get("answer_aliases", [])
+            "qid": query_id,
+            "text": q["query"],
+            "answer": q["answer"],
         })
         query_id += 1
 

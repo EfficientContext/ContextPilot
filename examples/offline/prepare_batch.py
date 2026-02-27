@@ -14,10 +14,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-args = parse_args()
-context_path = args.context_path
-
-def prepare_batch(context_path):
+def prepare_batch(context_path, args):
     # Load prompts from the specified path
     with open(context_path, 'r') as f:
         prompts = [json.loads(line) for line in f]
@@ -25,7 +22,10 @@ def prepare_batch(context_path):
     qids = [prompt['qid'] for prompt in prompts]
     questions = [prompt['text'] for prompt in prompts]
     answers = [prompt['answer'] for prompt in prompts]
-    topk_doc_ids = [prompt['top_k_doc_id'] for prompt in prompts]
+    topk_doc_ids = [
+        [doc_id for doc_id in prompt['top_k_doc_id'] if doc_id is not None]
+        for prompt in prompts
+    ]
 
     # Reorder contexts for optimal KV-cache prefix sharing
     reorder_start = time.perf_counter()
@@ -52,12 +52,14 @@ def prepare_batch(context_path):
 
     return items
 
-start = time.perf_counter()
-batch_items = prepare_batch(context_path)
-end = time.perf_counter()
-print(f"Total batch preparation took {end - start:.2f} seconds")
-print(f"Generated {len(batch_items)} reordered items")
-with open(args.output_path, 'w') as f:
-    for item in batch_items:
-        f.write(json.dumps(item) + "\n")
-print(f"Output written to {args.output_path}")
+if __name__ == '__main__':
+    args = parse_args()
+    start = time.perf_counter()
+    batch_items = prepare_batch(args.context_path, args)
+    end = time.perf_counter()
+    print(f"Total batch preparation took {end - start:.2f} seconds")
+    print(f"Generated {len(batch_items)} reordered items")
+    with open(args.output_path, 'w') as f:
+        for item in batch_items:
+            f.write(json.dumps(item) + "\n")
+    print(f"Output written to {args.output_path}")

@@ -51,8 +51,12 @@ class BM25Retriever:
         assert corpus_file or corpus_data, "Either corpus_file or corpus_data must be provided."
         if corpus_data:
             for data in tqdm(corpus_data, desc="Indexing corpus data"):
-                # Get the ID for the action line
-                chunk_id = data.get("chunk_id") or data.get("document_id") or data.get("_id")
+                # Get the ID for the action line (use is not None to handle chunk_id=0)
+                chunk_id = data.get("chunk_id")
+                if chunk_id is None:
+                    chunk_id = data.get("document_id")
+                if chunk_id is None:
+                    chunk_id = data.get("_id")
                 text = data['text']
                 title = data.get('title', '')
 
@@ -69,7 +73,11 @@ class BM25Retriever:
             with open(corpus_file, 'r') as f:
                 for line in tqdm(f, desc="Indexing corpus from file"):
                     doc = json.loads(line)
-                    doc_id = doc.get("chunk_id") or doc.get("document_id") or doc.get("_id")
+                    doc_id = doc.get("chunk_id")
+                    if doc_id is None:
+                        doc_id = doc.get("document_id")
+                    if doc_id is None:
+                        doc_id = doc.get("_id")
 
                     # Action line: Specifies the index and the document's unique ID
                     action = {"index": {"_index": self.index_name, "_id": doc_id}}

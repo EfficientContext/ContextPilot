@@ -991,10 +991,17 @@ _OPENAI_CHAT = "openai_chat"
 _ANTHROPIC_MESSAGES = "anthropic_messages"
 
 
-def _reorder_documents(docs: List[str], config: InterceptConfig) -> List[str]:
+def _doc_preview(doc: str, max_len: int = 60) -> str:
+    """Truncate a document string for log preview."""
+    doc = doc.replace("\n", " ").strip()
+    return doc[:max_len] + "…" if len(doc) > max_len else doc
+
+
+def _reorder_documents(docs: List[str], config: InterceptConfig) -> tuple:
     """Reorder a list of document strings using ContextPilot clustering.
 
-    Returns the reordered document list.
+    Returns (reordered_docs, original_order, reordered_order) where the
+    order lists are 0-based indices suitable for logging/headers.
     """
     temp_index = ContextPilot(
         alpha=config.alpha,
@@ -1014,9 +1021,29 @@ def _reorder_documents(docs: List[str], config: InterceptConfig) -> List[str]:
             next_id += 1
         converted.append(sid)
 
+    original_order = list(range(len(docs)))
     sched_result = temp_index.schedule_only(contexts=[converted])
     reordered_ids = sched_result["reordered_contexts"][0]
-    return [id_to_str[i] for i in reordered_ids]
+    reordered_docs = [id_to_str[i] for i in reordered_ids]
+
+    # Map reordered docs back to their original indices
+    id_to_orig_idx: Dict[int, List[int]] = {}
+    for idx, sid in enumerate(converted):
+        id_to_orig_idx.setdefault(sid, []).append(idx)
+    reordered_order = []
+    id_consumed: Dict[int, int] = {}
+    for sid in reordered_ids:
+        pos = id_consumed.get(sid, 0)
+        reordered_order.append(id_to_orig_idx[sid][pos])
+        id_consumed[sid] = pos + 1
+
+    # Debug log with previews
+    if logger.isEnabledFor(logging.DEBUG):
+        for label, order in [("BEFORE", original_order), ("AFTER", reordered_order)]:
+            previews = [f"  [{i}] {_doc_preview(docs[i])}" for i in order]
+            logger.debug(f"Reorder {label}:\n" + "\n".join(previews))
+
+    return reordered_docs, original_order, reordered_order
 
 
 async def _intercept_and_forward(request: Request, api_format: str):
@@ -1052,6 +1079,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
     total_reordered = 0
     system_count = 0
     tool_result_count = 0
+    reorder_details = []  # collect per-source reorder info
 
     if config.enabled:
         try:
@@ -1068,7 +1096,13 @@ async def _intercept_and_forward(request: Request, api_format: str):
             if multi.system_extraction:
                 extraction, sys_idx = multi.system_extraction
                 if len(extraction.documents) >= 2:
-                    reordered_docs = _reorder_documents(extraction.documents, config)
+                    reordered_docs, orig_order, new_order = _reorder_documents(extraction.documents, config)
+                    reorder_details.append({
+                        "source": "system",
+                        "count": len(extraction.documents),
+                        "original_order": orig_order,
+                        "reordered_order": new_order,
+                    })
                     if api_format == _OPENAI_CHAT:
                         new_content = reconstruct_content(extraction, reordered_docs)
                         msg = body["messages"][sys_idx]
@@ -1096,7 +1130,13 @@ async def _intercept_and_forward(request: Request, api_format: str):
             # Reorder tool result extractions
             for extraction, location in multi.tool_extractions:
                 if len(extraction.documents) >= 2:
-                    reordered_docs = _reorder_documents(extraction.documents, config)
+                    reordered_docs, orig_order, new_order = _reorder_documents(extraction.documents, config)
+                    reorder_details.append({
+                        "source": f"tool_result[{location.msg_index}]",
+                        "count": len(extraction.documents),
+                        "original_order": orig_order,
+                        "reordered_order": new_order,
+                    })
                     if api_format == _OPENAI_CHAT:
                         reconstruct_openai_tool_result(body, extraction, reordered_docs, location)
                     elif api_format == _ANTHROPIC_MESSAGES:
@@ -1157,6 +1197,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 "system": system_count,
                 "tool_results": tool_result_count,
             },
+            "reorder_details": reorder_details,
         })
 
     is_stream = body.get("stream", False)

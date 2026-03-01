@@ -131,38 +131,69 @@ python -m contextpilot.server.http_server \
   --model Qwen/Qwen3.5-27B
 ```
 
-Merge into `~/.openclaw/openclaw.json`:
+Configure OpenClaw (replace `<server-ip>` with your server's IP):
 
-```json
-{
-  "models": {
+```bash
+# Requires jq (install: sudo apt install jq / brew install jq)
+jq '
+  .agents.defaults.model.primary = "contextpilot-sglang/Qwen/Qwen3.5-27B" |
+  .models = {
     "mode": "merge",
     "providers": {
       "contextpilot-sglang": {
         "baseUrl": "http://<server-ip>:8765/v1",
         "apiKey": "placeholder",
         "api": "openai-completions",
-        "headers": { "X-ContextPilot-Scope": "all" },
-        "models": [
-          {
-            "id": "Qwen/Qwen3.5-27B",
-            "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
-            "reasoning": false,
-            "input": ["text"],
-            "contextWindow": 131072,
-            "maxTokens": 8192
-          }
-        ]
+        "headers": {"X-ContextPilot-Scope": "all"},
+        "models": [{
+          "id": "Qwen/Qwen3.5-27B",
+          "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 131072,
+          "maxTokens": 8192
+        }]
       }
     }
-  },
-  "agents": {
-    "defaults": {
-      "model": { "primary": "contextpilot-sglang/Qwen/Qwen3.5-27B" }
+  }
+' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
+```
+
+Then restart:
+
+```bash
+pkill -f openclaw && openclaw gateway start && openclaw tui
+```
+
+<details>
+<summary>Without jq: manually edit <code>~/.openclaw/openclaw.json</code></summary>
+
+1. Change `agents.defaults.model.primary` to `"contextpilot-sglang/Qwen/Qwen3.5-27B"`
+2. Add a `"models"` key at the top level:
+
+```json
+"models": {
+  "mode": "merge",
+  "providers": {
+    "contextpilot-sglang": {
+      "baseUrl": "http://<server-ip>:8765/v1",
+      "apiKey": "placeholder",
+      "api": "openai-completions",
+      "headers": { "X-ContextPilot-Scope": "all" },
+      "models": [{
+        "id": "Qwen/Qwen3.5-27B",
+        "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
+        "reasoning": false,
+        "input": ["text"],
+        "contextWindow": 131072,
+        "maxTokens": 8192
+      }]
     }
   }
 }
 ```
+
+</details>
 
 > **Important**: Use the server's IP address (not hostname) in `baseUrl` to avoid IPv6 DNS resolution issues in Node.js/WSL environments. `--tool-call-parser` is required for OpenClaw's tool loop to work.
 

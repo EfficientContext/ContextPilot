@@ -124,10 +124,54 @@ python -m contextpilot.server.http_server \
 
 ### Step 3: Configure OpenClaw
 
-Merge into `~/.openclaw/openclaw.json`:
+Patch your OpenClaw config (replace `<server-ip>` with your server's IP):
+
+```bash
+# Requires jq (install: sudo apt install jq / brew install jq)
+jq '
+  .agents.defaults.model.primary = "contextpilot-sglang/Qwen/Qwen3.5-27B" |
+  .models = {
+    "mode": "merge",
+    "providers": {
+      "contextpilot-sglang": {
+        "baseUrl": "http://<server-ip>:8765/v1",
+        "apiKey": "placeholder",
+        "api": "openai-completions",
+        "headers": {"X-ContextPilot-Scope": "all"},
+        "models": [{
+          "id": "Qwen/Qwen3.5-27B",
+          "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 131072,
+          "maxTokens": 8192
+        }]
+      }
+    }
+  }
+' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
+```
+
+Then restart OpenClaw:
+
+```bash
+pkill -f openclaw && openclaw gateway start && openclaw tui
+```
+
+<details>
+<summary>Without jq: manually add this JSON to <code>~/.openclaw/openclaw.json</code></summary>
+
+Add a `"models"` key at the top level and change `agents.defaults.model.primary`:
 
 ```json
 {
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "contextpilot-sglang/Qwen/Qwen3.5-27B"
+      }
+    }
+  },
   "models": {
     "mode": "merge",
     "providers": {
@@ -135,9 +179,7 @@ Merge into `~/.openclaw/openclaw.json`:
         "baseUrl": "http://<server-ip>:8765/v1",
         "apiKey": "placeholder",
         "api": "openai-completions",
-        "headers": {
-          "X-ContextPilot-Scope": "all"
-        },
+        "headers": { "X-ContextPilot-Scope": "all" },
         "models": [
           {
             "id": "Qwen/Qwen3.5-27B",
@@ -150,16 +192,11 @@ Merge into `~/.openclaw/openclaw.json`:
         ]
       }
     }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "contextpilot-sglang/Qwen/Qwen3.5-27B"
-      }
-    }
   }
 }
 ```
+
+</details>
 
 > **Important**: Use the server's IP address (not hostname) in `baseUrl` to avoid IPv6 DNS resolution issues in Node.js/WSL environments.
 

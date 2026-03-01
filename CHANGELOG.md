@@ -26,12 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Request ID normalization strips vLLM-specific prefixes (`cmpl-`, `chatcmpl-`, `batch-`) and suffixes to match ContextPilot canonical `req-*` IDs
   - Health-check and internal IDs automatically filtered from tracking
   - Zero overhead when `CONTEXTPILOT_INDEX_URL` is not set
-- Automated patch installer script (`patches/vllm/apply_patch.sh`) with timestamped backup and auto-detection of vLLM install path
+- Zero-patch runtime hooks for SGLang and vLLM (automatic activation via `.pth` file)
 - `GET /requests` endpoint — returns all tracked request IDs for observability and e2e verification
 - `ContextPilot.get_all_request_ids()` and `ContextPilot.reset()` methods on the live index
 - End-to-end vLLM patch verifier (`examples/backend_e2e_check.py`) with fast PR-validation and stress profiles
 - Comprehensive vLLM patch test suite (14 unit tests, fully mocked — no vLLM dependency required)
-- vLLM patch documentation (`patches/vllm/README.md`) covering automated, manual, and symlink installation methods
+- Hook documentation in installation guide
 
 ### Changed
 - `POST /evict` endpoint is now engine-agnostic — documents both SGLang and vLLM as supported engines using the same `{"request_ids": [...]}` protocol

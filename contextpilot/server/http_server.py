@@ -626,9 +626,9 @@ async def evict(request: EvictRequest):
     from the evicted entries and invokes the registered callback. That callback
     calls this endpoint to remove the corresponding entries from ContextPilot.
 
-    Supported engines:
-        - SGLang: patches/sglang/ patches the radix cache to fire callbacks on eviction
-        - vLLM:   patches/vllm/ patches the block pool to fire callbacks on eviction
+    Supported engines (via zero-patch runtime hooks):
+        - SGLang: contextpilot/_sglang_hook.py
+        - vLLM:   contextpilot/_vllm_hook.py
 
     Both use the same protocol:
         POST /evict  {"request_ids": ["req-1", "req-2", ...]}

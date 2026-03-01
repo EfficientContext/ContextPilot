@@ -999,6 +999,18 @@ async def proxy_engine(path: str, request: Request):
                 return JSONResponse(content=result, status_code=response.status)
         else:
             body = await request.json()
+
+            # Inject rid for SGLang cache tracking (same logic as proxy_completions)
+            request_id = body.pop("request_id", None) or body.get("rid", None)
+            if request_id and _index:
+                node = _index.get_request_node(request_id)
+                if node is None:
+                    logger.warning(f"Request ID '{request_id}' not found in index")
+                    request_id = None
+            if request_id:
+                body["rid"] = request_id
+                body["request_id"] = request_id
+
             async with _aiohttp_session.post(target_url, json=body) as response:
                 result = await response.json()
                 return JSONResponse(content=result, status_code=response.status)

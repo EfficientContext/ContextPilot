@@ -649,7 +649,7 @@ async def evict(request: EvictRequest):
         )
 
     try:
-        logger.info(f"Eviction raw incoming IDs: {request.request_ids}")
+        logger.info(f"Eviction raw incoming IDs: {request.request_ids}, tracked count: {len(_index._request_to_node)}")
         normalized_ids = [
             _normalize_request_id(rid)
             for rid in request.request_ids
@@ -936,6 +936,7 @@ async def proxy_completions(request: Request):
         # Ensure request_id is tracked for eviction (even if no context node)
         if _index:
             _index.track_request(request_id)
+            logger.info(f"Tracked {request_id}, total tracked: {len(_index._request_to_node)}")
 
         # Pass request_id to inference engine so it can use the same ID for request tracking
         # Engine will notify ContextPilot via /evict callback when this request is evicted

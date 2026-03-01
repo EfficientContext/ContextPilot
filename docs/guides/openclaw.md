@@ -105,25 +105,76 @@ Merge into `~/.openclaw/openclaw.json`:
 
 For OpenAI, use `api: "openai-completions"` and point `--infer-api-url` to `https://api.openai.com`. See `examples/openclaw/openclaw.json.example` for both providers.
 
-## Verify
+### Option C: Self-hosted model via SGLang
 
-Check the `_contextpilot` field in API responses:
+For self-hosted models, ContextPilot proxies between OpenClaw and SGLang:
+
+```
+OpenClaw ──▶ ContextPilot Proxy (server:8765) ──▶ SGLang (server:30000)
+```
+
+Start SGLang with tool calling support:
+
+```bash
+python -m sglang.launch_server \
+  --model-path Qwen/Qwen3.5-27B \
+  --tool-call-parser qwen3_coder \
+  --port 30000
+```
+
+Start ContextPilot proxy:
+
+```bash
+python -m contextpilot.server.http_server \
+  --port 8765 \
+  --infer-api-url http://localhost:30000 \
+  --model Qwen/Qwen3.5-27B
+```
+
+Merge into `~/.openclaw/openclaw.json`:
 
 ```json
 {
-  "_contextpilot": {
-    "intercepted": true,
-    "documents_reordered": true,
-    "total_documents": 8,
-    "sources": {
-      "system": 1,
-      "tool_results": 2
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "contextpilot-sglang": {
+        "baseUrl": "http://<server-ip>:8765/v1",
+        "apiKey": "placeholder",
+        "api": "openai-completions",
+        "headers": { "X-ContextPilot-Scope": "all" },
+        "models": [
+          {
+            "id": "Qwen/Qwen3.5-27B",
+            "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": { "primary": "contextpilot-sglang/Qwen/Qwen3.5-27B" }
     }
   }
 }
 ```
 
-If `_contextpilot` is absent, the request had fewer than 2 extractable documents (nothing to reorder).
+> **Important**: Use the server's IP address (not hostname) in `baseUrl` to avoid IPv6 DNS resolution issues in Node.js/WSL environments. `--tool-call-parser` is required for OpenClaw's tool loop to work.
+
+## Verify
+
+Check the `X-ContextPilot-Result` response header:
+
+```
+X-ContextPilot-Result: {"intercepted":true,"documents_reordered":true,"total_documents":8,"sources":{"system":1,"tool_results":2}}
+```
+
+If the header is absent, the request had fewer than 2 extractable documents (nothing to reorder).
 
 ## Document Extraction
 
@@ -163,10 +214,14 @@ Set via headers in the OpenClaw provider config, or per-request.
 
 ## Troubleshooting
 
-**No `_contextpilot` in response** — Request had < 2 extractable documents. Check that search/memory tools are returning multiple results.
+**No `X-ContextPilot-Result` header** — Request had < 2 extractable documents. Check that search/memory tools are returning multiple results.
 
 **Connection refused** — Proxy not running. Check `curl http://localhost:8765/health`.
 
+**`Connection error.` from OpenClaw (Node.js)** — IPv6 DNS resolution failure. Use IP address in `baseUrl`, or `export NODE_OPTIONS="--dns-result-order=ipv4first"`.
+
 **401/403 from backend** — API key not set or invalid. The proxy forwards auth headers as-is.
+
+**Tool call appears as XML text, agent stops** — SGLang not parsing tool calls into structured `tool_calls`. Add `--tool-call-parser qwen3_coder` (or the appropriate parser for your model) to SGLang launch command.
 
 **Tool results not reordered** — Check scope is `all` or `tool_results`. Verify tool results use a supported format.

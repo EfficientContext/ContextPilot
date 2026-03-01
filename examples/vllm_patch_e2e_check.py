@@ -159,7 +159,8 @@ def send_vllm_completion(
         "stream": False,
     }
     if request_id is not None:
-        payload["request_id"] = request_id
+        payload["rid"] = request_id          # SGLang
+        payload["request_id"] = request_id   # vLLM
 
     last_err: Exception | None = None
     for i in range(1, attempts + 1):

@@ -94,6 +94,83 @@ Check the `X-ContextPilot-Result` response header for metadata:
 X-ContextPilot-Result: {"intercepted":true,"documents_reordered":true,"total_documents":5,"sources":{"system":1,"tool_results":1}}
 ```
 
+## Using with SGLang (Self-Hosted Models)
+
+For self-hosted models served by SGLang, ContextPilot acts as a proxy between OpenClaw and SGLang, enabling automatic document reordering and KV cache tracking.
+
+```
+OpenClaw (WSL/local) ──▶ ContextPilot Proxy (server:8765) ──▶ SGLang (server:30000)
+```
+
+### Step 1: Start SGLang with tool calling support
+
+```bash
+python -m sglang.launch_server \
+  --model-path Qwen/Qwen3.5-27B \
+  --tool-call-parser qwen3_coder \
+  --port 30000
+```
+
+> `--tool-call-parser` is required for OpenClaw's tool loop to work. Without it, tool calls are output as plain text and the agent loop won't continue.
+
+### Step 2: Start ContextPilot proxy
+
+```bash
+python -m contextpilot.server.http_server \
+  --port 8765 \
+  --infer-api-url http://localhost:30000 \
+  --model Qwen/Qwen3.5-27B
+```
+
+### Step 3: Configure OpenClaw
+
+Merge into `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "contextpilot-sglang": {
+        "baseUrl": "http://<server-ip>:8765/v1",
+        "apiKey": "placeholder",
+        "api": "openai-completions",
+        "headers": {
+          "X-ContextPilot-Scope": "all"
+        },
+        "models": [
+          {
+            "id": "Qwen/Qwen3.5-27B",
+            "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 131072,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "contextpilot-sglang/Qwen/Qwen3.5-27B"
+      }
+    }
+  }
+}
+```
+
+> **Important**: Use the server's IP address (not hostname) in `baseUrl` to avoid IPv6 DNS resolution issues in Node.js/WSL environments.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Connection error.` | IPv6 DNS resolution fails in Node.js | Use IP address in `baseUrl`, or `export NODE_OPTIONS="--dns-result-order=ipv4first"` |
+| Tool call appears as XML text, agent stops | SGLang not parsing tool calls | Add `--tool-call-parser qwen3_coder` to SGLang launch command |
+| `Invalid JSON body` | Multiline curl command broken by shell | Use single-line JSON in curl |
+
 ## Scope Control
 
 | Header value | System prompt | Tool results |

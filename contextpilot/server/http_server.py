@@ -962,15 +962,17 @@ async def proxy_completions(request: Request):
             # Token tracking is handled by the inference engine via CONTEXTPILOT_INDEX_URL
             # The engine calls /evict after its internal cache eviction
             
-            # Add request_id to response for client reference
+            # Add request_id to response header (not body, to avoid
+            # breaking strict API response parsers).
+            cp_headers = {}
             if request_id and response.status == 200:
                 usage = result.get("usage", {})
-                result["_contextpilot"] = {
+                cp_headers["X-ContextPilot-Result"] = json.dumps({
                     "request_id": request_id,
                     "tokens_reported": usage.get("total_tokens", 0),
-                }
+                })
 
-            return JSONResponse(content=result, status_code=response.status)
+            return JSONResponse(content=result, status_code=response.status, headers=cp_headers)
 
     except aiohttp.ClientError as e:
         logger.error(f"Error proxying to inference engine: {e}")
@@ -1111,6 +1113,13 @@ async def _intercept_and_forward(request: Request, api_format: str):
         except Exception as e:
             logger.warning(f"Intercept extraction/reorder failed, forwarding original: {e}")
             total_reordered = 0
+
+    # In stateful mode, inject ContextPilot request_id as `rid` so SGLang
+    # uses the same ID for cache tracking (enables eviction sync).
+    if not _stateless_mode and _index is not None:
+        request_id = f"req-{uuid.uuid4().hex[:12]}"
+        body["rid"] = request_id
+        logger.debug(f"Intercept: injected rid={request_id}")
 
     # Determine target URL
     if api_format == _OPENAI_CHAT:

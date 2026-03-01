@@ -318,6 +318,21 @@ class TestCatchAllProxy:
         resp = client.post("/v1/completions", json=body)
         assert resp.status_code == 200
 
+    def test_completions_metadata_in_header(self, client, mock_session):
+        """proxy_completions puts metadata in X-ContextPilot-Result header, not body."""
+        mock_session._response = FakeResponse(
+            {"choices": [{"text": "hello"}], "usage": {"total_tokens": 5}}
+        )
+        body = {"model": "gpt-4", "prompt": "Hello", "request_id": "req-abc123"}
+        resp = client.post("/v1/completions", json=body)
+        assert resp.status_code == 200
+        # Metadata should be in header
+        meta = _cp_meta(resp)
+        assert meta.get("request_id") == "req-abc123"
+        assert meta.get("tokens_reported") == 5
+        # Body should NOT contain _contextpilot
+        assert "_contextpilot" not in resp.json()
+
 
 # ============================================================================
 # Header forwarding
@@ -502,3 +517,54 @@ class TestToolResultIntercept:
         assert meta.get("intercepted") is True
         assert meta["sources"]["system"] == 0
         assert meta["sources"]["tool_results"] == 1
+
+
+# ============================================================================
+# RID injection in intercept (stateful mode)
+# ============================================================================
+
+
+class TestInterceptRidInjection:
+    def test_rid_injected_in_stateful_mode(self, mock_session):
+        """In stateful mode, intercept injects rid into forwarded body."""
+        original_session = http_mod._aiohttp_session
+        original_url = http_mod._infer_api_url
+        original_stateless = http_mod._stateless_mode
+        original_index = http_mod._index
+        http_mod._aiohttp_session = mock_session
+        http_mod._infer_api_url = "http://mock-backend:30000"
+        http_mod._stateless_mode = False
+        http_mod._index = MagicMock()  # non-None → stateful
+        try:
+            client = TestClient(app, raise_server_exceptions=False)
+            body = {
+                "model": "gpt-4",
+                "messages": [
+                    {"role": "system", "content": "Plain text."},
+                    {"role": "user", "content": "Hello"},
+                ],
+            }
+            resp = client.post("/v1/chat/completions", json=body)
+            assert resp.status_code == 200
+            forwarded = mock_session._last_json
+            assert "rid" in forwarded
+            assert forwarded["rid"].startswith("req-")
+        finally:
+            http_mod._aiohttp_session = original_session
+            http_mod._infer_api_url = original_url
+            http_mod._stateless_mode = original_stateless
+            http_mod._index = original_index
+
+    def test_no_rid_in_stateless_mode(self, client, mock_session):
+        """In stateless mode (default for tests), no rid is injected."""
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "Plain text."},
+                {"role": "user", "content": "Hello"},
+            ],
+        }
+        resp = client.post("/v1/chat/completions", json=body)
+        assert resp.status_code == 200
+        forwarded = mock_session._last_json
+        assert "rid" not in forwarded

@@ -16,7 +16,6 @@ Environment variables (alternative to CLI args):
 """
 
 import argparse
-import copy
 import logging
 import time
 import asyncio
@@ -40,19 +39,10 @@ except ImportError:
 
 from .live_index import ContextPilot
 from .conversation_tracker import (
-    ConversationTracker,
+    ConversationTracker, 
     DeduplicationResult,
     get_conversation_tracker,
     reset_conversation_tracker
-)
-from .intercept_parser import (
-    parse_intercept_headers, extract_from_openai_chat,
-    extract_from_anthropic_messages, reconstruct_openai_chat,
-    reconstruct_anthropic_messages, reconstruct_content,
-    extract_documents, InterceptConfig, ExtractionResult,
-    MultiExtractionResult, ToolResultLocation,
-    extract_all_openai, extract_all_anthropic,
-    reconstruct_openai_tool_result, reconstruct_anthropic_tool_result,
 )
 
 logger = logging.getLogger(__name__)
@@ -977,206 +967,6 @@ async def proxy_completions(request: Request):
     except Exception as e:
         logger.error(f"Error in proxy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============================================================================
-# HTTP Intercept Proxy Endpoints
-# ============================================================================
-
-# API format constants
-_OPENAI_CHAT = "openai_chat"
-_ANTHROPIC_MESSAGES = "anthropic_messages"
-
-
-def _reorder_documents(docs: List[str], config: InterceptConfig) -> List[str]:
-    """Reorder a list of document strings using ContextPilot clustering.
-
-    Returns the reordered document list.
-    """
-    temp_index = ContextPilot(
-        alpha=config.alpha,
-        use_gpu=False,
-        linkage_method=config.linkage_method,
-    )
-    str_to_id: Dict[str, int] = {}
-    id_to_str: Dict[int, str] = {}
-    next_id = 0
-    converted = []
-    for doc in docs:
-        sid = str_to_id.get(doc)
-        if sid is None:
-            sid = next_id
-            str_to_id[doc] = sid
-            id_to_str[sid] = doc
-            next_id += 1
-        converted.append(sid)
-
-    sched_result = temp_index.schedule_only(contexts=[converted])
-    reordered_ids = sched_result["reordered_contexts"][0]
-    return [id_to_str[i] for i in reordered_ids]
-
-
-async def _intercept_and_forward(request: Request, api_format: str):
-    """Intercept an LLM API request, reorder documents, and forward.
-
-    1. Parse X-ContextPilot-* headers → InterceptConfig
-    2. Extract documents from system message/prompt and tool_results
-    3. Reorder each extraction via ContextPilot clustering
-    4. Reconstruct request body with reordered docs
-    5. Forward to actual LLM backend, streaming or not
-    If extraction fails at any step → forward original request unmodified.
-    """
-    if _infer_api_url is None:
-        _init_config()
-
-    infer_api_url = _infer_api_url or os.environ.get(
-        "CONTEXTPILOT_INFER_API_URL", "http://localhost:30000"
-    )
-    if not infer_api_url:
-        raise HTTPException(
-            status_code=503,
-            detail="Inference API URL not configured.",
-        )
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    # Parse intercept config from headers
-    headers = dict(request.headers)
-    config = parse_intercept_headers(headers)
-    total_reordered = 0
-    system_count = 0
-    tool_result_count = 0
-
-    if config.enabled:
-        try:
-            body = copy.deepcopy(body)
-
-            if api_format == _OPENAI_CHAT:
-                multi = extract_all_openai(body, config)
-            elif api_format == _ANTHROPIC_MESSAGES:
-                multi = extract_all_anthropic(body, config)
-            else:
-                multi = MultiExtractionResult()
-
-            # Reorder system extraction
-            if multi.system_extraction:
-                extraction, sys_idx = multi.system_extraction
-                if len(extraction.documents) >= 2:
-                    reordered_docs = _reorder_documents(extraction.documents, config)
-                    if api_format == _OPENAI_CHAT:
-                        new_content = reconstruct_content(extraction, reordered_docs)
-                        msg = body["messages"][sys_idx]
-                        if isinstance(msg.get("content"), str):
-                            msg["content"] = new_content
-                        elif isinstance(msg.get("content"), list):
-                            for block in msg["content"]:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    if extract_documents(block.get("text", ""), InterceptConfig()):
-                                        block["text"] = new_content
-                                        break
-                    elif api_format == _ANTHROPIC_MESSAGES:
-                        new_content = reconstruct_content(extraction, reordered_docs)
-                        if isinstance(body.get("system"), str):
-                            body["system"] = new_content
-                        elif isinstance(body.get("system"), list):
-                            for block in body["system"]:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    if extract_documents(block.get("text", ""), InterceptConfig()):
-                                        block["text"] = new_content
-                                        break
-                    total_reordered += len(extraction.documents)
-                    system_count = 1
-
-            # Reorder tool result extractions
-            for extraction, location in multi.tool_extractions:
-                if len(extraction.documents) >= 2:
-                    reordered_docs = _reorder_documents(extraction.documents, config)
-                    if api_format == _OPENAI_CHAT:
-                        reconstruct_openai_tool_result(body, extraction, reordered_docs, location)
-                    elif api_format == _ANTHROPIC_MESSAGES:
-                        reconstruct_anthropic_tool_result(body, extraction, reordered_docs, location)
-                    total_reordered += len(extraction.documents)
-                    tool_result_count += 1
-
-            if total_reordered > 0:
-                logger.info(
-                    f"Intercept ({api_format}): reordered {total_reordered} documents "
-                    f"from {system_count} system + {tool_result_count} tool_results"
-                )
-
-        except Exception as e:
-            logger.warning(f"Intercept extraction/reorder failed, forwarding original: {e}")
-            total_reordered = 0
-
-    # Determine target URL
-    if api_format == _OPENAI_CHAT:
-        target_url = f"{infer_api_url}/v1/chat/completions"
-    elif api_format == _ANTHROPIC_MESSAGES:
-        target_url = f"{infer_api_url}/v1/messages"
-    else:
-        target_url = f"{infer_api_url}/v1/chat/completions"
-
-    # Build outbound headers: forward auth, strip X-ContextPilot-*
-    outbound_headers = {}
-    for k, v in headers.items():
-        kl = k.lower()
-        if kl.startswith("x-contextpilot-"):
-            continue
-        if kl in ("authorization", "x-api-key", "anthropic-version", "content-type"):
-            outbound_headers[k] = v
-
-    is_stream = body.get("stream", False)
-
-    try:
-        if is_stream:
-            # Streaming: passthrough SSE chunks
-            async def _stream_generator():
-                async with _aiohttp_session.post(
-                    target_url, json=body, headers=outbound_headers
-                ) as resp:
-                    async for chunk in resp.content.iter_any():
-                        yield chunk
-
-            return StreamingResponse(
-                _stream_generator(),
-                media_type="text/event-stream",
-            )
-        else:
-            # Non-streaming: forward JSON
-            async with _aiohttp_session.post(
-                target_url, json=body, headers=outbound_headers
-            ) as resp:
-                result = await resp.json()
-                if total_reordered > 0 and resp.status == 200:
-                    result["_contextpilot"] = {
-                        "intercepted": True,
-                        "documents_reordered": True,
-                        "total_documents": total_reordered,
-                        "sources": {
-                            "system": system_count,
-                            "tool_results": tool_result_count,
-                        },
-                    }
-                return JSONResponse(content=result, status_code=resp.status)
-
-    except aiohttp.ClientError as e:
-        logger.error(f"Error forwarding intercepted request: {e}")
-        raise HTTPException(status_code=502, detail=f"Backend error: {str(e)}")
-
-
-@app.post("/v1/chat/completions")
-async def intercept_openai_chat(request: Request):
-    """Intercept OpenAI chat completions: extract docs, reorder, forward."""
-    return await _intercept_and_forward(request, _OPENAI_CHAT)
-
-
-@app.post("/v1/messages")
-async def intercept_anthropic_messages(request: Request):
-    """Intercept Anthropic messages: extract docs, reorder, forward."""
-    return await _intercept_and_forward(request, _ANTHROPIC_MESSAGES)
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST"])

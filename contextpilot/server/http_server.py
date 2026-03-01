@@ -649,6 +649,7 @@ async def evict(request: EvictRequest):
         )
 
     try:
+        logger.info(f"Eviction raw incoming IDs: {request.request_ids}")
         normalized_ids = [
             _normalize_request_id(rid)
             for rid in request.request_ids

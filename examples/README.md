@@ -9,7 +9,7 @@ Practical code examples for using ContextPilot.
 | `simple_reorder_example.py` | Minimal "hello world" — call `/reorder` with 4 contexts | ContextPilot server (stateless) |
 | `pipeline_examples.py` | Pipeline API usage (BM25, FAISS, generation) | Corpus file |
 | `http_server_example.py` | Stateful index server (build, proxy, eviction) | ContextPilot + inference engine |
-| `vllm_patch_e2e_check.py` | Supervisor check: 2-request reorder + vLLM eviction sync | ContextPilot + patched vLLM |
+| `vllm_patch_e2e_check.py` | 2-request reorder + vLLM eviction sync | ContextPilot + patched vLLM |
 | `stateless_batch_example.py` | Stateless batch reordering (3 approaches) | ContextPilot server (stateless) |
 | `stateless_sglang_e2e.py` | Stateless reordering → inference e2e | ContextPilot + inference engine |
 | `pageindex_e2e_example.py` | PageIndex tree → ContextPilot scheduling with prefix sharing | ContextPilot (demo: none; full: PageIndex + OpenAI) |
@@ -66,7 +66,7 @@ python -m contextpilot.server.http_server --port 8765 --stateless --infer-api-ur
 python examples/stateless_sglang_e2e.py
 ```
 
-### 5. vLLM Patch E2E Check (Supervisor Validation)
+### 5. vLLM Patch E2E Check
 
 ```bash
 # Terminal 1: Start ContextPilot

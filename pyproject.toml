@@ -27,6 +27,10 @@ dynamic = ["dependencies"]
 [tool.setuptools.packages.find]
 include = ["contextpilot*"]
 
+[tool.setuptools.data-files]
+# Install .pth file to site-packages root for automatic SGLang monkey-patching
+"" = ["contextpilot_hook.pth"]
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 

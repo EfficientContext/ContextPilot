@@ -159,7 +159,7 @@ Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/s
 bash patches/vllm/apply_patch.sh
 ```
 
-Compatible with vLLM **0.15.1**. See [patches/vllm/README.md](../../patches/vllm/README.md) for details.
+Compatible with SGLang **>=0.5**.
 
 Both patches add an eviction callback that POSTs evicted `request_ids` to the ContextPilot server.
 

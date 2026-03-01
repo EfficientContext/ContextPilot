@@ -1058,23 +1058,26 @@ class ContextPilot(ContextIndex):
     # Request Eviction (Called by inference engine's eviction callback)
     # =========================================================================
     
+    def track_request(self, request_id: str) -> None:
+        """Register a request ID for eviction tracking without associating it to a node."""
+        if request_id not in self._request_to_node:
+            self._request_to_node[request_id] = None
+
     def remove_requests(self, request_ids: Set[str]) -> Dict[str, Any]:
         """Remove requests from the context index (called by engine eviction callback)."""
         evicted_nodes = []
         not_found = []
-        
+
         for request_id in request_ids:
-            node_id = self._request_to_node.get(request_id)
-            if node_id is None:
+            if request_id not in self._request_to_node:
                 not_found.append(request_id)
                 continue
-            
-            # Remove from tracking
-            del self._request_to_node[request_id]
-            evicted_nodes.append(node_id)
-            
-            # Remove node and prune empty parents
-            self._remove_node_and_prune(node_id)
+
+            node_id = self._request_to_node.pop(request_id)
+
+            if node_id is not None:
+                evicted_nodes.append(node_id)
+                self._remove_node_and_prune(node_id)
         
         self.live_stats['total_evictions'] += len(evicted_nodes)
         

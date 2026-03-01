@@ -14,6 +14,7 @@ This guide covers installing ContextPilot and its dependencies.
 git clone https://github.com/SecretSettler/ContextPilot.git
 cd ContextPilot
 pip install -e .
+python -m contextpilot.install_hook   # one-time: enables automatic SGLang + vLLM hooks
 ```
 
 This installs the core dependencies:
@@ -32,7 +33,7 @@ This installs the core dependencies:
 
 **SGLang:**
 ```bash
-pip install "sglang==0.5.6"
+pip install "sglang>=0.5"
 ```
 
 **vLLM:**
@@ -40,7 +41,12 @@ pip install "sglang==0.5.6"
 pip install vllm
 ```
 
-For eviction sync, set `CONTEXTPILOT_INDEX_URL` when launching your engine and apply the corresponding patch (see [Online Usage Guide](../guides/online_usage.md#inference-engine-integration)).
+Both engines are supported via zero-patch runtime hooks — just set `CONTEXTPILOT_INDEX_URL` when launching. See [Online Usage Guide](../guides/online_usage.md#inference-engine-integration).
+
+> **Note:** flash-attn and flashinfer are backend-specific dependencies not installed by ContextPilot.
+> Install them separately per your CUDA / PyTorch version:
+> - flash-attn: https://github.com/Dao-AILab/flash-attention/releases
+> - flashinfer: https://docs.flashinfer.ai/installation.html
 
 ## Verify Installation
 

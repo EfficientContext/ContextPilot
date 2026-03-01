@@ -37,6 +37,7 @@ Issues = "https://github.com/EfficientContext/ContextPilot/issues"
 
 [project.optional-dependencies]
 dev = ["black", "bumpver", "isort", "pip-tools", "pytest", "pytest-cov", "ipython"]
+sglang = ["sglang>=0.5"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

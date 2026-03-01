@@ -1,19 +1,6 @@
 # SGLang Patches for ContextPilot Integration
 
-> **These manual patches are no longer needed.** Since ContextPilot v0.3.5, SGLang integration works automatically via a runtime monkey-patch. Just set `CONTEXTPILOT_INDEX_URL` when starting SGLang:
->
-> ```bash
-> CONTEXTPILOT_INDEX_URL=http://localhost:8765 sglang serve --model-path Qwen/Qwen3-4B
-> ```
->
-> See the [online usage guide](../../docs/guides/online_usage.md#inference-engine-integration) for details. The files below are kept for reference only.
-
----
-
-<details>
-<summary>Legacy: Manual patch installation (deprecated)</summary>
-
-This directory contains patched SGLang files for manual installation.
+This directory contains patched SGLang files required for ContextPilot integration.
 
 ## Installation
 
@@ -113,5 +100,3 @@ cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak $SGLANG_PATH/srt/mem_cach
 cp $SGLANG_PATH/srt/mem_cache/common.py.bak $SGLANG_PATH/srt/mem_cache/common.py
 cp $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak $SGLANG_PATH/srt/mem_cache/radix_cache.py
 ```
-
-</details>

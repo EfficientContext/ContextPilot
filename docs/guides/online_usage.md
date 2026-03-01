@@ -130,55 +130,38 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
 
 ### Inference Engine Integration
 
-Stateful mode requires the inference engine to notify ContextPilot when KV-cache entries are evicted. **No engine patches are needed** — ContextPilot automatically hooks into SGLang at runtime via a `.pth` import hook.
+Stateful mode requires patching your inference engine so its prefix cache notifies ContextPilot on eviction. Patches are available for both SGLang and vLLM.
 
-#### SGLang (automatic, zero-patch)
-
-Just set the `CONTEXTPILOT_INDEX_URL` environment variable when starting SGLang:
+#### SGLang Patch
 
 ```bash
-CONTEXTPILOT_INDEX_URL=http://localhost:8765 sglang serve --model-path Qwen/Qwen3-4B --port 30000
+# Automatic (recommended)
+bash patches/sglang/apply_patch.sh
+
+# Or manually:
+SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
+
+# Backup originals
+cp $SGLANG_PATH/srt/mem_cache/radix_cache.py $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak
+cp $SGLANG_PATH/srt/mem_cache/common.py $SGLANG_PATH/srt/mem_cache/common.py.bak
+cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak
+
+# Copy patched files
+cp patches/sglang/*.py $SGLANG_PATH/srt/mem_cache/
 ```
 
-That's it. ContextPilot's `.pth` hook automatically monkey-patches SGLang's `RadixCache` at import time to add eviction tracking. You will see this in the SGLang logs:
+Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
 
-```
-[ContextPilot] Applying monkey-patches to SGLang RadixCache …
-[ContextPilot] SGLang RadixCache monkey-patched successfully
-```
-
-**Requirements:** If you used `pip install -e .`, run `python -m contextpilot.install_hook` once to install the `.pth` file.
-
-**Distributed setup** (SGLang and ContextPilot on different machines): You don't need to install the full `contextpilot` package on the SGLang machine. Copy the standalone install script instead:
+#### vLLM Patch
 
 ```bash
-# On the SGLang machine:
-wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/scripts/install_engine_hook.py
-wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/_sglang_hook.py
-python install_engine_hook.py
-
-# Then start SGLang pointing to the remote ContextPilot server:
-CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 sglang serve --model-path Qwen/Qwen3-4B
+# Automatic (recommended)
+bash patches/vllm/apply_patch.sh
 ```
 
-Compatible with SGLang **0.5.x**.
+Compatible with vLLM **0.15.1**. See [patches/vllm/README.md](../../patches/vllm/README.md) for details.
 
-#### vLLM (automatic, zero-patch)
-
-Same approach — just set the environment variable:
-
-```bash
-CONTEXTPILOT_INDEX_URL=http://localhost:8765 vllm serve Qwen/Qwen3-4B --port 30000 --enable-prefix-caching
-```
-
-ContextPilot's `.pth` hook automatically monkey-patches vLLM's `BlockPool` at import time. You will see this in the vLLM logs:
-
-```
-[ContextPilot] Applying monkey-patches to vLLM BlockPool …
-[ContextPilot] vLLM BlockPool monkey-patched successfully
-```
-
-Compatible with vLLM **0.15.x** (v1 block manager architecture).
+Both patches add an eviction callback that POSTs evicted `request_ids` to the ContextPilot server.
 
 #### How It Works
 

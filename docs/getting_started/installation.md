@@ -11,9 +11,15 @@ This guide covers installing ContextPilot and its dependencies.
 ## Install ContextPilot
 
 ```bash
-git clone https://github.com/SecretSettler/ContextPilot.git
+pip install contextpilot
+```
+
+Or from source (development):
+```bash
+git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
 pip install -e .
+python -m contextpilot.install_hook   # one-time: enables automatic SGLang integration
 ```
 
 This installs the core dependencies:
@@ -40,7 +46,7 @@ pip install "sglang==0.5.6"
 pip install vllm
 ```
 
-For eviction sync, set `CONTEXTPILOT_INDEX_URL` when launching your engine and apply the corresponding patch (see [Online Usage Guide](../guides/online_usage.md#inference-engine-integration)).
+For SGLang eviction sync, just set `CONTEXTPILOT_INDEX_URL` when launching — no patches needed. For vLLM, apply the manual patch. See [Online Usage Guide](../guides/online_usage.md#inference-engine-integration).
 
 ## Verify Installation
 

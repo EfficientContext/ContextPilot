@@ -98,7 +98,7 @@ CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
 
 ## Compatibility
 
-These patches are compatible with SGLang version: **0.5.x** (tested with 0.5.6)
+These patches are compatible with SGLang version: **>=0.5** (tested with 0.5.6)
 
 If you're using a different version, you may need to manually apply the changes.
 

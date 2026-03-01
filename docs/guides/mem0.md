@@ -14,7 +14,7 @@ pip install mem0ai openai tqdm
 
 # Install your inference engine:
 # SGLang:
-pip install "sglang==0.5.6"
+pip install "sglang>=0.5"
 # or vLLM:
 pip install vllm
 ```

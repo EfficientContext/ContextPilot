@@ -38,7 +38,7 @@ This installs the core dependencies:
 
 **SGLang:**
 ```bash
-pip install "sglang==0.5.6"
+pip install "sglang>=0.5"
 ```
 
 **vLLM:**

@@ -11,12 +11,7 @@ This guide covers installing ContextPilot and its dependencies.
 ## Install ContextPilot
 
 ```bash
-pip install contextpilot
-```
-
-Or from source (development):
-```bash
-git clone https://github.com/EfficientContext/ContextPilot.git
+git clone https://github.com/SecretSettler/ContextPilot.git
 cd ContextPilot
 pip install -e .
 python -m contextpilot.install_hook   # one-time: enables automatic SGLang + vLLM hooks

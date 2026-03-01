@@ -14,10 +14,20 @@ class BM25Retriever:
         self.es = Elasticsearch(es_host, request_timeout=3600*24)
         self.index_name = index_name
     
-    def create_index(self):
+    def create_index(self, force: bool = False):
         """
-        Create or recreate the Elasticsearch index with appropriate mappings.
+        Create the Elasticsearch index with appropriate mappings.
+
+        If the index already exists, skip creation unless force=True,
+        in which case the existing index is deleted and recreated.
         """
+        if self.es.indices.exists(index=self.index_name):
+            if not force:
+                print(f"Index '{self.index_name}' already exists — reusing.")
+                return
+            print(f"Index '{self.index_name}' already exists — deleting for rebuild.")
+            self.es.indices.delete(index=self.index_name)
+
         print(f"Creating index '{self.index_name}'...")
         self.es.indices.create(
             index=self.index_name,

@@ -296,6 +296,13 @@ def _write_log(record: dict) -> None:
 
 
 # ─── llama.cpp native /completion call ─────────────────────────────────────────
+#
+# NOTE: This proxy intentionally calls the native /completion endpoint rather
+# than llama-server's OpenAI-compatible /v1/chat/completions.  The native
+# endpoint is the only one that returns `slot_id` and `timings.cache_n` in
+# the response body, both of which are required for ContextPilot's KV-cache
+# eviction tracking.  Simple use cases (no eviction sync) can skip this proxy
+# entirely and point ContextPilot directly at llama-server's /v1/* API.
 
 async def _native_completion(payload: dict) -> dict:
     """POST to llama.cpp /completion and return the JSON response."""

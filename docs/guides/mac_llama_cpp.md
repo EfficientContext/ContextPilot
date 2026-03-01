@@ -10,24 +10,17 @@ llama.cpp's `--cache-reuse N` flag enables prefix caching: if a new request shar
 
 On Apple Silicon, the entire quantised model (Q4_K_M ≈ 4.5 bits/weight) fits in unified DRAM shared by the CPU and GPU, so Metal offload (`-ngl 99`) gives near-GPU throughput without a discrete GPU.
 
-### Three-Process Architecture
+### Architecture
+
+llama-server ships its own OpenAI-compatible `/v1/*` API (including `/v1/chat/completions` with built-in chat-template handling), so no separate API server is needed.
 
 ```
-llama-server  :8889   (Metal, --cache-reuse 256)
-      ↑  raw /completion
-eviction proxy  :8890   ← measures cache hits + Apple GPU metrics
-      ↑  OpenAI /v1/*
+llama-server  :8889   (Metal, --cache-reuse 256, native /v1/* API)
+      ↑  OpenAI /v1/chat/completions
 ContextPilot server  :8765   ← reorders contexts for max prefix reuse
       ↑
 your application
 ```
-
-The **benchmarking** test (`/Users/cheng/Github/ContextPilot/tests/test_llama_cpp.py`) is an example. During the inference over the benchmark, we can have the following features:
-
-- Translates OpenAI-compatible `/v1/chat/completions` requests into llama.cpp's native `/completion` format
-- Reads `cache_n` / `prompt_n` from llama.cpp's timing response to measure exact KV-cache reuse per request
-- Concurrently samples **Apple GPU metrics** (utilization %, clock frequency, power in watts) via `powermetrics` while inference runs — with no added latency
-- Logs every request to `query_log.jsonl` and exposes a `/stats` endpoint with latency percentiles and average cache-reuse ratio
 
 ---
 
@@ -36,16 +29,16 @@ The **benchmarking** test (`/Users/cheng/Github/ContextPilot/tests/test_llama_cp
 ### Prerequisites
 
 - Apple Silicon Mac (M1 or later)
-- llama.cpp built with Metal support
+- llama-server: `brew install llama.cpp`
 - A GGUF model (e.g. `Qwen3-8B-Q4_K_M.gguf`)
 
 ### Install dependencies
 
 ```bash
-pip install -r requirements-mac.txt && pip install -e . --no-deps
+pip install -e .
 ```
 
-### Start the three processes
+### Start
 
 **Terminal 1 — llama-server with Metal and prefix caching:**
 
@@ -62,23 +55,14 @@ llama-server -m models/Qwen3-8B-Q4_K_M.gguf \
 | `--parallel 4` | Allocate 4 independent KV-cache slots for concurrent requests |
 | `-c 32768` | Context window size |
 
-**Terminal 2 — eviction proxy:**
-
-```bash
-CONTEXTPILOT_INDEX_URL=http://localhost:8765 \
-    python contextpilot_edge/proxy_server.py
-```
-
-The proxy listens on `:8890`, forwards completions to llama-server on `:8889`, and logs cache and GPU metrics for every request.
-
-**Terminal 3 — ContextPilot HTTP server:**
+**Terminal 2 — ContextPilot HTTP server:**
 
 ```bash
 python -m contextpilot.server.http_server --port 8765 \
-    --infer-api-url http://localhost:8890
+    --infer-api-url http://localhost:8889
 ```
 
-ContextPilot points at the proxy (not directly at llama-server) so that all traffic is metered.
+ContextPilot points directly at llama-server's built-in OpenAI API.
 
 ---
 
@@ -138,61 +122,42 @@ A complete working example covering all three patterns is at `examples/mac_llama
 
 ---
 
-## Monitoring
+## Benchmarking
 
-### Cache reuse stats
+`tests/test_mac_contextpilot.sh` runs the full MultihopRAG benchmark end-to-end, comparing ContextPilot (reordered docs) against a baseline (original doc order).
 
-```bash
-curl http://localhost:8890/stats
-```
+**Additional prerequisites**
 
-```json
-{
-  "total_queries": 12,
-  "latency_ms": { "avg": 843.2, "p50": 790.1, "p95": 1420.5, "min": 312.4, "max": 1887.3 },
-  "cache_reuse": {
-    "queries_with_data": 12,
-    "avg_reuse_ratio_pct": 71.4
-  }
-}
-```
+- Docker (for Elasticsearch / BM25 retrieval)
 
-The `reuse_ratio_pct` field shows what fraction of prompt tokens were served from the KV cache rather than re-evaluated. Higher is better.
-
-### Per-request log
-
-Every request is appended to `query_log.jsonl`:
-
-```json
-{
-  "query_id": "a3f8c1d2",
-  "latency_ms": 843.2,
-  "cache_reuse": {
-    "total_prompt_tokens": 512,
-    "reused_tokens": 368,
-    "newly_computed": 144,
-    "reuse_ratio_pct": 71.9,
-    "prompt_eval_ms": 87.4,
-    "gen_ms": 755.8,
-    "prompt_tps": 1646.1,
-    "gen_tps": 38.2
-  },
-  "gpu": {
-    "gpus": [{ "utilization_pct": 84.3, "peak_util_pct": 96.0, "freq_mhz": 1296.0, "power_w": 8.41 }]
-  }
-}
-```
-
-### GPU metrics
-
-GPU samples are collected concurrently with inference via `powermetrics`. Because `powermetrics` requires sudo without a password, run:
+**Run**
 
 ```bash
-sudo visudo
-# Add: your_username ALL=(ALL) NOPASSWD: /usr/bin/powermetrics
+# Full automated run — 100 queries
+bash tests/test_mac_contextpilot.sh
+
+# Fewer queries for a quick test
+bash tests/test_mac_contextpilot.sh --num-queries 20
+
+# Custom-built llama-server (not in PATH)
+bash tests/test_mac_contextpilot.sh --llama-server /path/to/llama.cpp/build/bin/llama-server
+
+# Different model
+bash tests/test_mac_contextpilot.sh --model models/Llama-3.2-3B-Q4_K_M.gguf
+
+# Skip dataset download if already done
+bash tests/test_mac_contextpilot.sh --skip-data-prep
 ```
 
-If `powermetrics` is unavailable, the proxy still works — GPU fields will show `"note": "no live samples captured"`.
+The script handles everything automatically:
+
+1. Starts Elasticsearch and downloads the MultiHopRAG dataset
+2. Builds BM25 retrieval data and reorders with ContextPilot (offline batch)
+3. Starts llama-server and the ContextPilot HTTP server
+4. Runs the ContextPilot benchmark, then restarts with a clean KV cache and runs the baseline
+5. Prints a side-by-side comparison of F1 scores and latency
+
+Results are saved to `results_contextpilot.jsonl` and `results_baseline.jsonl`.
 
 ---
 

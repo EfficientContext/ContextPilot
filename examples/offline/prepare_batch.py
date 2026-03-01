@@ -1,6 +1,8 @@
 import contextpilot as cp
 import json
 import argparse
+import os
+import sys
 import time
 
 def parse_args():
@@ -11,6 +13,7 @@ def parse_args():
     parser.add_argument('--linkage_method', type=str, default='average', choices=['average', 'complete', 'single'],
                        help='Linkage method for hierarchical clustering.')
     parser.add_argument('--alpha', type=float, default=0.001, help='Weight for position term in distance calculation.')
+    parser.add_argument('--force', action='store_true', help='Force rebuild even if output file already exists.')
     args = parser.parse_args()
     return args
 
@@ -54,6 +57,11 @@ def prepare_batch(context_path, args):
 
 if __name__ == '__main__':
     args = parse_args()
+
+    if os.path.exists(args.output_path) and not args.force:
+        print(f"Output already exists at {args.output_path} — skipping. Use --force to rebuild.")
+        sys.exit(0)
+
     start = time.perf_counter()
     batch_items = prepare_batch(args.context_path, args)
     end = time.perf_counter()

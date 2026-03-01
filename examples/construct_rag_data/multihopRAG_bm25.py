@@ -1,5 +1,7 @@
 from datasets import load_dataset
 import json
+import os
+import sys
 from contextpilot.retriever.bm25 import BM25Retriever
 from contextpilot.utils.tools import chunk_documents
 import argparse
@@ -26,7 +28,13 @@ parser.add_argument("--query_path", type=str, default="mulhoprag_queries.jsonl",
 parser.add_argument("--topk", type=int, default=20, help="Number of top documents to retrieve")
 parser.add_argument("--output_path", type=str, default="mulhoprag_bm25_results_top20.jsonl", help="Path to the output results")
 parser.add_argument("--port", type=int, default=9200, help="Port for Elasticsearch")
+parser.add_argument("--force", action="store_true", help="Force rebuild even if output file already exists")
 args = parser.parse_args()
+
+# Skip everything if output already exists and --force not set
+if os.path.exists(args.output_path) and not args.force:
+    print(f"Output already exists at {args.output_path} — skipping. Use --force to rebuild.")
+    sys.exit(0)
 
 corpus_origin = load_dataset("yixuantt/MultiHopRAG", "corpus")
 qa = load_dataset("yixuantt/MultiHopRAG", "MultiHopRAG")

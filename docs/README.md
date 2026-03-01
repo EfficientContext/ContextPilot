@@ -19,6 +19,7 @@ Welcome to the ContextPilot documentation. This guide covers everything you need
 | [Multi-Turn Conversations](guides/multi_turn.md) | Context deduplication across turns (30-60% savings) |
 | [PageIndex Integration](guides/pageindex.md) | Tree-structured documents → ContextPilot scheduling |
 | [mem0 Integration](guides/mem0.md) | LoCoMo benchmark with mem0 memory backend |
+| [Using on Mac with llama.cpp](guides/mac_llama_cpp.md) | Supports macOS environments (CPU/Metal) via the llama.cpp inference framework |
 
 ## Reference
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MultihopRAG Benchmark — macOS / Apple Silicon
-llama.cpp + ContextPilot eviction proxy stack
+llama.cpp + ContextPilot (two-process setup)
 
 Full pipeline:
 
@@ -22,19 +22,15 @@ Full pipeline:
         --context_path mulhoprag_bm25_top20.jsonl \\
         --output_path  mulhoprag_reordered.jsonl
 
-  Step 3: Start services (three terminals)
-    # A) llama.cpp
+  Step 3: Start services (two terminals)
+    # A) llama-server (ships its own OpenAI-compatible /v1/* API)
     llama-server -m models/Qwen3-8B-Q4_K_M.gguf \\
         --host 0.0.0.0 --port 8889 \\
         -ngl 99 --cache-reuse 256 --parallel 4 -c 32768
 
-    # B) ContextPilot eviction proxy
-    CONTEXTPILOT_INDEX_URL=http://localhost:8765 \\
-        python patches/llama_cpp/eviction_proxy.py
-
-    # C) ContextPilot HTTP server
+    # B) ContextPilot HTTP server (points directly at llama-server)
     python -m contextpilot.server.http_server \\
-        --port 8765 --infer-api-url http://localhost:8890
+        --port 8765 --infer-api-url http://localhost:8889
 
   Step 4: Run ContextPilot benchmark
     python scripts/mac_multihop_bench.py \\
@@ -42,7 +38,7 @@ Full pipeline:
         --corpus_path    mulhoprag_corpus.jsonl \\
         --num_queries    100
 
-  Step 5: Run baseline (restart llama.cpp first for a fair cache comparison)
+  Step 5: Run baseline (restart llama-server first for a fair cache comparison)
     python scripts/mac_multihop_bench.py \\
         --reordered_path mulhoprag_reordered.jsonl \\
         --corpus_path    mulhoprag_corpus.jsonl \\
@@ -51,14 +47,12 @@ Full pipeline:
 
 Metrics reported
   - F1 / Exact Match   answer quality  (contextpilot/utils/eval_metrics.py)
-  - Cache Hit Rate     avg reuse_ratio_pct from proxy log
-  - Prefill TP         prompt_n / prompt_eval_ms * 1000  (tokens/s)
   - Avg Latency        total wall-clock latency per request (ms)
 """
 
 import argparse
 import json
-import os
+import re
 import time
 from pathlib import Path
 
@@ -74,8 +68,7 @@ from contextpilot.utils.eval_metrics import update_answer
 # ---------------------------------------------------------------------------
 
 CONTEXTPILOT_URL = "http://localhost:8765"
-PROXY_URL        = "http://localhost:8890"
-MODEL            = "qwen3-8b"      # must match llama-server -m filename stem
+MODEL            = "llama"      # must match llama-server -m filename stem
 MAX_TOKENS       = 128
 TEMPERATURE      = 0.0
 
@@ -134,90 +127,15 @@ def build_prompt(
     )
 
 
-def reset_proxy():
-    """Clear slot state on the eviction proxy between runs."""
-    try:
-        r = requests.post(f"{PROXY_URL}/reset", timeout=5)
-        if r.status_code == 200:
-            print("Proxy slot state reset.")
-    except Exception as e:
-        print(f"Warning: could not reset proxy: {e}")
-
-
 def check_services():
-    """Verify all three services are reachable before starting."""
-    ok = True
-    for name, url in [
-        ("ContextPilot HTTP server", f"{CONTEXTPILOT_URL}/health"),
-        ("Eviction proxy /stats",    f"{PROXY_URL}/stats"),
-    ]:
-        try:
-            r = requests.get(url, timeout=3)
-            print(f"  {name}: OK ({r.status_code})")
-        except Exception:
-            print(f"  {name}: NOT REACHABLE at {url}")
-            ok = False
-    return ok
-
-
-# ---------------------------------------------------------------------------
-# Metrics from proxy log
-# ---------------------------------------------------------------------------
-
-def parse_proxy_log(log_path: str, since_ts: float) -> dict:
-    """
-    Read query_log.jsonl written by eviction_proxy.py and compute aggregate
-    cache / prefill metrics for records written after `since_ts` (unix time).
-    """
-    if not os.path.exists(log_path):
-        return {}
-
-    prompt_tokens_total = 0
-    prompt_eval_ms_total = 0.0
-    reuse_ratios = []
-    latencies = []
-
-    with open(log_path) as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-
-            # Filter to records from this run
-            ts_str = rec.get("timestamp", "")
-            try:
-                from datetime import datetime, timezone
-                ts = datetime.fromisoformat(ts_str).timestamp()
-                if ts < since_ts:
-                    continue
-            except Exception:
-                pass
-
-            cr = rec.get("cache_reuse", {})
-            if cr.get("reuse_ratio_pct") is not None:
-                reuse_ratios.append(cr["reuse_ratio_pct"])
-            if cr.get("prompt_eval_ms") and cr.get("newly_computed"):
-                prompt_eval_ms_total += cr["prompt_eval_ms"]
-                prompt_tokens_total  += cr["newly_computed"]
-            if rec.get("latency_ms"):
-                latencies.append(rec["latency_ms"])
-
-    if not latencies:
-        return {}
-
-    prefill_tps = (
-        prompt_tokens_total / prompt_eval_ms_total * 1000
-        if prompt_eval_ms_total > 0 else 0.0
-    )
-    return {
-        "avg_cache_hit_pct": round(sum(reuse_ratios) / len(reuse_ratios), 1)
-                             if reuse_ratios else 0.0,
-        "prefill_tps":       round(prefill_tps, 1),
-        "avg_latency_ms":    round(sum(latencies) / len(latencies), 1),
-        "p50_latency_ms":    sorted(latencies)[len(latencies) // 2],
-        "n_requests":        len(latencies),
-    }
+    """Verify ContextPilot server is reachable before starting."""
+    try:
+        r = requests.get(f"{CONTEXTPILOT_URL}/", timeout=3)
+        print(f"  ContextPilot HTTP server: OK ({r.status_code})")
+        return True
+    except Exception:
+        print(f"  ContextPilot HTTP server: NOT REACHABLE at {CONTEXTPILOT_URL}")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +146,6 @@ def run_inference(
     rows: list[dict],
     corpus: dict,
     use_baseline: bool,
-    proxy_log: str,
     max_docs: int = 10,
     max_chars_per_doc: int = 800,
 ) -> tuple[dict, list[dict]]:
@@ -241,8 +158,8 @@ def run_inference(
     """
     client = OpenAI(base_url=f"{CONTEXTPILOT_URL}/v1", api_key="EMPTY")
 
-    # Collect answers keyed by qid for eval_metrics
     answers = []    # [{qid, question, predicted, gold_answers}, ...]
+    latencies = []
     t_run_start = time.time()
 
     for row in tqdm(rows, desc="Inference"):
@@ -257,6 +174,7 @@ def run_inference(
 
         prompt = build_prompt(question, doc_ids, corpus, max_docs, max_chars_per_doc)
 
+        t0 = time.perf_counter()
         try:
             resp = client.completions.create(
                 model=MODEL,
@@ -268,6 +186,7 @@ def run_inference(
         except Exception as e:
             predicted = ""
             tqdm.write(f"[qid={qid}] inference error: {e}")
+        latencies.append(round((time.perf_counter() - t0) * 1000, 1))
 
         answers.append({
             "qid":          qid,
@@ -285,10 +204,12 @@ def run_inference(
     n = len(answers)
     qa_metrics = {k: round(v / n * 100, 2) for k, v in metrics_acc.items()} if n else {}
 
-    # --- Cache / prefill metrics from proxy log ---
-    cache_metrics = parse_proxy_log(proxy_log, since_ts=t_run_start)
+    latency_metrics = {
+        "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else 0.0,
+        "p50_latency_ms": sorted(latencies)[len(latencies) // 2] if latencies else 0.0,
+    }
 
-    return {**qa_metrics, **cache_metrics}, answers
+    return {**qa_metrics, **latency_metrics}, answers
 
 
 # ---------------------------------------------------------------------------
@@ -317,10 +238,6 @@ def main():
         help="Run in baseline mode: original doc order, no ContextPilot scheduling",
     )
     parser.add_argument(
-        "--proxy_log", default="query_log.jsonl",
-        help="Path to eviction proxy JSONL log (default: query_log.jsonl)",
-    )
-    parser.add_argument(
         "--max_docs", type=int, default=10,
         help="Max documents per prompt (default: 10). Reduce if getting 400 context-too-long errors.",
     )
@@ -343,17 +260,13 @@ def main():
     print(f" Max docs:    {args.max_docs}  (chars/doc: {args.max_chars_per_doc})")
     print(f" Corpus:      {args.corpus_path}")
     print(f" Reordered:   {args.reordered_path}")
-    print(f" Proxy log:   {args.proxy_log}")
     print()
 
     # --- Service check ---
     print("Checking services...")
     if not check_services():
-        print("\nStart all three services before running.  See module docstring.")
+        print("\nStart both services before running.  See module docstring.")
         return
-
-    # --- Reset proxy slot state before run ---
-    reset_proxy()
 
     # --- Load data ---
     corpus = load_corpus(args.corpus_path)
@@ -370,7 +283,6 @@ def main():
         rows=rows,
         corpus=corpus,
         use_baseline=args.baseline,
-        proxy_log=args.proxy_log,
         max_docs=args.max_docs,
         max_chars_per_doc=args.max_chars_per_doc,
     )
@@ -381,7 +293,6 @@ def main():
     print("=" * 60)
     for k, v in results.items():
         unit = "%" if ("pct" in k or k in ("em", "f1", "prec", "recall")) else \
-               " tok/s" if "tps" in k else \
                " ms" if "ms" in k else ""
         print(f"  {k:<25} {v}{unit}")
     print("=" * 60)
@@ -391,8 +302,7 @@ def main():
     print("  With    ContextPilot:  cache_hit=33.97% prefill_tps=14,214 F1=64.39")
     print()
     print("Note: llama.cpp on Apple Silicon will show lower absolute TPS than")
-    print("      a GPU server, but the relative cache_hit improvement should")
-    print("      still be visible (~5x improvement expected).")
+    print("      a GPU server, but the relative F1 improvement should still be visible.")
 
     # --- Save per-query output ---
     if args.output:

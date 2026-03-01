@@ -3,7 +3,10 @@ transformers
 elasticsearch==8.18.1
 aiohttp
 ujson
+numpy
 scipy
-fastapi[all]
-cupy-cuda12x
+tqdm
+fastapi[all]>=0.115.0
+uvicorn[standard]>=0.32.0
+httpx>=0.28.0
 pytest

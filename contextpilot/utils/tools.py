@@ -279,7 +279,7 @@ def chunk_documents(input_data, chunk_size=1000, chunk_overlap=200, out_file="no
 
     all_chunks = []
     chunk_id_counter = 0
-    for doc_id_counter, doc in enumerate(tqdm.tqdm(input_data, desc="Chunking documents")):
+    for doc_id_counter, doc in enumerate(tqdm(input_data, desc="Chunking documents")):
         title = doc.get("title", f"doc_{doc_id_counter}")
         text = doc.get("text", "")
 

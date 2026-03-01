@@ -17,6 +17,7 @@
 
 ## News
 
+- [2026/03] ContextPilot now can run on **macOS / Apple Silicon** via [llama.cpp](docs/guides/mac_llama_cpp.md).
 - [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.
 
@@ -27,7 +28,7 @@ Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many co
 ContextPilot sits between context assembly and inference to maximize prefix reuse and remove duplicates:
 
 1. **Higher throughput & cache hits** — boosts prefill throughput and prefix cache hit ratio via context reuse.  
-2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang).  
+2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) / [llama.cpp](docs/guides/mac_llama_cpp.md).
 3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
 4. **Widely tested** — validated across diverse RAG and agentic workloads.
 
@@ -74,16 +75,27 @@ ContextPilot is validated across three representative settings: single-node acad
 
 **Requirements:** Python >= 3.10
 
+**CPU (Mac / Apple Silicon or no CUDA):**
 ```bash
 pip install contextpilot
 ```
+
+**GPU (Linux + CUDA 12.x):**
+```bash
+pip install "contextpilot[gpu]"
+```
+
+The `[gpu]` extra installs `cupy-cuda12x` for GPU-accelerated distance computation. Without it, ContextPilot falls back to the CPU backend automatically.
 
 Or install from source:
 ```bash
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
-pip install -e .
+pip install -e .          # CPU
+pip install -e ".[gpu]"   # GPU (CUDA 12.x)
 ```
+
+**Mac / Apple Silicon:** no CUDA required — use [llama.cpp](https://github.com/ggerganov/llama.cpp) as the inference backend (`brew install llama.cpp`). See the [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md) for the full setup.
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
@@ -164,7 +176,7 @@ For a detailed walkthrough with concrete examples, see the [Quick Start Guide](d
 
 ### Adoption Examples
 
-See many useful adoption examples: [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), and [multi-turn deduplication](docs/guides/multi_turn.md).
+See many useful adoption examples: [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), [multi-turn deduplication](docs/guides/multi_turn.md), and [Mac / Apple Silicon with llama.cpp](docs/guides/mac_llama_cpp.md).
 
 ## Citation
 ```bibtex

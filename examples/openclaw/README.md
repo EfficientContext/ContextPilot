@@ -88,17 +88,10 @@ In OpenClaw, select the model from the ContextPilot provider. Search/memory resu
 
 ### Step 4: Verify
 
-Check API responses for `_contextpilot` metadata:
+Check the `X-ContextPilot-Result` response header for metadata:
 
-```json
-{
-  "_contextpilot": {
-    "intercepted": true,
-    "documents_reordered": true,
-    "total_documents": 5,
-    "sources": { "system": 1, "tool_results": 1 }
-  }
-}
+```
+X-ContextPilot-Result: {"intercepted":true,"documents_reordered":true,"total_documents":5,"sources":{"system":1,"tool_results":1}}
 ```
 
 ## Scope Control

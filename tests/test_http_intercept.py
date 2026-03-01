@@ -21,6 +21,19 @@ import contextpilot.server.http_server as http_mod
 # ============================================================================
 
 
+class FakeHeaders:
+    """Fake multidict-like headers for aiohttp responses."""
+
+    def __init__(self, headers=None):
+        self._headers = headers or {"content-type": "application/json"}
+
+    def items(self):
+        return self._headers.items()
+
+    def get(self, key, default=None):
+        return self._headers.get(key, default)
+
+
 class FakeResponse:
     """Fake aiohttp response for mocking."""
 
@@ -28,6 +41,7 @@ class FakeResponse:
         self._json = json_body
         self.status = status
         self.content = FakeStreamContent()
+        self.headers = FakeHeaders()
 
     async def json(self):
         return self._json
@@ -56,6 +70,7 @@ class FakeStreamResponse(FakeResponse):
     def __init__(self, chunks=None, status=200):
         super().__init__({}, status)
         self.content = FakeStreamContent(chunks)
+        self.headers = FakeHeaders({"content-type": "text/event-stream"})
 
 
 class FakeSession:
@@ -75,6 +90,14 @@ class FakeSession:
     def get(self, url):
         self._last_url = url
         return self._response
+
+
+def _cp_meta(resp):
+    """Extract ContextPilot metadata from the X-ContextPilot-Result response header."""
+    raw = resp.headers.get("x-contextpilot-result")
+    if raw is None:
+        return {}
+    return json.loads(raw)
 
 
 @pytest.fixture
@@ -125,11 +148,12 @@ class TestOpenAIIntercept:
         }
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
-        result = resp.json()
         # Backend was called
         assert mock_session._last_url == "http://mock-backend:30000/v1/chat/completions"
-        # Metadata injected
-        assert result.get("_contextpilot", {}).get("intercepted") is True
+        # Metadata in response header (not body)
+        meta = _cp_meta(resp)
+        assert meta.get("intercepted") is True
+        assert "_contextpilot" not in resp.json()
         # The forwarded body should have reordered docs (still in XML format)
         forwarded = mock_session._last_json
         sys_content = forwarded["messages"][0]["content"]
@@ -158,8 +182,7 @@ class TestOpenAIIntercept:
         forwarded = mock_session._last_json
         assert forwarded["messages"][0]["content"] == body["messages"][0]["content"]
         # No contextpilot metadata
-        result = resp.json()
-        assert "_contextpilot" not in result
+        assert _cp_meta(resp) == {}
 
     def test_bypass_when_no_docs(self, client, mock_session):
         """When system message has no extractable docs, forward unmodified."""
@@ -189,8 +212,7 @@ class TestOpenAIIntercept:
         }
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
-        result = resp.json()
-        assert "_contextpilot" not in result
+        assert _cp_meta(resp) == {}
 
     def test_numbered_format(self, client, mock_session):
         """Numbered format extraction and forwarding."""
@@ -358,8 +380,7 @@ class TestToolResultIntercept:
         }
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
-        result = resp.json()
-        meta = result.get("_contextpilot", {})
+        meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert meta.get("documents_reordered") is True
         assert meta.get("sources", {}).get("tool_results", 0) >= 1
@@ -394,8 +415,7 @@ class TestToolResultIntercept:
         }
         resp = client.post("/v1/messages", json=body)
         assert resp.status_code == 200
-        result = resp.json()
-        meta = result.get("_contextpilot", {})
+        meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert meta.get("sources", {}).get("tool_results", 0) >= 1
         # Forwarded body should have reordered tool_result content
@@ -425,8 +445,7 @@ class TestToolResultIntercept:
         }
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
-        result = resp.json()
-        meta = result.get("_contextpilot", {})
+        meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert meta["sources"]["system"] == 1
         assert meta["sources"]["tool_results"] == 1
@@ -453,8 +472,7 @@ class TestToolResultIntercept:
             headers={"X-ContextPilot-Scope": "system"},
         )
         assert resp.status_code == 200
-        result = resp.json()
-        meta = result.get("_contextpilot", {})
+        meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert meta["sources"]["system"] == 1
         assert meta["sources"]["tool_results"] == 0
@@ -480,8 +498,7 @@ class TestToolResultIntercept:
             headers={"X-ContextPilot-Scope": "tool_results"},
         )
         assert resp.status_code == 200
-        result = resp.json()
-        meta = result.get("_contextpilot", {})
+        meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert meta["sources"]["system"] == 0
         assert meta["sources"]["tool_results"] == 1

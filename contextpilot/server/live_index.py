@@ -898,26 +898,21 @@ class ContextPilot(ContextIndex):
         Returns:
             Dictionary with scheduled results (no request_id mapping)
         """
-        print("=" * 80)
-        print("SCHEDULING BATCH (STATELESS MODE)")
-        print("=" * 80)
-        
+        logger.debug("Scheduling batch (stateless mode)")
+
         # Step 1: Build static index (clustering + reordering)
-        print("\n1. Building static index...")
         result = self.fit_transform(contexts)
-        
-        print(f"   ✓ Built tree with {result.stats['total_nodes']} nodes")
-        print(f"   ✓ Leaf nodes: {result.stats['leaf_nodes']}")
-        
+        logger.debug(
+            f"Built tree: {result.stats['total_nodes']} nodes, "
+            f"{result.stats['leaf_nodes']} leaves"
+        )
+
         # Step 2: Inter-context scheduling
-        print("\n2. Scheduling contexts for optimal execution...")
         scheduled_reordered, scheduled_originals, final_mapping, groups = \
             self.inter_scheduler.schedule_contexts(result)
-        
-        print(f"   ✓ Created {len(groups)} execution groups")
-        
-        # Return results without going live (stateless)
-        scheduled_result = {
+        logger.debug(f"Created {len(groups)} execution groups")
+
+        return {
             'reordered_contexts': scheduled_reordered,
             'original_indices': final_mapping,
             'scheduled_originals': scheduled_originals,
@@ -929,12 +924,6 @@ class ContextPilot(ContextIndex):
                 'num_groups': len(groups),
             }
         }
-        
-        print("\n" + "=" * 80)
-        print("✓ BATCH SCHEDULED (Stateless - no cache tracking)")
-        print("=" * 80 + "\n")
-        
-        return scheduled_result
     
     def _initialize_live_metadata(self, initial_tokens_per_context: int, num_input_contexts: int = None) -> Tuple[Dict[str, int], List[str]]:
         """

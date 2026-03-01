@@ -1,21 +1,30 @@
 """
-End-to-end verifier for ContextPilot + vLLM patch behavior.
+End-to-end verifier for ContextPilot backend eviction sync.
 
-What it checks:
-1. Two-request reorder works (prefix sharing improves for the crafted pair).
-2. The two request_ids remain tracked before stress (no early/weird eviction).
-3. After cache pressure, eviction is observed via vLLM callback -> ContextPilot /evict.
+Works with both SGLang and vLLM backends. Checks:
+1. Two-request reorder improves prefix sharing.
+2. Tracked request_ids survive until cache pressure.
+3. Eviction callback fires and ContextPilot /evict removes the entries.
 
 Prerequisites:
-1. Start ContextPilot server (live mode):
+1. Start ContextPilot server:
    python -m contextpilot.server.http_server --port 8765
 
-2. Start patched vLLM server with prefix caching enabled:
-   CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \
-     --model Qwen/Qwen2.5-7B-Instruct --port 8000 --enable-prefix-caching
+2. Start an inference backend with the ContextPilot hook:
 
-Run:
-  python examples/vllm_patch_e2e_check.py
+   SGLang:
+     CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+       --model-path Qwen/Qwen2.5-7B-Instruct --port 30000
+
+   vLLM:
+     CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m vllm.entrypoints.openai.api_server \
+       --model Qwen/Qwen2.5-7B-Instruct --port 8000 --enable-prefix-caching
+
+   NOTE: flash-attn / flashinfer installation is backend-specific and left to the user.
+   See https://github.com/Dao-AILab/flash-attention and https://github.com/flashinfer-ai/flashinfer.
+
+3. Run (route through proxy for full rid tracking):
+   python examples/backend_e2e_check.py --vllm-url http://localhost:8765 --cp-url http://localhost:8765
 """
 
 from __future__ import annotations
@@ -314,9 +323,10 @@ def poll_eviction(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify ContextPilot + vLLM patch behavior.")
+    parser = argparse.ArgumentParser(description="Verify ContextPilot backend eviction sync (SGLang / vLLM).")
     parser.add_argument("--cp-url", default="http://localhost:8765", help="ContextPilot base URL")
-    parser.add_argument("--vllm-url", default="http://localhost:8000", help="vLLM base URL")
+    parser.add_argument("--backend-url", default="http://localhost:8765", help="Backend URL (proxy or direct engine)")
+    parser.add_argument("--vllm-url", default=None, help="(deprecated, use --backend-url)")
     parser.add_argument("--request-timeout", type=float, default=120.0, help="HTTP timeout seconds")
     parser.add_argument("--seed-prompt-words", type=int, default=220, help="Approx words for the first 2 tracked requests")
     parser.add_argument("--pressure-requests", type=int, default=140, help="Number of pressure requests")
@@ -331,16 +341,19 @@ def main() -> int:
     parser.add_argument("--eviction-wait-seconds", type=float, default=120.0, help="How long to wait for eviction callback")
     args = parser.parse_args()
 
-    print("=== ContextPilot + vLLM Patch E2E Check ===")
+    # Backward compat: --vllm-url overrides --backend-url
+    backend_url = backend_url or args.backend_url
+
+    print("=== ContextPilot Backend E2E Check ===")
     print(f"ContextPilot: {args.cp_url}")
-    print(f"vLLM:        {args.vllm_url}")
+    print(f"Backend:     {backend_url}")
     print(f"Pressure:    {args.pressure_requests} requests, workers={args.pressure_workers}")
 
     session = requests.Session()
     try:
-        model = get_model_id(session, args.vllm_url, timeout=args.request_timeout)
+        model = get_model_id(session, backend_url, timeout=args.request_timeout)
         print(f"Model: {model}")
-        warmup_vllm(session, args.vllm_url, model, timeout=args.request_timeout)
+        warmup_vllm(session, backend_url, model, timeout=args.request_timeout)
         print("[PASS] vLLM warmup request succeeded")
 
         reset_contextpilot(session, args.cp_url, timeout=args.request_timeout)
@@ -365,7 +378,7 @@ def main() -> int:
             )
             send_vllm_completion(
                 session=session,
-                vllm_url=args.vllm_url,
+                vllm_url=backend_url,
                 model=model,
                 prompt=prompt,
                 timeout=args.request_timeout,
@@ -387,7 +400,7 @@ def main() -> int:
 
         print("Applying cache pressure...")
         ok, fail = run_pressure(
-            vllm_url=args.vllm_url,
+            vllm_url=backend_url,
             model=model,
             requests_count=args.pressure_requests,
             workers=args.pressure_workers,

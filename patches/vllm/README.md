@@ -73,13 +73,13 @@ CONTEXTPILOT_TRACK_ONLY_PREFIX="" CONTEXTPILOT_INDEX_URL=http://localhost:8765 p
 For end-to-end validation, use:
 
 ```bash
-python examples/vllm_patch_e2e_check.py
+python examples/backend_e2e_check.py
 ```
 
 Use a heavier stress profile only when needed (not required for every PR):
 
 ```bash
-python examples/vllm_patch_e2e_check.py \
+python examples/backend_e2e_check.py \
   --request-timeout 60 \
   --seed-prompt-words 40 \
   --max-tokens 1 \

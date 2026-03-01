@@ -17,6 +17,7 @@ Environment variables (alternative to CLI args):
 
 import argparse
 import copy
+import json
 import logging
 import time
 import asyncio
@@ -1119,48 +1120,77 @@ async def _intercept_and_forward(request: Request, api_format: str):
     else:
         target_url = f"{infer_api_url}/v1/chat/completions"
 
-    # Build outbound headers: forward auth, strip X-ContextPilot-*
+    # Build outbound headers: forward everything except X-ContextPilot-*
+    # and hop-by-hop headers that must not be forwarded by proxies.
+    _HOP_BY_HOP = frozenset((
+        "host", "connection", "keep-alive", "transfer-encoding",
+        "te", "trailer", "upgrade", "proxy-authorization",
+        "proxy-authenticate", "content-length",
+    ))
     outbound_headers = {}
     for k, v in headers.items():
         kl = k.lower()
         if kl.startswith("x-contextpilot-"):
             continue
-        if kl in ("authorization", "x-api-key", "anthropic-version", "content-type"):
-            outbound_headers[k] = v
+        if kl in _HOP_BY_HOP:
+            continue
+        outbound_headers[k] = v
+
+    # Build ContextPilot metadata as a response header (not in body,
+    # which would break strict API response parsers like OpenClaw's SDK).
+    cp_response_headers = {}
+    if total_reordered > 0:
+        cp_response_headers["X-ContextPilot-Result"] = json.dumps({
+            "intercepted": True,
+            "documents_reordered": True,
+            "total_documents": total_reordered,
+            "sources": {
+                "system": system_count,
+                "tool_results": tool_result_count,
+            },
+        })
 
     is_stream = body.get("stream", False)
 
     try:
         if is_stream:
-            # Streaming: passthrough SSE chunks
-            async def _stream_generator():
+            # Streaming: passthrough SSE chunks, forwarding status & headers
+            async def _stream_with_headers():
                 async with _aiohttp_session.post(
                     target_url, json=body, headers=outbound_headers
                 ) as resp:
+                    # Collect response headers to forward
+                    fwd_headers = dict(cp_response_headers)
+                    for k, v in resp.headers.items():
+                        kl = k.lower()
+                        if kl in _HOP_BY_HOP or kl == "content-length":
+                            continue
+                        fwd_headers[k] = v
+                    # Yield (headers_dict, status) as first item for the wrapper
+                    yield resp.status, fwd_headers
                     async for chunk in resp.content.iter_any():
                         yield chunk
 
+            stream_iter = _stream_with_headers()
+            status, fwd_headers = await stream_iter.__anext__()
+
             return StreamingResponse(
-                _stream_generator(),
-                media_type="text/event-stream",
+                stream_iter,
+                status_code=status,
+                headers=fwd_headers,
+                media_type=fwd_headers.get("content-type", "text/event-stream"),
             )
         else:
-            # Non-streaming: forward JSON
+            # Non-streaming: forward JSON with metadata in header only
             async with _aiohttp_session.post(
                 target_url, json=body, headers=outbound_headers
             ) as resp:
                 result = await resp.json()
-                if total_reordered > 0 and resp.status == 200:
-                    result["_contextpilot"] = {
-                        "intercepted": True,
-                        "documents_reordered": True,
-                        "total_documents": total_reordered,
-                        "sources": {
-                            "system": system_count,
-                            "tool_results": tool_result_count,
-                        },
-                    }
-                return JSONResponse(content=result, status_code=resp.status)
+                return JSONResponse(
+                    content=result,
+                    status_code=resp.status,
+                    headers=cp_response_headers,
+                )
 
     except aiohttp.ClientError as e:
         logger.error(f"Error forwarding intercepted request: {e}")

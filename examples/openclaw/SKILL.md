@@ -29,17 +29,10 @@ When your request contains multiple documents (in system prompts or tool results
 
 ## How to Verify
 
-Check the `_contextpilot` field in API responses:
+Check the `X-ContextPilot-Result` response header:
 
-```json
-{
-  "_contextpilot": {
-    "intercepted": true,
-    "documents_reordered": true,
-    "total_documents": 5,
-    "sources": {"system": 1, "tool_results": 1}
-  }
-}
+```
+X-ContextPilot-Result: {"intercepted":true,"documents_reordered":true,"total_documents":5,"sources":{"system":1,"tool_results":1}}
 ```
 
 ## Configuration Headers

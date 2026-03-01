@@ -137,7 +137,7 @@ A complete working example covering all three patterns is at `examples/mac_llama
 bash tests/test_mac_contextpilot.sh
 
 # Fewer queries for a quick test
-bash tests/test_mac_contextpilot.sh --num-queries 20
+bash tests/test_mac_contextpilot.sh --num-queries 100
 
 # Custom-built llama-server (not in PATH)
 bash tests/test_mac_contextpilot.sh --llama-server /path/to/llama.cpp/build/bin/llama-server

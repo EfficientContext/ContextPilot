@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 PTH_NAME = "contextpilot_hook.pth"
-PTH_CONTENT = "import contextpilot._sglang_hook\n"
+PTH_CONTENT = "import contextpilot._sglang_hook\nimport contextpilot._vllm_hook\n"
 
 
 def get_site_packages() -> Path:

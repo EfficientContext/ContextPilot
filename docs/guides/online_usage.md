@@ -161,7 +161,7 @@ python install_engine_hook.py
 CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 sglang serve --model-path Qwen/Qwen3-4B
 ```
 
-Compatible with SGLang **0.5.x**.
+Compatible with SGLang **>=0.5**.
 
 #### vLLM (automatic, zero-patch)
 

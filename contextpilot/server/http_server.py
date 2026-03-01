@@ -932,11 +932,9 @@ async def proxy_completions(request: Request):
             body["prompt"] = apply_chat_template(original_prompt, system_prompt)
             logger.debug("Applied chat template to prompt")
 
-        # Check if request_id is registered in the index (for eviction tracking)
+        # Ensure request_id is tracked for eviction (even if no context node)
         if _index:
-            node = _index.get_request_node(request_id)
-            if node is None:
-                logger.debug(f"Request ID '{request_id}' not in index (unmanaged request)")
+            _index.track_request(request_id)
 
         # Pass request_id to inference engine so it can use the same ID for request tracking
         # Engine will notify ContextPilot via /evict callback when this request is evicted
@@ -1212,9 +1210,7 @@ async def proxy_engine(path: str, request: Request):
                 request_id = f"req-{uuid.uuid4().hex[:12]}"
                 logger.debug(f"Auto-assigned request_id={request_id}")
             if _index:
-                node = _index.get_request_node(request_id)
-                if node is None:
-                    logger.debug(f"Request ID '{request_id}' not in index (unmanaged request)")
+                _index.track_request(request_id)
             if request_id:
                 body["rid"] = request_id
                 body["request_id"] = request_id

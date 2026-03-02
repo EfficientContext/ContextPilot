@@ -130,38 +130,37 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
 
 ### Inference Engine Integration
 
-Stateful mode requires patching your inference engine so its prefix cache notifies ContextPilot on eviction. Patches are available for both SGLang and vLLM.
+Stateful mode requires the inference engine's prefix cache to notify ContextPilot on eviction. Both SGLang and vLLM are supported via zero-patch runtime hooks.
 
-#### SGLang Patch
+#### Same Environment (Recommended)
 
-```bash
-# Automatic (recommended)
-bash patches/sglang/apply_patch.sh
-
-# Or manually:
-SGLANG_PATH=$(python -c "import sglang; print(sglang.__path__[0])")
-
-# Backup originals
-cp $SGLANG_PATH/srt/mem_cache/radix_cache.py $SGLANG_PATH/srt/mem_cache/radix_cache.py.bak
-cp $SGLANG_PATH/srt/mem_cache/common.py $SGLANG_PATH/srt/mem_cache/common.py.bak
-cp $SGLANG_PATH/srt/mem_cache/cache_init_params.py $SGLANG_PATH/srt/mem_cache/cache_init_params.py.bak
-
-# Copy patched files
-cp patches/sglang/*.py $SGLANG_PATH/srt/mem_cache/
-```
-
-Compatible with SGLang **0.5.x**. See [patches/sglang/README.md](../../patches/sglang/README.md) for details.
-
-#### vLLM Patch
+If ContextPilot and the inference engine share the same Python environment, hooks activate automatically — just set the environment variable:
 
 ```bash
-# Automatic (recommended)
-bash patches/vllm/apply_patch.sh
+# SGLang
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+    --model-path Qwen/Qwen3-4B --port 30000
+
+# vLLM
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 vllm serve Qwen/Qwen3-4B \
+    --port 30000 --enable-prefix-caching
 ```
 
-Compatible with SGLang **>=0.5**.
+The `.pth` file installed by `pip install contextpilot` (or `python -m contextpilot.install_hook`) registers import hooks that monkey-patch the engine on startup.
 
-Both patches add an eviction callback that POSTs evicted `request_ids` to the ContextPilot server.
+#### Separate Environments (Standalone Hook)
+
+When ContextPilot and the engine run in different virtualenvs or containers, use the standalone hook — a single Python file with no `contextpilot` dependency:
+
+```bash
+# In the engine's Python environment (one command, no clone needed):
+pip install requests
+curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/install_standalone.py | python -
+```
+
+Then start the engine with `CONTEXTPILOT_INDEX_URL` set as above.
+
+Both methods add an eviction callback that POSTs evicted `request_ids` to the ContextPilot server.
 
 #### How It Works
 

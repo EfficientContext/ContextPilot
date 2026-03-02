@@ -34,7 +34,7 @@ ContextPilot sits between context assembly and inference to maximize prefix reus
 It maintains a **Context Index** of cached content, then per request applies **Reorder** (align shared blocks into a common prefix) and/or **Deduplicate** (replace repeats with reference hints), plus **cache-aware scheduling** to maximize prefix sharing. The optimized prompt is sent via the OpenAI-compatible API; `POST /evict` keeps the index synced when KV cache is reclaimed. See its design overview below.
 
 <div align="center">
-<img src="assets/system_description.png" alt="ContextPilot Architecture" width="600"/>
+<img src="assets/system_description.jpg" alt="ContextPilot Architecture" width="600"/>
 </div>
 
 > For more design details, see [Paper](https://arxiv.org/abs/2511.03475) and [Documentation](docs/README.md).
@@ -75,7 +75,7 @@ ContextPilot is validated across three representative settings: single-node acad
 **Requirements:** Python >= 3.10
 
 ```bash
-pip install contextpilot
+pip install contextpilot # This will automatically install the contextpilot_hook into your site packages.
 ```
 
 Or install from source:
@@ -83,6 +83,7 @@ Or install from source:
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
 pip install -e .
+python -m contextpilot.install_hook # Install hook
 ```
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
@@ -127,7 +128,7 @@ for query in queries:
     print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Install the eviction patch for [SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Install the eviction hook for [SGLang or vLLM](docs/guides/online_usage.md#inference-engine-integration) to keep the index in sync. For distributed setups where ContextPilot and the engine run in separate environments, see [Distributed Setup](docs/getting_started/installation.md#distributed-setup).
 
 ---
 

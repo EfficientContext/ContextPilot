@@ -48,6 +48,18 @@ Both engines are supported via zero-patch runtime hooks — just set `CONTEXTPIL
 > - flash-attn: https://github.com/Dao-AILab/flash-attention/releases
 > - flashinfer: https://docs.flashinfer.ai/installation.html
 
+## Distributed Setup
+
+If the ContextPilot index server and the inference engine run in **separate Python environments** (e.g., different virtualenvs or containers), the engine environment won't have the `contextpilot` package. Use the standalone hook instead:
+
+```bash
+# In the engine's Python environment (one command, no clone needed):
+pip install requests
+curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/install_standalone.py | python -
+```
+
+The installer downloads the hook from GitHub and installs it into site-packages. No `contextpilot` clone or install needed — just `requests` as a runtime dependency.
+
 ## Verify Installation
 
 ```bash

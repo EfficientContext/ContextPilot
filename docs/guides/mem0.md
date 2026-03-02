@@ -12,11 +12,13 @@ This example measures TTFT and answer accuracy (token-F1, LLM judge) with and wi
 ```bash
 pip install mem0ai openai tqdm
 
-# Install your inference engine:
+# Install your inference engine + ContextPilot patch:
 # SGLang:
-pip install "sglang>=0.5"
+pip install "sglang==0.5.6"
+bash patches/sglang/apply_patch.sh
 # or vLLM:
 pip install vllm
+bash patches/vllm/apply_patch.sh
 ```
 
 ## Start servers

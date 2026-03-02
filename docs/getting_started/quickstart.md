@@ -6,7 +6,7 @@ Get ContextPilot running in 5 minutes.
 
 - ContextPilot installed ([Installation Guide](installation.md))
 - An OpenAI-compatible inference engine (e.g. [SGLang](https://github.com/sgl-project/sglang), [vLLM](https://github.com/vllm-project/vllm))
-- For eviction sync: apply the ContextPilot patch for your engine (`bash patches/sglang/apply_patch.sh` or `bash patches/vllm/apply_patch.sh`)
+- For eviction sync: set `CONTEXTPILOT_INDEX_URL` when launching your engine (hooks activate automatically)
 
 ## Using `cp.optimize()` (Simplest)
 

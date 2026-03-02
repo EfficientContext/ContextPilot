@@ -83,7 +83,7 @@ Or install from source:
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
 pip install -e .
-python -m contextpilot.install_hook   # one-time: enables automatic SGLang/vLLM integration
+python -m contextpilot.install_hook   # one-time: enables automatic inference engine integration
 ```
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.

@@ -48,11 +48,6 @@ pip install vllm
 
 Both engines are supported via zero-patch runtime hooks — just set `CONTEXTPILOT_INDEX_URL` when launching. See [Online Usage Guide](../guides/online_usage.md#inference-engine-integration).
 
-> **Note:** flash-attn and flashinfer are backend-specific dependencies not installed by ContextPilot.
-> Install them separately per your CUDA / PyTorch version:
-> - flash-attn: https://github.com/Dao-AILab/flash-attention/releases
-> - flashinfer: https://docs.flashinfer.ai/installation.html
-
 ## Distributed Setup
 
 If the ContextPilot index server and the inference engine run in **separate Python environments** (e.g., different virtualenvs or containers), the engine environment won't have the `contextpilot` package. Use the standalone hook instead:

@@ -128,7 +128,7 @@ for query in queries:
     print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Install the eviction patch for [SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set `CONTEXTPILOT_INDEX_URL` when launching [SGLang or vLLM](docs/guides/online_usage.md#inference-engine-integration) to enable automatic eviction sync. For distributed setups, see [Distributed Setup](docs/getting_started/installation.md#distributed-setup).
 
 ---
 

@@ -34,7 +34,7 @@ ContextPilot sits between context assembly and inference to maximize prefix reus
 It maintains a **Context Index** of cached content, then per request applies **Reorder** (align shared blocks into a common prefix) and/or **Deduplicate** (replace repeats with reference hints), plus **cache-aware scheduling** to maximize prefix sharing. The optimized prompt is sent via the OpenAI-compatible API; `POST /evict` keeps the index synced when KV cache is reclaimed. See its design overview below.
 
 <div align="center">
-<img src="assets/system_description.png" alt="ContextPilot Architecture" width="600"/>
+<img src="assets/system_description.jpg" alt="ContextPilot Architecture" width="600"/>
 </div>
 
 > For more design details, see [Paper](https://arxiv.org/abs/2511.03475) and [Documentation](docs/README.md).
@@ -75,7 +75,7 @@ ContextPilot is validated across three representative settings: single-node acad
 **Requirements:** Python >= 3.10
 
 ```bash
-pip install contextpilot
+pip install contextpilot # This will automatically install the contextpilot_hook into your site packages.
 ```
 
 Or install from source:
@@ -83,7 +83,7 @@ Or install from source:
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
 pip install -e .
-python -m contextpilot.install_hook   # one-time: enables automatic SGLang/vLLM integration
+python -m contextpilot.install_hook   # one-time: enables automatic inference engine integration
 ```
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
@@ -128,7 +128,7 @@ for query in queries:
     print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set the `CONTEXTPILOT_INDEX_URL` environment variable when starting your inference engine to enable automatic eviction sync — **no engine patches required**. See the [online usage guide](docs/guides/online_usage.md#inference-engine-integration).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set `CONTEXTPILOT_INDEX_URL` when launching [SGLang or vLLM](docs/guides/online_usage.md#inference-engine-integration) to enable automatic eviction sync. For distributed setups, see [Distributed Setup](docs/getting_started/installation.md#distributed-setup).
 
 ---
 

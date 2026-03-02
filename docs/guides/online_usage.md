@@ -152,16 +152,12 @@ That's it. ContextPilot's `.pth` hook automatically monkey-patches SGLang's `Rad
 **Distributed setup** (SGLang and ContextPilot on different machines): You don't need to install the full `contextpilot` package on the SGLang machine. Copy the standalone install script instead:
 
 ```bash
-# On the SGLang machine:
-wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/scripts/install_engine_hook.py
-wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/_sglang_hook.py
-python install_engine_hook.py
-
-# Then start SGLang pointing to the remote ContextPilot server:
-CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 sglang serve --model-path Qwen/Qwen3-4B
+# In the engine's Python environment (one command, no clone needed):
+pip install requests
+curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/install_standalone.py | python -
 ```
 
-Compatible with SGLang **>=0.5**.
+Then start the engine with `CONTEXTPILOT_INDEX_URL` set as above.
 
 #### vLLM (automatic, zero-patch)
 

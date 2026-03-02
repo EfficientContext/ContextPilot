@@ -27,6 +27,10 @@ dynamic = ["dependencies"]
 [tool.setuptools.packages.find]
 include = ["contextpilot*"]
 
+[tool.setuptools.data-files]
+# Install .pth file to site-packages root for automatic SGLang monkey-patching
+"" = ["contextpilot_hook.pth"]
+
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
@@ -37,6 +41,7 @@ Issues = "https://github.com/EfficientContext/ContextPilot/issues"
 
 [project.optional-dependencies]
 dev = ["black", "bumpver", "isort", "pip-tools", "pytest", "pytest-cov", "ipython"]
+sglang = ["sglang>=0.5"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

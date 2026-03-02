@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from fastapi.responses import JSONResponse
     from pydantic import BaseModel, Field
     import uvicorn
     import aiohttp
@@ -625,9 +625,9 @@ async def evict(request: EvictRequest):
     from the evicted entries and invokes the registered callback. That callback
     calls this endpoint to remove the corresponding entries from ContextPilot.
 
-    Supported engines:
-        - SGLang: patches/sglang/ patches the radix cache to fire callbacks on eviction
-        - vLLM:   patches/vllm/ patches the block pool to fire callbacks on eviction
+    Supported engines (via zero-patch runtime hooks):
+        - SGLang: contextpilot/_sglang_hook.py
+        - vLLM:   contextpilot/_vllm_hook.py
 
     Both use the same protocol:
         POST /evict  {"request_ids": ["req-1", "req-2", ...]}
@@ -639,6 +639,7 @@ async def evict(request: EvictRequest):
         )
 
     try:
+        logger.debug(f"Eviction incoming IDs: {request.request_ids}")
         normalized_ids = [
             _normalize_request_id(rid)
             for rid in request.request_ids
@@ -908,12 +909,10 @@ async def proxy_completions(request: Request):
         # Check for request_id (from manual calls) or rid (from RAGPipeline)
         # RAGPipeline sends 'rid' directly, manual calls may use 'request_id'
         request_id = body.pop("request_id", None) or body.get("rid", None)
-        
-        # NOTE: We do NOT auto-generate request_id anymore.
-        # The client should pass request_id from the /reorder response.
-        # If not provided, ContextPilot token tracking is skipped for this request.
+
         if not request_id:
-            logger.debug("No request_id provided, ContextPilot tracking disabled for this request")
+            request_id = f"req-{uuid.uuid4().hex[:12]}"
+            logger.debug(f"Auto-assigned request_id={request_id}")
 
         # Apply chat template if explicitly requested (default False - template should be applied at prompt generation)
         apply_template = body.pop("apply_chat_template", False)  # Default to False
@@ -924,13 +923,9 @@ async def proxy_completions(request: Request):
             body["prompt"] = apply_chat_template(original_prompt, system_prompt)
             logger.debug("Applied chat template to prompt")
 
-        # Verify request_id exists in the index
-        # Note: LRU tracking is now handled by the inference engine's cache, not ContextPilot
-        if request_id and _index:
-            node = _index.get_request_node(request_id)
-            if node is None:  # Use 'is None' because node_id=0 is valid but falsy
-                logger.warning(f"Request ID '{request_id}' not found in index")
-                request_id = None  # Clear so engine won't try to track
+        # Ensure request_id is tracked for eviction (even if no context node)
+        if _index:
+            _index.track_request(request_id)
 
         # Pass request_id to inference engine so it can use the same ID for request tracking
         # Engine will notify ContextPilot via /evict callback when this request is evicted
@@ -999,6 +994,18 @@ async def proxy_engine(path: str, request: Request):
                 return JSONResponse(content=result, status_code=response.status)
         else:
             body = await request.json()
+
+            # Inject rid for SGLang cache tracking (same logic as proxy_completions)
+            request_id = body.pop("request_id", None) or body.get("rid", None)
+            if not request_id:
+                request_id = f"req-{uuid.uuid4().hex[:12]}"
+                logger.debug(f"Auto-assigned request_id={request_id}")
+            if _index:
+                _index.track_request(request_id)
+            if request_id:
+                body["rid"] = request_id
+                body["request_id"] = request_id
+
             async with _aiohttp_session.post(target_url, json=body) as response:
                 result = await response.json()
                 return JSONResponse(content=result, status_code=response.status)

@@ -113,13 +113,36 @@ def client(mock_session):
     # Patch the module-level globals
     original_session = http_mod._aiohttp_session
     original_url = http_mod._infer_api_url
+    original_intercept_index = http_mod._intercept_index
     http_mod._aiohttp_session = mock_session
     http_mod._infer_api_url = "http://mock-backend:30000"
+    http_mod._intercept_index = None  # reset so each test starts fresh
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
         http_mod._aiohttp_session = original_session
         http_mod._infer_api_url = original_url
+        http_mod._intercept_index = original_intercept_index
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+
+def _warmup(client, path, body):
+    """Send a request to initialise the intercept index (first request = no reorder)."""
+    resp = client.post(path, json=body)
+    assert resp.status_code == 200
+    return resp
+
+
+# Documents with clear clustering signal: two auth docs share words
+# (token, authentication, secure, for) while the database doc shares none.
+# schedule_only produces [0, 2, 1] — auth docs grouped, database last.
+_AUTH_DOC = "JWT token validation and rotation policy for secure authentication"
+_DB_DOC = "Database connection pooling sharding replication backup strategy"
+_OAUTH_DOC = "OAuth2 authentication token refresh flow for secure login sessions"
 
 
 # ============================================================================
@@ -128,19 +151,19 @@ def client(mock_session):
 
 
 class TestOpenAIIntercept:
-    def test_basic_intercept_reorders(self, client, mock_session):
-        """Full intercept: docs extracted, reordered, forwarded."""
+    def test_first_request_builds_and_reorders(self, client, mock_session):
+        """First request builds index and reorders via clustering."""
         body = {
             "model": "gpt-4",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "<documents>\n"
-                        "<document>Doc A content</document>\n"
-                        "<document>Doc B content</document>\n"
-                        "<document>Doc C content</document>\n"
-                        "</documents>"
+                        f"<documents>\n"
+                        f"<document>{_AUTH_DOC}</document>\n"
+                        f"<document>{_DB_DOC}</document>\n"
+                        f"<document>{_OAUTH_DOC}</document>\n"
+                        f"</documents>"
                     ),
                 },
                 {"role": "user", "content": "Summarize the documents."},
@@ -148,13 +171,41 @@ class TestOpenAIIntercept:
         }
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
-        # Backend was called
         assert mock_session._last_url == "http://mock-backend:30000/v1/chat/completions"
-        # Metadata in response header (not body)
+        meta = _cp_meta(resp)
+        assert meta.get("intercepted") is True
+        forwarded = mock_session._last_json
+        sys_content = forwarded["messages"][0]["content"]
+        assert "<document>" in sys_content
+
+    def test_second_request_reorders(self, client, mock_session):
+        """Second request clusters docs — auth docs grouped together.
+
+        Input order: auth, database, auth.  Clustering pulls the two
+        auth docs together → different order from input.
+        """
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "<documents>\n"
+                        "<document>JWT token validation and rotation policy for secure authentication</document>\n"
+                        "<document>Database connection pooling sharding replication backup strategy</document>\n"
+                        "<document>OAuth2 authentication token refresh flow for secure login sessions</document>\n"
+                        "</documents>"
+                    ),
+                },
+                {"role": "user", "content": "Summarize."},
+            ],
+        }
+        _warmup(client, "/v1/chat/completions", body)
+        resp = client.post("/v1/chat/completions", json=body)
+        assert resp.status_code == 200
         meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert "_contextpilot" not in resp.json()
-        # The forwarded body should have reordered docs (still in XML format)
         forwarded = mock_session._last_json
         sys_content = forwarded["messages"][0]["content"]
         assert "<document>" in sys_content
@@ -226,6 +277,7 @@ class TestOpenAIIntercept:
                 {"role": "user", "content": "Summarize"},
             ],
         }
+        _warmup(client, "/v1/chat/completions", body)
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
         forwarded = mock_session._last_json
@@ -242,6 +294,7 @@ class TestAnthropicIntercept:
             "system": "<documents><document>A</document><document>B</document><document>C</document></documents>",
             "messages": [{"role": "user", "content": "Hello"}],
         }
+        _warmup(client, "/v1/messages", body)
         resp = client.post("/v1/messages", json=body)
         assert resp.status_code == 200
         assert mock_session._last_url == "http://mock-backend:30000/v1/messages"
@@ -384,22 +437,22 @@ class TestToolResultIntercept:
                                  "function": {"name": "search", "arguments": "{}"}}]},
                 {"role": "tool", "tool_call_id": "tc1",
                  "content": (
-                     "<documents>\n"
-                     "<document>Tool Doc A</document>\n"
-                     "<document>Tool Doc B</document>\n"
-                     "<document>Tool Doc C</document>\n"
-                     "</documents>"
+                     f"<documents>\n"
+                     f"<document>{_AUTH_DOC}</document>\n"
+                     f"<document>{_DB_DOC}</document>\n"
+                     f"<document>{_OAUTH_DOC}</document>\n"
+                     f"</documents>"
                  )},
                 {"role": "user", "content": "Now summarize."},
             ],
         }
+        _warmup(client, "/v1/chat/completions", body)
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
         meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert meta.get("documents_reordered") is True
         assert meta.get("sources", {}).get("tool_results", 0) >= 1
-        # Forwarded body should have reordered tool content
         forwarded = mock_session._last_json
         tool_content = forwarded["messages"][3]["content"]
         assert "<document>" in tool_content
@@ -418,22 +471,22 @@ class TestToolResultIntercept:
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": "tu1",
                      "content": (
-                         "<documents>\n"
-                         "<document>Anthropic Doc A</document>\n"
-                         "<document>Anthropic Doc B</document>\n"
-                         "<document>Anthropic Doc C</document>\n"
-                         "</documents>"
+                         f"<documents>\n"
+                         f"<document>{_AUTH_DOC}</document>\n"
+                         f"<document>{_DB_DOC}</document>\n"
+                         f"<document>{_OAUTH_DOC}</document>\n"
+                         f"</documents>"
                      )},
                 ]},
                 {"role": "user", "content": "Now summarize."},
             ],
         }
+        _warmup(client, "/v1/messages", body)
         resp = client.post("/v1/messages", json=body)
         assert resp.status_code == 200
         meta = _cp_meta(resp)
         assert meta.get("intercepted") is True
         assert meta.get("sources", {}).get("tool_results", 0) >= 1
-        # Forwarded body should have reordered tool_result content
         forwarded = mock_session._last_json
         tr_content = forwarded["messages"][2]["content"][0]["content"]
         assert "<document>" in tr_content
@@ -444,20 +497,20 @@ class TestToolResultIntercept:
             "model": "gpt-4",
             "messages": [
                 {"role": "system", "content": (
-                    "<documents>\n"
-                    "<document>Sys A</document>\n"
-                    "<document>Sys B</document>\n"
-                    "<document>Sys C</document>\n"
-                    "</documents>"
+                    f"<documents>\n"
+                    f"<document>{_AUTH_DOC}</document>\n"
+                    f"<document>{_DB_DOC}</document>\n"
+                    f"<document>{_OAUTH_DOC}</document>\n"
+                    f"</documents>"
                 )},
                 {"role": "user", "content": "Search"},
-                {"role": "assistant", "content": None,
-                 "tool_calls": [{"id": "tc1"}]},
+                {"role": "assistant", "content": None, "tool_calls": [{"id": "tc1"}]},
                 {"role": "tool", "tool_call_id": "tc1",
-                 "content": "[1] Tool A [2] Tool B [3] Tool C"},
+                 "content": f"[1] {_AUTH_DOC} [2] {_DB_DOC} [3] {_OAUTH_DOC}"},
                 {"role": "user", "content": "Summarize"},
             ],
         }
+        _warmup(client, "/v1/chat/completions", body)
         resp = client.post("/v1/chat/completions", json=body)
         assert resp.status_code == 200
         meta = _cp_meta(resp)
@@ -472,18 +525,19 @@ class TestToolResultIntercept:
             "model": "gpt-4",
             "messages": [
                 {"role": "system", "content": (
-                    "<documents>\n"
-                    "<document>Sys A</document>\n"
-                    "<document>Sys B</document>\n"
-                    "</documents>"
+                    f"<documents>\n"
+                    f"<document>{_AUTH_DOC}</document>\n"
+                    f"<document>{_DB_DOC}</document>\n"
+                    f"<document>{_OAUTH_DOC}</document>\n"
+                    f"</documents>"
                 )},
                 {"role": "tool", "tool_call_id": "tc1",
                  "content": "<documents><document>T1</document><document>T2</document></documents>"},
             ],
         }
+        _warmup(client, "/v1/chat/completions", body)
         resp = client.post(
-            "/v1/chat/completions",
-            json=body,
+            "/v1/chat/completions", json=body,
             headers={"X-ContextPilot-Scope": "system"},
         )
         assert resp.status_code == 200
@@ -498,18 +552,21 @@ class TestToolResultIntercept:
             "model": "gpt-4",
             "messages": [
                 {"role": "system", "content": (
-                    "<documents>\n"
-                    "<document>Sys A</document>\n"
-                    "<document>Sys B</document>\n"
-                    "</documents>"
+                    "<documents><document>Sys A</document><document>Sys B</document></documents>"
                 )},
                 {"role": "tool", "tool_call_id": "tc1",
-                 "content": "<documents><document>T1</document><document>T2</document></documents>"},
+                 "content": (
+                    f"<documents>\n"
+                    f"<document>{_AUTH_DOC}</document>\n"
+                    f"<document>{_DB_DOC}</document>\n"
+                    f"<document>{_OAUTH_DOC}</document>\n"
+                    f"</documents>"
+                )},
             ],
         }
+        _warmup(client, "/v1/chat/completions", body)
         resp = client.post(
-            "/v1/chat/completions",
-            json=body,
+            "/v1/chat/completions", json=body,
             headers={"X-ContextPilot-Scope": "tool_results"},
         )
         assert resp.status_code == 200
@@ -517,6 +574,76 @@ class TestToolResultIntercept:
         assert meta.get("intercepted") is True
         assert meta["sources"]["system"] == 0
         assert meta["sources"]["tool_results"] == 1
+
+    def test_openai_json_tool_result_reordered(self, client, mock_session):
+        """OpenClaw-style JSON tool results with results array get reordered."""
+        import json as _json
+        results = [
+            {"path": "auth.md", "snippet": _AUTH_DOC, "score": 0.9},
+            {"path": "db.md", "snippet": _DB_DOC, "score": 0.8},
+            {"path": "oauth.md", "snippet": _OAUTH_DOC, "score": 0.7},
+        ]
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": "You are a helper."},
+                {"role": "user", "content": "Search for auth"},
+                {"role": "assistant", "content": None,
+                 "tool_calls": [{"id": "tc1", "type": "function",
+                                 "function": {"name": "memory_search", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "tc1",
+                 "content": _json.dumps({"results": results, "citations": "auto"}, indent=2)},
+                {"role": "user", "content": "Now summarize."},
+            ],
+        }
+        _warmup(client, "/v1/chat/completions", body)
+        resp = client.post("/v1/chat/completions", json=body)
+        assert resp.status_code == 200
+        meta = _cp_meta(resp)
+        assert meta.get("intercepted") is True
+        assert meta.get("documents_reordered") is True
+        assert meta.get("sources", {}).get("tool_results", 0) >= 1
+        forwarded = mock_session._last_json
+        tool_content = _json.loads(forwarded["messages"][3]["content"])
+        assert "results" in tool_content
+        assert len(tool_content["results"]) == 3
+        assert tool_content["citations"] == "auto"
+
+    def test_anthropic_json_tool_result_reordered(self, client, mock_session):
+        """Anthropic-format JSON tool results get reordered."""
+        import json as _json
+        results = [
+            {"title": "Auth guide", "url": "https://a.com", "description": _AUTH_DOC},
+            {"title": "DB guide", "url": "https://b.com", "description": _DB_DOC},
+            {"title": "OAuth guide", "url": "https://c.com", "description": _OAUTH_DOC},
+        ]
+        body = {
+            "model": "claude-3-opus-20240229",
+            "system": "You are a helper.",
+            "messages": [
+                {"role": "user", "content": "Search the web"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "tu1", "name": "web_search",
+                     "input": {"query": "auth"}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu1",
+                     "content": _json.dumps({"results": results, "provider": "brave"}, indent=2)},
+                ]},
+                {"role": "user", "content": "Summarize."},
+            ],
+        }
+        _warmup(client, "/v1/messages", body)
+        resp = client.post("/v1/messages", json=body)
+        assert resp.status_code == 200
+        meta = _cp_meta(resp)
+        assert meta.get("intercepted") is True
+        assert meta.get("sources", {}).get("tool_results", 0) >= 1
+        forwarded = mock_session._last_json
+        tr_content = _json.loads(forwarded["messages"][2]["content"][0]["content"])
+        assert "results" in tr_content
+        assert len(tr_content["results"]) == 3
+        assert tr_content["provider"] == "brave"
 
 
 # ============================================================================

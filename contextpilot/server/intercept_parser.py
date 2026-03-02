@@ -8,6 +8,7 @@ the request body with reordered documents.
 No server dependencies — independently testable.
 """
 
+import json
 import re
 import copy
 import logging
@@ -304,34 +305,70 @@ def _reconstruct_markdown_headers(
     return "\n\n".join(parts)
 
 
+def _extract_json_results(
+    text: str, config: InterceptConfig
+) -> Optional[ExtractionResult]:
+    """Extract documents from JSON tool results with a ``results`` array.
+
+    OpenClaw tools (memory search, web search, web fetch) return
+    ``JSON.stringify(payload, null, 2)`` where *payload* contains a
+    ``results`` list.  Each element of that list is treated as one
+    document (serialised back to a compact JSON string).
+    """
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    results = obj.get("results")
+    if not isinstance(results, list) or len(results) < 2:
+        return None
+    documents = [json.dumps(item, ensure_ascii=False) for item in results]
+    return ExtractionResult(
+        documents=documents,
+        prefix="",
+        suffix="",
+        mode="json_results",
+        original_content=text,
+    )
+
+
 def extract_documents(
     text: str, config: InterceptConfig
 ) -> Optional[ExtractionResult]:
     """Extract documents from text using the configured mode.
 
-    Auto-detection priority: xml_tag > numbered > separator > markdown_header.
+    Auto-detection priority: xml_tag > numbered > json_results.
+    ``separator`` and ``markdown_header`` are only used when explicitly
+    requested — they match structural content (YAML frontmatter, prompt
+    sections) too aggressively for auto mode.
     Returns None if no documents are found (caller should bypass).
     """
     if config.mode == "xml_tag":
         return _extract_xml_tags(text, config)
     elif config.mode == "numbered":
         return _extract_numbered(text, config)
+    elif config.mode == "json_results":
+        return _extract_json_results(text, config)
     elif config.mode == "separator":
         return _extract_separator(text, config)
     elif config.mode == "markdown_header":
         return _extract_markdown_headers(text, config)
     else:
-        # Auto mode: try each in priority order
+        # Auto mode: only formats that clearly delimit independent documents.
+        # separator and markdown_header excluded — too aggressive on
+        # structural content (YAML frontmatter, prompt sections).
         result = _extract_xml_tags(text, config)
         if result:
             return result
         result = _extract_numbered(text, config)
         if result:
             return result
-        result = _extract_separator(text, config)
-        if result:
-            return result
-        result = _extract_markdown_headers(text, config)
+        result = _extract_json_results(text, config)
         if result:
             return result
         return None
@@ -351,6 +388,8 @@ def reconstruct_content(
         return _reconstruct_xml(extraction, reordered_docs)
     elif extraction.mode == "numbered":
         return _reconstruct_numbered(extraction, reordered_docs)
+    elif extraction.mode == "json_results":
+        return _reconstruct_json_results(extraction, reordered_docs)
     elif extraction.mode == "separator":
         return _reconstruct_separator(extraction, reordered_docs)
     elif extraction.mode == "markdown_header":
@@ -385,6 +424,15 @@ def _reconstruct_numbered(
     if extraction.suffix:
         result += extraction.suffix
     return result
+
+
+def _reconstruct_json_results(
+    extraction: ExtractionResult, reordered_docs: List[str]
+) -> str:
+    """Reconstruct a JSON tool result with reordered ``results`` array."""
+    obj = json.loads(extraction.original_content)
+    obj["results"] = [json.loads(doc) for doc in reordered_docs]
+    return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
 def _reconstruct_separator(

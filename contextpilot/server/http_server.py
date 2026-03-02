@@ -82,6 +82,11 @@ _str_to_id: Dict[str, int] = {}
 _id_to_str: Dict[int, str] = {}
 _next_str_id: int = 0
 
+# Persistent index for the intercept path.  First request builds it
+# (no reorder); subsequent requests use build_incremental to search
+# the existing tree and reorder documents for prefix sharing.
+_intercept_index: Optional[ContextPilot] = None
+
 # Request ID normalization (engine -> ContextPilot canonical IDs)
 _ENGINE_REQ_ID_PREFIX = re.compile(r"^(cmpl-|chatcmpl-|batch-)")
 _VLLM_REQ_SUFFIX = re.compile(r"^(req-[^-]+)-\d+-[0-9a-f]+$")
@@ -998,44 +1003,39 @@ def _doc_preview(doc: str, max_len: int = 60) -> str:
 
 
 def _reorder_documents(docs: List[str], config: InterceptConfig) -> tuple:
-    """Reorder a list of document strings using ContextPilot clustering.
+    """Reorder a list of document strings via the persistent intercept index.
+
+    Each document is tokenized into words and treated as its own context.
+    The first call (``_intercept_index is None``) builds the index but
+    returns documents unchanged — there is no cached state to optimise
+    against.  Subsequent calls use ``build_incremental`` which searches
+    the existing tree, groups documents sharing cached prefixes, and
+    returns an optimised execution order.
 
     Returns (reordered_docs, original_order, reordered_order) where the
     order lists are 0-based indices suitable for logging/headers.
     """
-    temp_index = ContextPilot(
-        alpha=config.alpha,
-        use_gpu=False,
-        linkage_method=config.linkage_method,
-    )
-    str_to_id: Dict[str, int] = {}
-    id_to_str: Dict[int, str] = {}
-    next_id = 0
-    converted = []
-    for doc in docs:
-        sid = str_to_id.get(doc)
-        if sid is None:
-            sid = next_id
-            str_to_id[doc] = sid
-            id_to_str[sid] = doc
-            next_id += 1
-        converted.append(sid)
+    global _intercept_index
 
+    # Each document becomes its own context (list of words).
+    contexts = [re.findall(r'\w+', doc.lower()) for doc in docs]
     original_order = list(range(len(docs)))
-    sched_result = temp_index.schedule_only(contexts=[converted])
-    reordered_ids = sched_result["reordered_contexts"][0]
-    reordered_docs = [id_to_str[i] for i in reordered_ids]
 
-    # Map reordered docs back to their original indices
-    id_to_orig_idx: Dict[int, List[int]] = {}
-    for idx, sid in enumerate(converted):
-        id_to_orig_idx.setdefault(sid, []).append(idx)
-    reordered_order = []
-    id_consumed: Dict[int, int] = {}
-    for sid in reordered_ids:
-        pos = id_consumed.get(sid, 0)
-        reordered_order.append(id_to_orig_idx[sid][pos])
-        id_consumed[sid] = pos + 1
+    if _intercept_index is None:
+        # First call — build index (clustering + scheduling).
+        _intercept_index = ContextPilot(
+            alpha=config.alpha,
+            use_gpu=False,
+            linkage_method=config.linkage_method,
+        )
+        result = _intercept_index.build_and_schedule(contexts=contexts)
+        logger.debug("Intercept index initialised")
+    else:
+        # Subsequent calls — search existing tree and reorder for prefix sharing.
+        result = _intercept_index.build_incremental(contexts=contexts)
+
+    reordered_order = result["original_indices"]
+    reordered_docs = [docs[i] for i in reordered_order]
 
     # Debug log with previews
     if logger.isEnabledFor(logging.DEBUG):
@@ -1097,40 +1097,43 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 extraction, sys_idx = multi.system_extraction
                 if len(extraction.documents) >= 2:
                     reordered_docs, orig_order, new_order = _reorder_documents(extraction.documents, config)
-                    reorder_details.append({
-                        "source": "system",
-                        "count": len(extraction.documents),
-                        "original_order": orig_order,
-                        "reordered_order": new_order,
-                    })
-                    if api_format == _OPENAI_CHAT:
-                        new_content = reconstruct_content(extraction, reordered_docs)
-                        msg = body["messages"][sys_idx]
-                        if isinstance(msg.get("content"), str):
-                            msg["content"] = new_content
-                        elif isinstance(msg.get("content"), list):
-                            for block in msg["content"]:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    if extract_documents(block.get("text", ""), InterceptConfig()):
-                                        block["text"] = new_content
-                                        break
-                    elif api_format == _ANTHROPIC_MESSAGES:
-                        new_content = reconstruct_content(extraction, reordered_docs)
-                        if isinstance(body.get("system"), str):
-                            body["system"] = new_content
-                        elif isinstance(body.get("system"), list):
-                            for block in body["system"]:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    if extract_documents(block.get("text", ""), InterceptConfig()):
-                                        block["text"] = new_content
-                                        break
-                    total_reordered += len(extraction.documents)
-                    system_count = 1
+                    if orig_order != new_order:
+                        reorder_details.append({
+                            "source": "system",
+                            "count": len(extraction.documents),
+                            "original_order": orig_order,
+                            "reordered_order": new_order,
+                        })
+                        if api_format == _OPENAI_CHAT:
+                            new_content = reconstruct_content(extraction, reordered_docs)
+                            msg = body["messages"][sys_idx]
+                            if isinstance(msg.get("content"), str):
+                                msg["content"] = new_content
+                            elif isinstance(msg.get("content"), list):
+                                for block in msg["content"]:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        if extract_documents(block.get("text", ""), InterceptConfig()):
+                                            block["text"] = new_content
+                                            break
+                        elif api_format == _ANTHROPIC_MESSAGES:
+                            new_content = reconstruct_content(extraction, reordered_docs)
+                            if isinstance(body.get("system"), str):
+                                body["system"] = new_content
+                            elif isinstance(body.get("system"), list):
+                                for block in body["system"]:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        if extract_documents(block.get("text", ""), InterceptConfig()):
+                                            block["text"] = new_content
+                                            break
+                        total_reordered += len(extraction.documents)
+                        system_count = 1
 
             # Reorder tool result extractions
             for extraction, location in multi.tool_extractions:
                 if len(extraction.documents) >= 2:
                     reordered_docs, orig_order, new_order = _reorder_documents(extraction.documents, config)
+                    if orig_order == new_order:
+                        continue
                     reorder_details.append({
                         "source": f"tool_result[{location.msg_index}]",
                         "count": len(extraction.documents),

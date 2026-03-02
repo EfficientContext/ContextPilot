@@ -220,17 +220,25 @@ class TestSeparatorExtraction:
         assert result is not None
         assert result.documents == ["Doc A", "Doc B", "Doc C"]
 
-    def test_auto_detects_triple_dash(self):
+    def test_auto_excludes_separator(self):
+        """separator excluded from auto — matches YAML frontmatter/structural content."""
+        for sep in ("---", "==="):
+            text = f"First\n{sep}\nSecond\n{sep}\nThird"
+            config = InterceptConfig(mode="auto")
+            result = extract_documents(text, config)
+            assert result is None
+
+    def test_explicit_triple_dash(self):
         text = "First\n---\nSecond\n---\nThird"
-        config = InterceptConfig(mode="auto")
+        config = InterceptConfig(mode="separator")
         result = extract_documents(text, config)
         assert result is not None
         assert result.mode == "separator"
         assert result.documents == ["First", "Second", "Third"]
 
-    def test_auto_detects_triple_equals(self):
+    def test_explicit_triple_equals(self):
         text = "First\n===\nSecond\n===\nThird"
-        config = InterceptConfig(mode="auto")
+        config = InterceptConfig(mode="separator", separator="===")
         result = extract_documents(text, config)
         assert result is not None
         assert result.mode == "separator"
@@ -249,6 +257,106 @@ class TestSeparatorExtraction:
         config = InterceptConfig(mode="separator")
         result = extract_documents(text, config)
         assert result is None
+
+
+# ============================================================================
+# JSON results extraction (OpenClaw tool results)
+# ============================================================================
+
+
+class TestJsonResultsExtraction:
+    """OpenClaw tools return JSON.stringify(payload, null, 2) with a results array."""
+
+    def test_memory_search_results(self):
+        import json
+        text = json.dumps({
+            "results": [
+                {"path": "MEMORY.md", "snippet": "Use TypeScript", "score": 0.9},
+                {"path": "notes.md", "snippet": "Prefer functional style", "score": 0.8},
+                {"path": "config.md", "snippet": "Port 8080", "score": 0.7},
+            ],
+            "citations": "auto",
+        }, indent=2)
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "json_results"
+        assert len(result.documents) == 3
+        # Each document is a JSON-serialized result item
+        for doc in result.documents:
+            parsed = json.loads(doc)
+            assert "snippet" in parsed
+
+    def test_web_search_results(self):
+        import json
+        text = json.dumps({
+            "query": "python async",
+            "provider": "brave",
+            "results": [
+                {"title": "Async IO in Python", "url": "https://a.com", "description": "Guide to asyncio"},
+                {"title": "Python concurrency", "url": "https://b.com", "description": "Threading vs async"},
+            ],
+        }, indent=2)
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "json_results"
+        assert len(result.documents) == 2
+
+    def test_explicit_mode(self):
+        import json
+        text = json.dumps({"results": [{"a": 1}, {"b": 2}]}, indent=2)
+        config = InterceptConfig(mode="json_results")
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "json_results"
+        assert len(result.documents) == 2
+
+    def test_single_result_returns_none(self):
+        import json
+        text = json.dumps({"results": [{"a": 1}]}, indent=2)
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        # Need >= 2 results to reorder
+        assert result is None
+
+    def test_no_results_key_returns_none(self):
+        import json
+        text = json.dumps({"data": [1, 2, 3]}, indent=2)
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is None
+
+    def test_not_json_returns_none(self):
+        text = "This is just plain text, not JSON"
+        config = InterceptConfig(mode="json_results")
+        result = extract_documents(text, config)
+        assert result is None
+
+    def test_roundtrip(self):
+        import json
+        original = {
+            "results": [
+                {"path": "a.md", "snippet": "alpha"},
+                {"path": "b.md", "snippet": "beta"},
+                {"path": "c.md", "snippet": "gamma"},
+            ],
+            "citations": "on",
+        }
+        text = json.dumps(original, indent=2)
+        config = InterceptConfig()
+        result = extract_documents(text, config)
+        assert result is not None
+        # Reorder: reverse
+        reordered = list(reversed(result.documents))
+        rebuilt = reconstruct_content(result, reordered)
+        rebuilt_obj = json.loads(rebuilt)
+        # Top-level keys preserved
+        assert rebuilt_obj["citations"] == "on"
+        # Results reordered
+        assert rebuilt_obj["results"][0]["path"] == "c.md"
+        assert rebuilt_obj["results"][1]["path"] == "b.md"
+        assert rebuilt_obj["results"][2]["path"] == "a.md"
 
 
 # ============================================================================
@@ -271,9 +379,24 @@ class TestAutoDetection:
         assert result is not None
         assert result.mode == "numbered"
 
-    def test_separator_as_fallback(self):
+    def test_json_results_before_separator(self):
+        import json
+        text = json.dumps({"results": [{"a": 1}, {"b": 2}]}, indent=2)
+        config = InterceptConfig(mode="auto")
+        result = extract_documents(text, config)
+        assert result is not None
+        assert result.mode == "json_results"
+
+    def test_separator_excluded_from_auto(self):
+        """separator is excluded from auto — matches YAML frontmatter too aggressively."""
         text = "First doc\n---\nSecond doc\n---\nThird doc"
         config = InterceptConfig(mode="auto")
+        result = extract_documents(text, config)
+        assert result is None
+
+    def test_separator_explicit_mode(self):
+        text = "First doc\n---\nSecond doc\n---\nThird doc"
+        config = InterceptConfig(mode="separator")
         result = extract_documents(text, config)
         assert result is not None
         assert result.mode == "separator"
@@ -519,9 +642,16 @@ class TestMarkdownHeaderExtraction:
         assert result is not None
         assert result.mode == "xml_tag"
 
-    def test_auto_falls_back_to_markdown(self):
+    def test_auto_does_not_use_markdown(self):
+        """markdown_header is excluded from auto to avoid splitting structural prompts."""
         text = "# Topic A\nContent about A\n\n# Topic B\nContent about B"
         config = InterceptConfig(mode="auto")
+        result = extract_documents(text, config)
+        assert result is None
+
+    def test_explicit_mode_still_works(self):
+        text = "# Topic A\nContent about A\n\n# Topic B\nContent about B"
+        config = InterceptConfig(mode="markdown_header")
         result = extract_documents(text, config)
         assert result is not None
         assert result.mode == "markdown_header"
@@ -920,19 +1050,19 @@ class TestOpenClawSystemPromptPattern:
         assert "class Foo" in result.documents[0]
         assert "Answer the user" in result.suffix
 
-    def test_openclaw_markdown_header_pattern(self):
-        """Simulate OpenClaw's tool result with markdown headers."""
-        text = (
-            "# Search Results\n"
-            "## Result 1: Introduction to Python\n"
-            "Python is a high-level programming language.\n\n"
-            "## Result 2: Python Data Types\n"
-            "Python has several built-in data types.\n\n"
-            "## Result 3: Python Functions\n"
-            "Functions are reusable blocks of code."
-        )
+    def test_openclaw_json_tool_result_pattern(self):
+        """Simulate OpenClaw's memory search tool result (JSON with results array)."""
+        import json
+        text = json.dumps({
+            "results": [
+                {"path": "intro.md", "snippet": "Python is a high-level language.", "score": 0.9},
+                {"path": "types.md", "snippet": "Python has several data types.", "score": 0.8},
+                {"path": "funcs.md", "snippet": "Functions are reusable code blocks.", "score": 0.7},
+            ],
+            "citations": "auto",
+        }, indent=2)
         config = InterceptConfig()
         result = extract_documents(text, config)
         assert result is not None
-        assert result.mode == "markdown_header"
-        assert len(result.documents) >= 3
+        assert result.mode == "json_results"
+        assert len(result.documents) == 3

@@ -898,7 +898,7 @@ class ContextPilot(ContextIndex):
         Returns:
             Dictionary with scheduled results (no request_id mapping)
         """
-        logger.debug("Scheduling batch (stateless mode)")
+        logger.debug("Scheduling batch")
 
         # Step 1: Build static index (clustering + reordering)
         result = self.fit_transform(contexts)

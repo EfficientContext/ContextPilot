@@ -39,11 +39,12 @@ except ImportError:
 
 from .live_index import ContextPilot
 from .conversation_tracker import (
-    ConversationTracker, 
+    ConversationTracker,
     DeduplicationResult,
     get_conversation_tracker,
     reset_conversation_tracker
 )
+
 
 logger = logging.getLogger(__name__)
 

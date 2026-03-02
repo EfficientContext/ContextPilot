@@ -83,7 +83,7 @@ Or install from source:
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
 pip install -e .
-python -m contextpilot.install_hook # Install hook
+python -m contextpilot.install_hook   # one-time: enables automatic SGLang/vLLM integration
 ```
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
@@ -128,7 +128,7 @@ for query in queries:
     print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Install the eviction hook for [SGLang or vLLM](docs/guides/online_usage.md#inference-engine-integration) to keep the index in sync. For distributed setups where ContextPilot and the engine run in separate environments, see [Distributed Setup](docs/getting_started/installation.md#distributed-setup).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Install the eviction patch for [SGLang](docs/guides/online_usage.md#sglang-integration) or [vLLM](docs/guides/online_usage.md#vllm-integration) to keep the index in sync. See the [online usage guide](docs/guides/online_usage.md).
 
 ---
 

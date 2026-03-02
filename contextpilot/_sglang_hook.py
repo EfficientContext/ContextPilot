@@ -55,13 +55,6 @@ def _create_eviction_callback(index_url: str):
         }
         if not filtered:
             return
-        # Warn about rids that don't look like ContextPilot-assigned IDs
-        non_cp = [rid for rid in filtered if not str(rid).startswith("req-")]
-        if non_cp:
-            logger.warning(
-                f"[ContextPilot] Eviction contains non-ContextPilot rids "
-                f"(rid sync may be broken): {non_cp}"
-            )
         try:
             logger.info(f"[ContextPilot] Syncing eviction: {len(filtered)} requests")
             http_requests.post(
@@ -181,9 +174,7 @@ def _apply_radix_cache_patches(module, index_url: str):
     _orig_cache_finished = RadixCache.cache_finished_req
 
     def _patched_cache_finished(self, req, *args, **kwargs):
-        rid = getattr(req, "rid", None)
-        logger.debug(f"[ContextPilot] cache_finished_req: rid={rid}")
-        self._current_rid = rid
+        self._current_rid = getattr(req, "rid", None)
         try:
             return _orig_cache_finished(self, req, *args, **kwargs)
         finally:
@@ -195,9 +186,7 @@ def _apply_radix_cache_patches(module, index_url: str):
     _orig_cache_unfinished = RadixCache.cache_unfinished_req
 
     def _patched_cache_unfinished(self, req, *args, **kwargs):
-        rid = getattr(req, "rid", None)
-        logger.debug(f"[ContextPilot] cache_unfinished_req: rid={rid}")
-        self._current_rid = rid
+        self._current_rid = getattr(req, "rid", None)
         try:
             return _orig_cache_unfinished(self, req, *args, **kwargs)
         finally:

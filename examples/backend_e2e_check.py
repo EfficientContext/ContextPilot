@@ -342,7 +342,7 @@ def main() -> int:
     args = parser.parse_args()
 
     # Backward compat: --vllm-url overrides --backend-url
-    backend_url = backend_url or args.backend_url
+    backend_url = args.vllm_url or args.backend_url
 
     print("=== ContextPilot Backend E2E Check ===")
     print(f"ContextPilot: {args.cp_url}")

@@ -5,7 +5,7 @@ CONTEXTPILOT_PORT="${CONTEXTPILOT_PORT:-8765}"
 VLLM_PORT="${VLLM_PORT:-8000}"
 
 echo "Starting ContextPilot server on port ${CONTEXTPILOT_PORT}..."
-python -m contextpilot.server.http_server \
+python3 -m contextpilot.server.http_server \
     --port "${CONTEXTPILOT_PORT}" \
     --infer-api-url "http://localhost:${VLLM_PORT}" &
 CP_PID=$!

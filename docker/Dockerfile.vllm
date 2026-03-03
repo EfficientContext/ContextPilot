@@ -5,7 +5,7 @@ COPY . /opt/contextpilot
 WORKDIR /opt/contextpilot
 
 RUN pip install --no-cache-dir . && \
-    python -m contextpilot.install_hook
+    python3 -m contextpilot.install_hook
 
 ENV CONTEXTPILOT_INDEX_URL=http://localhost:8765
 EXPOSE 8000 8765

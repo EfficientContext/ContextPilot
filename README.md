@@ -13,7 +13,7 @@
 
 --------------------------------------------------------------------------------
 
-| [**Documentation**](docs/README.md) | [**Examples**](examples/) | [**Benchmarks**](docs/reference/benchmarks.md) |
+| [**Documentation**](docs/README.md) | [**Examples**](examples/) | [**Benchmarks**](docs/reference/benchmarks.md) | [**Docker**](docs/guides/docker.md) |
 
 ## News
 
@@ -90,7 +90,7 @@ More [detailed installation instructions](docs/getting_started/installation.md) 
 
 ### Docker
 
-Pre-built images bundle ContextPilot with SGLang or vLLM — no manual hook installation needed.
+**All-in-one** — engine + ContextPilot in a single container:
 
 ```bash
 # Build
@@ -110,7 +110,19 @@ docker run --gpus all --ipc=host \
   Qwen/Qwen2.5-7B-Instruct --enable-prefix-caching
 ```
 
-Pin engine versions with `--build-arg SGLANG_VERSION=v0.5.0` or `--build-arg VLLM_VERSION=v0.8.5`. Select GPUs with `--gpus '"device=0,1"'`. See [Docker guide](docs/guides/docker.md) for details.
+**Standalone** — run ContextPilot server separately, install the hook into your existing engine container with a one-liner:
+
+```bash
+# ContextPilot server
+docker build -t contextpilot -f docker/Dockerfile .
+docker run -p 8765:8765 contextpilot --infer-api-url http://<engine-host>:30000
+
+# Inside your engine container (no clone needed):
+curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/install_standalone.py | python3 -
+CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 python3 -m sglang.launch_server ...
+```
+
+See the [Docker guide](docs/guides/docker.md) for GPU selection, environment variables, and more.
 
 ## Getting Started
 

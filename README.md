@@ -88,6 +88,30 @@ python -m contextpilot.install_hook   # one-time: enables automatic inference en
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
+### Docker
+
+Pre-built images bundle ContextPilot with SGLang or vLLM — no manual hook installation needed.
+
+```bash
+# Build
+docker build -t contextpilot-sglang -f docker/Dockerfile.sglang .
+docker build -t contextpilot-vllm   -f docker/Dockerfile.vllm .
+
+# Run (SGLang)
+docker run --gpus all --shm-size 32g --ipc=host \
+  -p 30000:30000 -p 8765:8765 -e HF_TOKEN=$HF_TOKEN \
+  contextpilot-sglang \
+  --model-path meta-llama/Llama-3.1-8B-Instruct --schedule-policy lpm
+
+# Run (vLLM)
+docker run --gpus all --ipc=host \
+  -p 8000:8000 -p 8765:8765 -e HUGGING_FACE_HUB_TOKEN=$HF_TOKEN \
+  contextpilot-vllm \
+  Qwen/Qwen2.5-7B-Instruct --enable-prefix-caching
+```
+
+Pin engine versions with `--build-arg SGLANG_VERSION=v0.5.0` or `--build-arg VLLM_VERSION=v0.8.5`. Select GPUs with `--gpus '"device=0,1"'`. See [Docker guide](docs/guides/docker.md) for details.
+
 ## Getting Started
 
 ### Quick Start with Context Ordering

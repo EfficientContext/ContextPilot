@@ -1,0 +1,17 @@
+ARG VLLM_VERSION=latest
+FROM vllm/vllm-openai:${VLLM_VERSION}
+
+COPY . /opt/contextpilot
+WORKDIR /opt/contextpilot
+
+RUN pip install --no-cache-dir . && \
+    python -m contextpilot.install_hook
+
+ENV CONTEXTPILOT_INDEX_URL=http://localhost:8765
+EXPOSE 8000 8765
+
+COPY docker/entrypoint-vllm.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["Qwen/Qwen3-4B", "--enable-prefix-caching"]

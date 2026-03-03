@@ -1,0 +1,17 @@
+ARG SGLANG_VERSION=latest
+FROM lmsysorg/sglang:${SGLANG_VERSION}
+
+COPY . /opt/contextpilot
+WORKDIR /opt/contextpilot
+
+RUN pip install --no-cache-dir . && \
+    python -m contextpilot.install_hook
+
+ENV CONTEXTPILOT_INDEX_URL=http://localhost:8765
+EXPOSE 30000 8765
+
+COPY docker/entrypoint-sglang.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--model-path", "Qwen/Qwen3-4B"]

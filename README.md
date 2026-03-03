@@ -88,41 +88,7 @@ python -m contextpilot.install_hook   # one-time: enables automatic inference en
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
-### Docker
-
-**All-in-one** — engine + ContextPilot in a single container:
-
-```bash
-# Build
-docker build -t contextpilot-sglang -f docker/Dockerfile.sglang .
-docker build -t contextpilot-vllm   -f docker/Dockerfile.vllm .
-
-# Run (SGLang)
-docker run --gpus all --shm-size 32g --ipc=host \
-  -p 30000:30000 -p 8765:8765 -e HF_TOKEN=$HF_TOKEN \
-  contextpilot-sglang \
-  --model-path meta-llama/Llama-3.1-8B-Instruct --schedule-policy lpm
-
-# Run (vLLM)
-docker run --gpus all --ipc=host \
-  -p 8000:8000 -p 8765:8765 -e HUGGING_FACE_HUB_TOKEN=$HF_TOKEN \
-  contextpilot-vllm \
-  Qwen/Qwen2.5-7B-Instruct --enable-prefix-caching
-```
-
-**Standalone** — run ContextPilot server separately, install the hook into your existing engine container with a one-liner:
-
-```bash
-# ContextPilot server
-docker build -t contextpilot -f docker/Dockerfile .
-docker run -p 8765:8765 contextpilot --infer-api-url http://<engine-host>:30000
-
-# Inside your engine container (no clone needed):
-curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/install_standalone.py | python3 -
-CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 python3 -m sglang.launch_server ...
-```
-
-See the [Docker guide](docs/guides/docker.md) for GPU selection, environment variables, and more.
+Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](docs/guides/docker.md).
 
 ## Getting Started
 

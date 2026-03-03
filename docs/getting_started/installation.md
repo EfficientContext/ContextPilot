@@ -46,7 +46,7 @@ This installs the core dependencies:
 
 **SGLang:**
 ```bash
-pip install "sglang==0.5.6"
+pip install "sglang>=0.5"
 ```
 
 **vLLM:**
@@ -54,7 +54,19 @@ pip install "sglang==0.5.6"
 pip install vllm
 ```
 
-For eviction sync, set `CONTEXTPILOT_INDEX_URL` when launching your engine and apply the corresponding patch (see [Online Usage Guide](../guides/online_usage.md#inference-engine-integration)).
+Both engines are supported via zero-patch runtime hooks — just set `CONTEXTPILOT_INDEX_URL` when launching. See [Online Usage Guide](../guides/online_usage.md#inference-engine-integration).
+
+## Distributed Setup
+
+If the ContextPilot index server and the inference engine run in **separate Python environments** (e.g., different virtualenvs or containers), the engine environment won't have the `contextpilot` package. Use the standalone hook instead:
+
+```bash
+# In the engine's Python environment (one command, no clone needed):
+pip install requests
+curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/install_standalone.py | python -
+```
+
+The installer downloads the hook from GitHub and installs it into site-packages. No `contextpilot` clone or install needed — just `requests` as a runtime dependency.
 
 **llama.cpp (Mac / Apple Silicon — no CUDA required):**
 ```bash

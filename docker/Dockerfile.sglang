@@ -14,4 +14,4 @@ COPY docker/entrypoint-sglang.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--model-path", "Qwen/Qwen3-4B"]
+CMD ["--model-path", "Qwen/Qwen2.5-7B-Instruct"]

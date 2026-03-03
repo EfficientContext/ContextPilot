@@ -14,4 +14,4 @@ COPY docker/entrypoint-vllm.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["Qwen/Qwen3-4B", "--enable-prefix-caching"]
+CMD ["Qwen/Qwen2.5-7B-Instruct", "--enable-prefix-caching"]

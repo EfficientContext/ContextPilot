@@ -13,7 +13,7 @@
 
 --------------------------------------------------------------------------------
 
-| [**Documentation**](docs/README.md) | [**Examples**](examples/) | [**Benchmarks**](docs/reference/benchmarks.md) |
+| [**Documentation**](https://efficientcontext.github.io/contextpilot-docs/) | [**Examples**](examples/) | [**Benchmarks**](https://efficientcontext.github.io/contextpilot-docs/reference/benchmarks) |
 
 ## News
 

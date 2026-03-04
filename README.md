@@ -86,7 +86,7 @@ pip install -e .
 python -m contextpilot.install_hook   # one-time: enables automatic inference engine integration
 ```
 
-More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation.md) are available in the docs.
+More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation) are available in the docs.
 
 Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/docker).
 

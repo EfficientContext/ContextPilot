@@ -88,6 +88,8 @@ python -m contextpilot.install_hook   # one-time: enables automatic inference en
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
 
+Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](docs/guides/docker.md).
+
 ## Getting Started
 
 ### Quick Start with Context Ordering

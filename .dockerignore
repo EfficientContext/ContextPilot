@@ -1,0 +1,14 @@
+.git
+tests
+docs
+examples
+patches
+assets
+.claude
+__pycache__
+*.egg-info
+dist
+*.log
+*.jsonl
+.DS_Store
+.github

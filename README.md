@@ -130,7 +130,7 @@ for query in queries:
     print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set `CONTEXTPILOT_INDEX_URL` when launching [SGLang or vLLM](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage#inference-engine-integration) to enable automatic eviction sync. For distributed setups, see [Distributed Setup](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation.md#distributed-setup).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set `CONTEXTPILOT_INDEX_URL` when launching [SGLang or vLLM](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage#inference-engine-integration) to enable automatic eviction sync. For distributed setups, see [Distributed Setup](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation#distributed-setup).
 
 ---
 

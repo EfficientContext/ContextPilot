@@ -86,7 +86,7 @@ pip install -e .
 python -m contextpilot.install_hook   # one-time: enables automatic inference engine integration
 ```
 
-More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
+More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation.md) are available in the docs.
 
 Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/docker).
 
@@ -101,7 +101,7 @@ Add **one call** (`cp_instance.optimize()`) before inference to rearrange contex
 | **Online** | Multi-turn (e.g., chatbot + [Mem0](https://github.com/mem0ai/mem0)) | Tracks previously cached blocks; moves overlapping ones to the prefix each turn |
 | **Offline** | Batch / single-shot | Globally reorders and schedules all requests for maximum prefix sharing |
 
-Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no changes to your inference deployment. They support both direct API calls (shown below) and HTTP server deployment (see the [online usage guide](docs/guides/online_usage.md)).
+Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no changes to your inference deployment. They support both direct API calls (shown below) and HTTP server deployment (see the [online usage guide](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage.md)).
 
 ---
 
@@ -130,13 +130,13 @@ for query in queries:
     print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set `CONTEXTPILOT_INDEX_URL` when launching [SGLang or vLLM](docs/guides/online_usage.md#inference-engine-integration) to enable automatic eviction sync. For distributed setups, see [Distributed Setup](docs/getting_started/installation.md#distributed-setup).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set `CONTEXTPILOT_INDEX_URL` when launching [SGLang or vLLM](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage.md#inference-engine-integration) to enable automatic eviction sync. For distributed setups, see [Distributed Setup](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation.md#distributed-setup).
 
 ---
 
 #### Accelerating Offline Inference
 
-Batch of requests with overlapping context blocks. `cp_instance.optimize_batch()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
+Batch of requests with overlapping context blocks. `cp_instance.optimize_batch()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](https://efficientcontext.github.io/contextpilot-docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage.md#stateless-mode).
 
 ```python
 import asyncio
@@ -163,11 +163,11 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
-For a detailed walkthrough with concrete examples, see the [Quick Start Guide](docs/getting_started/quickstart.md). For more fine-grained control, you can also use `cp_instance.reorder()` and `cp_instance.deduplicate()` directly — see the [API reference](docs/reference/api.md) and [multi-turn deduplication guide](docs/guides/multi_turn.md).
+For a detailed walkthrough with concrete examples, see the [Quick Start Guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/quickstart.md). For more fine-grained control, you can also use `cp_instance.reorder()` and `cp_instance.deduplicate()` directly — see the [API reference](https://efficientcontext.github.io/contextpilot-docs/reference/api.md) and [multi-turn deduplication guide](https://efficientcontext.github.io/contextpilot-docs/guides/multi_turn.md).
 
 ### Adoption Examples
 
-See many useful adoption examples: [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), and [multi-turn deduplication](docs/guides/multi_turn.md).
+See many useful adoption examples: [Mem0 integration](https://efficientcontext.github.io/contextpilot-docs/guides/mem0.md), [PageIndex RAG](https://efficientcontext.github.io/contextpilot-docs/guides/pageindex.md), [offline batch scheduling](https://efficientcontext.github.io/contextpilot-docs/guides/offline_usage.md), and [multi-turn deduplication](https://efficientcontext.github.io/contextpilot-docs/guides/multi_turn.md).
 
 ## Citation
 ```bibtex

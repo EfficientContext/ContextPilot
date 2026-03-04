@@ -17,6 +17,7 @@
 
 ## News
 
+- [2026/03] ContextPilot now can run on **macOS / Apple Silicon** via [llama.cpp](docs/guides/mac_llama_cpp.md).
 - [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.
 
@@ -27,7 +28,7 @@ Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many co
 ContextPilot sits between context assembly and inference to maximize prefix reuse and remove duplicates:
 
 1. **Higher throughput & cache hits** — boosts prefill throughput and prefix cache hit ratio via context reuse.  
-2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang).  
+2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) / [llama.cpp](docs/guides/mac_llama_cpp.md).
 3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
 4. **Widely tested** — validated across diverse RAG and agentic workloads.
 
@@ -70,20 +71,37 @@ ContextPilot is validated across three representative settings: single-node acad
 
 >ContextPilot results in mem0 table are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 
+**Llama-3.2-1B on Apple M3 (MacBook Air, 16 GB)** — MultihopRAG on Apple Silicon with llama.cpp, no GPU server required.
+
+| Method | Avg Latency (ms) |
+|--------|-----------------|
+| llama.cpp | 3,315 |
+| **llama.cpp + ContextPilot** | **1,378** |
+
+Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cache-reuse 256`, `--parallel 4`, context 32768 tokens. See the [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md).
+
 ## Installation
 
 **Requirements:** Python >= 3.10
 
+**CPU (Mac / Apple Silicon or no CUDA):**
 ```bash
 pip install contextpilot # This will automatically install the contextpilot_hook into your site packages.
 ```
+
+**GPU (Linux + CUDA 12.x):**
+```bash
+pip install "contextpilot[gpu]"
+```
+
+The `[gpu]` extra installs `cupy-cuda12x` for GPU-accelerated distance computation. Without it, ContextPilot falls back to the CPU backend automatically.
 
 Or install from source:
 ```bash
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
-pip install -e .
-python -m contextpilot.install_hook   # one-time: enables automatic inference engine integration
+pip install -e .          # CPU
+pip install -e ".[gpu]"   # GPU (CUDA 12.x)
 ```
 
 More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation) are available in the docs.

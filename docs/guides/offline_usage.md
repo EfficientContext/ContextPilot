@@ -2,9 +2,9 @@
 
 Offline mode is best for **batch processing** where you have all queries upfront and want to maximize KV-cache reuse across them — no server required.
 
-## How ContextPilot Optimizes Batches
+## How It Works
 
-ContextPilot performs **two levels of optimization** to maximize KV-cache prefix sharing:
+ContextPilot performs two levels of optimization:
 
 1. **Inter-Context Reordering**: Queries with overlapping context blocks are scheduled together
 2. **Intra-Context Reordering**: Context blocks within each query are reordered so shared blocks appear first as a common prefix

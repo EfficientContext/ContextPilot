@@ -1,23 +1,30 @@
 """
-Standalone ContextPilot Hook for SGLang and vLLM.
+Standalone ContextPilot Hook for SGLang, vLLM, and llama.cpp.
 
 A single, self-contained file that monkey-patches SGLang's RadixCache and/or
 vLLM's BlockPool to track request-to-cache associations and report evictions
-to the ContextPilot index server.
+to the ContextPilot index server.  For llama.cpp (a C++ binary), it provides
+a polling-based LlamaCppSlotWatcher instead of a monkey-patch.
 
 Zero dependency on the ``contextpilot`` package — only stdlib + ``requests``
 (lazy-imported on first eviction callback).
 
 Activation:
-    Set the CONTEXTPILOT_INDEX_URL environment variable before starting your
-    inference engine.  If installed via the companion ``install.py`` script,
-    a ``.pth`` file auto-imports this module on Python startup.
+    Set CONTEXTPILOT_INDEX_URL before starting your inference engine.
+    If installed via the companion install script, a .pth file auto-imports
+    this module on Python startup.
 
+    # SGLang / vLLM (import hook activates automatically):
     CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server ...
     CONTEXTPILOT_INDEX_URL=http://localhost:8765 vllm serve ...
 
+    # llama.cpp (polling watcher — pass llama-server URL as argument):
+    CONTEXTPILOT_INDEX_URL=http://localhost:8765 \\
+    python contextpilot_hook.py http://localhost:8889
+
 Manual activation (without .pth):
-    import contextpilot_hook        # registers import hooks for both engines
+    import contextpilot_hook        # registers import hooks for SGLang/vLLM
+                                    # and starts llama.cpp watcher if env vars set
 """
 
 import importlib
@@ -27,6 +34,8 @@ import logging
 import os
 import re
 import sys
+import threading
+import time
 
 logger = logging.getLogger("contextpilot_hook")
 
@@ -537,3 +546,218 @@ if CONTEXTPILOT_INDEX_URL:
         "[ContextPilot] Import hooks registered (index: %s)",
         CONTEXTPILOT_INDEX_URL,
     )
+
+
+# ===========================================================================
+# llama.cpp slot watcher
+# ===========================================================================
+
+_DEFAULT_POLL_INTERVAL = 0.5  # seconds
+
+
+class LlamaCppSlotWatcher:
+    """
+    Polls llama-server's /slots endpoint and reports slot evictions to ContextPilot.
+
+    Each llama-server KV-cache slot is analogous to a RadixCache node in SGLang
+    or a BlockPool entry in vLLM: when a slot's cached tokens are discarded
+    (n_past resets to 0), the associated request is evicted from the index.
+
+    Requires llama-server to be started with ``--endpoint-slots``.
+
+    Usage::
+
+        watcher = LlamaCppSlotWatcher("http://localhost:8889", "http://localhost:8765")
+        watcher.start()
+
+        # Inject slot into each request before forwarding:
+        slot_id = watcher.next_slot()
+        body["id_slot"] = slot_id
+        watcher.register_slot(slot_id, request_id)
+
+        watcher.stop()
+    """
+
+    def __init__(
+        self,
+        llamacpp_url: str,
+        index_url: str,
+        poll_interval: float = _DEFAULT_POLL_INTERVAL,
+    ):
+        self._llamacpp_url = llamacpp_url.rstrip("/")
+        self._eviction_callback = _create_eviction_callback(index_url)
+        self._poll_interval = poll_interval
+
+        # slot_id -> {"request_id": str | None, "n_past": int, "state": int}
+        self._slot_state: dict = {}
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._n_slots: int = 0
+        self._rr_counter: int = 0
+
+    def register_slot(self, slot_id: int, request_id: str) -> None:
+        """Associate a request_id with a slot after injecting id_slot into the request."""
+        with self._lock:
+            self._slot_state.setdefault(slot_id, {"n_past": 0, "state": 0})[
+                "request_id"
+            ] = request_id
+        logger.debug("[ContextPilot] Registered slot %d -> %s", slot_id, request_id)
+
+    def next_slot(self) -> int:
+        """Return the next slot ID for round-robin allocation."""
+        with self._lock:
+            n = self._n_slots or 1
+            slot_id = self._rr_counter % n
+            self._rr_counter += 1
+        return slot_id
+
+    def get_tracked_slots(self) -> dict:
+        """Return {slot_id: request_id} for all currently registered slots."""
+        with self._lock:
+            return {
+                sid: info["request_id"]
+                for sid, info in self._slot_state.items()
+                if info.get("request_id")
+            }
+
+    def start(self) -> None:
+        """Start the background slot-polling thread."""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._poll_loop,
+            name="contextpilot-llamacpp-watcher",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info(
+            "[ContextPilot] llama.cpp slot watcher started "
+            "(polling %s/slots every %.1fs)",
+            self._llamacpp_url, self._poll_interval,
+        )
+
+    def stop(self) -> None:
+        """Stop the background polling thread."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=5.0)
+        logger.info("[ContextPilot] llama.cpp slot watcher stopped")
+
+    def _poll_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._check_slots()
+            except Exception as e:
+                logger.debug("[ContextPilot] Slot poll error: %s", e)
+            self._stop_event.wait(self._poll_interval)
+
+    def _check_slots(self) -> None:
+        import requests as http_requests
+        resp = http_requests.get(f"{self._llamacpp_url}/slots", timeout=2.0)
+        if resp.status_code != 200:
+            return
+
+        slots = resp.json()
+        evicted: set = set()
+
+        with self._lock:
+            if self._n_slots == 0 and slots:
+                self._n_slots = len(slots)
+                logger.debug(
+                    "[ContextPilot] Discovered %d llama.cpp slots", self._n_slots
+                )
+
+            for slot in slots:
+                slot_id = slot.get("id", -1)
+                if slot_id < 0:
+                    continue
+
+                new_state = slot.get("state", 0)   # 0=idle, 1=processing
+                new_n_past = slot.get("n_past", 0)
+
+                prev = self._slot_state.get(slot_id, {})
+                prev_n_past = prev.get("n_past", 0)
+                request_id = prev.get("request_id")
+
+                # Eviction: cached KV tokens (n_past > 0) are gone (n_past == 0)
+                # while the slot is idle — its context has been discarded.
+                if request_id and prev_n_past > 0 and new_n_past == 0 and new_state == 0:
+                    evicted.add(request_id)
+                    prev.pop("request_id", None)
+                    logger.debug(
+                        "[ContextPilot] Slot %d evicted request %s (n_past %d → 0)",
+                        slot_id, request_id, prev_n_past,
+                    )
+
+                self._slot_state.setdefault(slot_id, {}).update(
+                    state=new_state, n_past=new_n_past
+                )
+
+        if evicted:
+            self._eviction_callback(evicted)
+
+
+def watch_llamacpp(
+    llamacpp_url: str | None = None,
+    index_url: str | None = None,
+    poll_interval: float = _DEFAULT_POLL_INTERVAL,
+) -> LlamaCppSlotWatcher:
+    """Start a background slot watcher for a llama-server instance.
+
+    The llama.cpp counterpart of patch_sglang() / patch_vllm().
+    Because llama-server is a C++ binary, eviction tracking is done by
+    polling GET /slots instead of monkey-patching Python internals.
+
+    Args:
+        llamacpp_url:  llama-server base URL. Defaults to CONTEXTPILOT_LLAMACPP_URL.
+        index_url:     ContextPilot index URL. Defaults to CONTEXTPILOT_INDEX_URL.
+        poll_interval: Seconds between /slots polls (default 0.5).
+
+    Returns:
+        A running LlamaCppSlotWatcher. Call .stop() to halt.
+
+    Note:
+        llama-server must be started with --endpoint-slots.
+    """
+    url = index_url or CONTEXTPILOT_INDEX_URL
+    if url is None:
+        raise ValueError(
+            "No index URL provided.  Pass index_url= or set CONTEXTPILOT_INDEX_URL."
+        )
+    lcpp_url = llamacpp_url
+    if lcpp_url is None:
+        raise ValueError(
+            "No llama.cpp URL provided.  Pass llamacpp_url= to watch_llamacpp()."
+        )
+    watcher = LlamaCppSlotWatcher(
+        llamacpp_url=lcpp_url,
+        index_url=url,
+        poll_interval=poll_interval,
+    )
+    watcher.start()
+    return watcher
+
+
+# ---------------------------------------------------------------------------
+# Auto-start llama.cpp watcher when both env vars are set
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print(
+            "Usage: CONTEXTPILOT_INDEX_URL=http://localhost:8765 "
+            "python contextpilot_hook.py http://localhost:8889",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    llamacpp_url = sys.argv[1]
+    watcher = watch_llamacpp(llamacpp_url=llamacpp_url)
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        watcher.stop()

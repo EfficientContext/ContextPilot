@@ -191,6 +191,7 @@ class EvictRequest(BaseModel):
     request_ids: List[str] = Field(..., description="List of request IDs to evict/remove")
 
 
+
 class SearchRequest(BaseModel):
     """Request to search for a context."""
 
@@ -695,10 +696,10 @@ async def reset_index():
     After reset, you must call /reorder again before other operations.
     """
     global _index, _str_to_id, _id_to_str, _next_str_id
-    
+
     # Reset conversation tracker
     reset_conversation_tracker()
-    
+
     # Reset string-to-ID mapping
     _str_to_id = {}
     _id_to_str = {}

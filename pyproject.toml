@@ -8,7 +8,7 @@ version = "0.3.5"
 description = "Fast Long-Context Inference via Context Reuse"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Yinsicheng Jiang" }, { name = "Yeqi Huang" }]
+authors = [{ name = "Yinsicheng Jiang" }, { name = "Yeqi Huang" }, { name = "Cheng Deng" }, { name = "Luo Mai" }]
 license = { text = "Apache-2.0" }
 keywords = ["rag", "llm", "context-reuse", "kv-cache", "retrieval-augmented-generation", "agentic-memory", "agents"]
 classifiers = [
@@ -39,7 +39,11 @@ Homepage = "https://github.com/EfficientContext/ContextPilot"
 Repository = "https://github.com/EfficientContext/ContextPilot"
 Issues = "https://github.com/EfficientContext/ContextPilot/issues"
 
+[project.scripts]
+contextpilot-llama-server = "contextpilot._llamacpp_hook:main"
+
 [project.optional-dependencies]
+gpu = ["cupy-cuda12x"]
 dev = ["black", "bumpver", "isort", "pip-tools", "pytest", "pytest-cov", "ipython"]
 sglang = ["sglang>=0.5"]
 

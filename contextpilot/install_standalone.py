@@ -56,7 +56,13 @@ def install():
     print(f"Installed {dest_pth}")
     print()
     print("Done! Set CONTEXTPILOT_INDEX_URL when launching your engine:")
+    print("  # SGLang / vLLM (import hook activates automatically):")
     print("  CONTEXTPILOT_INDEX_URL=http://host:8765 python -m sglang.launch_server ...")
+    print()
+    print("  # llama.cpp (slot watcher activates automatically):")
+    print("  CONTEXTPILOT_INDEX_URL=http://host:8765 \\")
+    print("  CONTEXTPILOT_LLAMACPP_URL=http://localhost:8889 \\")
+    print("  python contextpilot_hook.py")
 
 
 def remove():

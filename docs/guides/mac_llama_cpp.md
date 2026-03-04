@@ -15,12 +15,26 @@ On Apple Silicon, the entire quantised model (Q4_K_M ≈ 4.5 bits/weight) fits i
 llama-server ships its own OpenAI-compatible `/v1/*` API (including `/v1/chat/completions` with built-in chat-template handling), so no separate API server is needed.
 
 ```
-llama-server  :8889   (Metal, --cache-reuse 256, native /v1/* API)
-      ↑  OpenAI /v1/chat/completions
+llama-server  :8889   (Metal, --cache-reuse 256, native hook injected)
+      │  llama_memory_seq_rm() intercepted via DYLD_INSERT_LIBRARIES
+      │  POST /evict_slot fires instantly on cache clear (zero-latency)
+      ↓
 ContextPilot server  :8765   ← reorders contexts for max prefix reuse
       ↑
 your application
 ```
+
+The **native hook** (`contextpilot._llamacpp_hook`) compiles a small C++ library and injects it into llama-server at launch via `DYLD_INSERT_LIBRARIES`. It intercepts `llama_memory_seq_rm()` inside the llama-server process and fires `POST /evict_slot` the instant a slot's KV cache is discarded — no polling, zero latency.
+
+### Why `contextpilot-llama-server` instead of just `llama-server`
+
+| Engine | Runtime | Hook mechanism | Wrapper needed? |
+|--------|---------|----------------|-----------------|
+| SGLang | Python | `.pth` file → monkey-patch inside the same Python process | No |
+| vLLM | Python | `.pth` file → monkey-patch inside the same Python process | No |
+| llama.cpp | C++ binary | `DYLD_INSERT_LIBRARIES` must be set before the process starts | **Yes** |
+
+SGLang and vLLM run inside Python, so ContextPilot's `.pth` file in site-packages fires automatically at interpreter startup and patches the engine from within. `llama-server` is a compiled C++ binary — Python never starts, so the `.pth` mechanism does not apply. `contextpilot-llama-server` is the equivalent wrapper: it sets `DYLD_INSERT_LIBRARIES` and exec's the real `llama-server` with all flags forwarded. When `CONTEXTPILOT_INDEX_URL` is not set it exec's `llama-server` directly with zero overhead.
 
 ---
 
@@ -40,16 +54,19 @@ pip install -e .
 
 ### Start
 
-**Terminal 1 — llama-server with Metal and prefix caching:**
+**Terminal 1 — llama-server with native hook injected:**
 
 ```bash
-llama-server -m models/Qwen3-8B-Q4_K_M.gguf \
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 contextpilot-llama-server \
+    -m models/Qwen3-8B-Q4_K_M.gguf \
     --host 0.0.0.0 --port 8889 \
     -ngl 99 --cache-reuse 256 --parallel 4 -c 32768
 ```
 
-| Flag | Purpose |
-|------|---------|
+`contextpilot-llama-server` is a drop-in for `llama-server` — same flags, same behavior. It compiles the C++ hook once (cached in `/tmp`) and exec's `llama-server` with `DYLD_INSERT_LIBRARIES` set automatically. The hook fires `POST /evict_slot` the instant a slot's KV cache is discarded.
+
+| llama-server flag | Purpose |
+|---|---|
 | `-ngl 99` | Offload all layers to Metal GPU |
 | `--cache-reuse 256` | Reuse KV cache when prefix overlap ≥ 256 tokens |
 | `--parallel 4` | Allocate 4 independent KV-cache slots for concurrent requests |
@@ -61,8 +78,6 @@ llama-server -m models/Qwen3-8B-Q4_K_M.gguf \
 python -m contextpilot.server.http_server --port 8765 \
     --infer-api-url http://localhost:8889
 ```
-
-ContextPilot points directly at llama-server's built-in OpenAI API.
 
 ---
 
@@ -153,7 +168,7 @@ The script handles everything automatically:
 
 1. Starts Elasticsearch and downloads the MultiHopRAG dataset
 2. Builds BM25 retrieval data and reorders with ContextPilot (offline batch)
-3. Starts llama-server and the ContextPilot HTTP server
+3. Compiles the native C++ hook and starts llama-server with it injected via `DYLD_INSERT_LIBRARIES`, then starts the ContextPilot HTTP server
 4. Runs the ContextPilot benchmark, then restarts with a clean KV cache and runs the baseline
 5. Prints a side-by-side comparison of F1 scores and latency
 

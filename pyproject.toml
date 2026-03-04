@@ -39,6 +39,9 @@ Homepage = "https://github.com/EfficientContext/ContextPilot"
 Repository = "https://github.com/EfficientContext/ContextPilot"
 Issues = "https://github.com/EfficientContext/ContextPilot/issues"
 
+[project.scripts]
+contextpilot-llama-server = "contextpilot._llamacpp_hook:main"
+
 [project.optional-dependencies]
 gpu = ["cupy-cuda12x"]
 dev = ["black", "bumpver", "isort", "pip-tools", "pytest", "pytest-cov", "ipython"]

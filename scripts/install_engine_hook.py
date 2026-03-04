@@ -3,20 +3,22 @@
 Install ContextPilot engine hooks into the current Python environment.
 
 This is a STANDALONE script — it does NOT require the contextpilot package
-to be installed. Use it on inference servers where SGLang/vLLM runs in a
-separate environment from ContextPilot.
+to be installed. Use it on inference servers where SGLang/vLLM/llama.cpp runs
+in a separate environment from ContextPilot.
 
 Usage:
-    # On the SGLang/vLLM machine (no contextpilot install needed):
+    # On the inference server (no contextpilot install needed):
     python install_engine_hook.py          # install
     python install_engine_hook.py --remove # uninstall
 
 What it does:
-    1. Copies _sglang_hook.py (and _vllm_hook.py if present) into site-packages
-       as standalone modules (contextpilot_sglang_hook.py / contextpilot_vllm_hook.py)
+    1. Copies _sglang_hook.py, _vllm_hook.py, and _llamacpp_hook.py into
+       site-packages as standalone modules
     2. Creates a .pth file that auto-imports them on Python startup
-    3. When CONTEXTPILOT_INDEX_URL is set, the hooks monkey-patch SGLang/vLLM
-       at import time — zero engine source code changes
+    3. When CONTEXTPILOT_INDEX_URL is set:
+       - SGLang/vLLM: hooks monkey-patch the engine at import time
+       - llama.cpp: slot watcher starts automatically when
+         CONTEXTPILOT_LLAMACPP_URL is also set (requires --endpoint-slots)
 
 Requirements: only `requests` (pip install requests)
 """
@@ -31,8 +33,9 @@ PTH_NAME = "contextpilot_hook.pth"
 
 # Hooks to install: (source_filename, installed_module_name)
 HOOKS = [
-    ("_sglang_hook.py", "contextpilot_sglang_hook"),
-    ("_vllm_hook.py", "contextpilot_vllm_hook"),
+    ("_sglang_hook.py",   "contextpilot_sglang_hook"),
+    ("_vllm_hook.py",     "contextpilot_vllm_hook"),
+    ("_llamacpp_hook.py", "contextpilot_llamacpp_hook"),
 ]
 
 
@@ -91,7 +94,14 @@ def install():
     print(f"  [ok] {pth_dest}")
 
     print(f"\nInstalled {len(installed)} files. To activate:")
+    print(f"  # SGLang / vLLM (import hook activates automatically):")
     print(f"  CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 sglang serve ...")
+    print(f"")
+    print(f"  # llama.cpp (slot watcher activates automatically):")
+    print(f"  CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 \\")
+    print(f"  CONTEXTPILOT_LLAMACPP_URL=http://localhost:8889 \\")
+    print(f"  python -m contextpilot_llamacpp_hook")
+    print(f"  (llama-server must be started with --endpoint-slots)")
 
 
 def remove():

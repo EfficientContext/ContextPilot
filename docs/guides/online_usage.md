@@ -176,6 +176,34 @@ ContextPilot's `.pth` hook automatically monkey-patches vLLM's `BlockPool` at im
 
 Compatible with vLLM **0.15.x** (v1 block manager architecture).
 
+#### llama.cpp (native C++ hook)
+
+llama.cpp is a compiled C++ binary, so it cannot be monkey-patched at import time. Instead, ContextPilot provides `contextpilot-llama-server` — a drop-in replacement for `llama-server` that compiles a small shared library and injects it via `DYLD_INSERT_LIBRARIES` (macOS) / `LD_PRELOAD` (Linux), giving **exact, zero-latency** eviction signals with no polling.
+
+The usage pattern is identical to SGLang and vLLM — just set `CONTEXTPILOT_INDEX_URL`:
+
+```bash
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 contextpilot-llama-server \
+    -m models/Qwen3-8B-Q4_K_M.gguf \
+    --host 0.0.0.0 --port 8889 \
+    -ngl 99 --cache-reuse 256 --parallel 4 -c 32768
+```
+
+`contextpilot-llama-server` is a drop-in for `llama-server` — same flags, same behavior. It compiles the hook once (cached in `/tmp`) and transparently exec's `llama-server` with the injection set. You will see in stderr:
+
+```
+[ContextPilot] Hook compiled: /tmp/contextpilot_llama_hook.dylib
+[ContextPilot] Launching with DYLD_INSERT_LIBRARIES injected: /usr/local/bin/llama-server ...
+```
+
+When `CONTEXTPILOT_INDEX_URL` is not set, `contextpilot-llama-server` exec's `llama-server` directly with zero overhead.
+
+**Requirements:**
+- `llama-server` in PATH: `brew install llama.cpp` (or set `LLAMA_SERVER_BIN=/path/to/llama-server`)
+- `clang++` (macOS, via `xcode-select --install`) or `g++` (Linux)
+
+See the [Mac + llama.cpp guide](mac_llama_cpp.md) for the full Apple Silicon setup.
+
 #### How It Works
 
 When `CONTEXTPILOT_INDEX_URL` is set, the inference engine integrates with ContextPilot at eviction time:
@@ -291,8 +319,10 @@ print(f"Cleared {result['conversations_cleared']} conversations")
 | `/reorder` | POST | **Primary** — reorder contexts (auto-dispatches stateless / stateful) |
 | `/health` | GET | Health check |
 | `/deduplicate` | POST | Multi-turn deduplication (lightweight, stateful only) |
-| `/evict` | POST | Remove evicted requests (stateful only) |
-| `/reset` | POST | Reset index and conversation tracker (stateful only) |
+| `/evict` | POST | Remove evicted requests by request_id — called by SGLang/vLLM hooks |
+| `/register_slot` | POST | Map a llama.cpp slot_id → request_id (native hook integration) |
+| `/evict_slot` | POST | Evict by slot_id — called automatically by the native C++ hook |
+| `/reset` | POST | Reset index, slot registry, and conversation tracker (stateful only) |
 | `/stats` | GET | Get index statistics (stateful only) |
 | `/build` | POST | _Deprecated alias → `/reorder`_ |
 | `/schedule` | POST | _Deprecated alias → `/reorder` (always stateless)_ |

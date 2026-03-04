@@ -91,6 +91,9 @@ command -v python  >/dev/null 2>&1 || die "python not found in PATH"
 command -v docker  >/dev/null 2>&1 || die "docker not found in PATH"
 command -v curl    >/dev/null 2>&1 || die "curl not found in PATH"
 
+command -v contextpilot-llama-server >/dev/null 2>&1 || \
+    die "contextpilot-llama-server not found. Run: pip install -e ."
+
 if ! command -v "$LLAMA_SERVER_BIN" >/dev/null 2>&1; then
     die "llama-server not found: '$LLAMA_SERVER_BIN'.  Install with: brew install llama.cpp  OR pass --llama-server /path/to/llama-server"
 fi
@@ -118,8 +121,10 @@ if [[ "$SKIP_DATA_PREP" == false ]]; then
     # Skip if ES is already reachable on port 9200 (any container or process)
     if curl -sf "http://localhost:9200/_cluster/health" >/dev/null 2>&1; then
         log "Elasticsearch already running on port 9200 — reusing."
-    elif docker ps --format '{{.Names}}' | grep -q '^contextpilot-es$'; then
-        log "Elasticsearch container 'contextpilot-es' already running — reusing."
+    elif docker ps -a --format '{{.Names}}' | grep -q '^contextpilot-es$'; then
+        # Container exists but is stopped — restart it
+        log "Elasticsearch container 'contextpilot-es' exists (stopped) — restarting."
+        docker start contextpilot-es
     else
         docker run -d --name contextpilot-es \
             -p 9200:9200 \
@@ -160,11 +165,15 @@ else
     [[ -f "$CORPUS_PATH"    ]] || die "Corpus file not found: $CORPUS_PATH"
 fi
 
-# ── Step 4: Start llama-server ─────────────────────────────────────────────────
+# ── Step 4: Start llama-server via contextpilot-llama-server ──────────────────
 hr
 log "Step 4 — Starting llama-server on port $LLAMA_PORT"
+log "  contextpilot-llama-server compiles and injects the native C++ hook"
+log "  (DYLD_INSERT_LIBRARIES), firing POST /evict_slot on each slot eviction."
 
-"$LLAMA_SERVER_BIN" -m "$MODEL" \
+LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" \
+CONTEXTPILOT_INDEX_URL="http://localhost:${CP_PORT}" \
+contextpilot-llama-server -m "$MODEL" \
     --host 0.0.0.0 --port "$LLAMA_PORT" \
     -ngl 99 --cache-reuse 256 --parallel 4 -c 32768 \
     > /tmp/llama_server.log 2>&1 &
@@ -211,7 +220,9 @@ PIDS=("${PIDS[@]/$LLAMA_PID}")
 
 sleep 3
 
-"$LLAMA_SERVER_BIN" -m "$MODEL" \
+LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" \
+CONTEXTPILOT_INDEX_URL="http://localhost:${CP_PORT}" \
+contextpilot-llama-server -m "$MODEL" \
     --host 0.0.0.0 --port "$LLAMA_PORT" \
     -ngl 99 --cache-reuse 256 --parallel 4 -c 32768 \
     >> /tmp/llama_server.log 2>&1 &

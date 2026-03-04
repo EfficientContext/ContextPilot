@@ -175,7 +175,7 @@ python -m vllm.entrypoints.openai.api_server \
     --enable-prefix-caching
 ```
 
-> **Tip:** For eviction sync, prefix with `CONTEXTPILOT_INDEX_URL=http://localhost:8765`. This lets the inference engine notify ContextPilot when KV cache entries are evicted.
+> **Note:** For eviction sync, prefix with `CONTEXTPILOT_INDEX_URL=http://localhost:8765`. This lets the inference engine notify ContextPilot when KV cache entries are evicted.
 
 ## Step 2: Start ContextPilot
 

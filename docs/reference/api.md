@@ -2,132 +2,9 @@
 
 Complete API documentation for ContextPilot.
 
-## RAGPipeline
-
-The main interface for ContextPilot.
-
-### Constructor
-
-```python
-from contextpilot.pipeline import RAGPipeline, InferenceConfig
-
-pipeline = RAGPipeline(
-    retriever="bm25",              # "bm25", "faiss", or custom retriever
-    corpus_path="corpus.jsonl",    # Path to corpus file
-    use_contextpilot=True,             # Enable/disable ContextPilot optimization
-    use_gpu=False,                 # GPU for distance computation
-    inference=InferenceConfig(...) # Optional: for LLM generation
-)
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `retriever` | str | Required | Retriever type: "bm25", "faiss", or custom |
-| `corpus_path` | str | Required | Path to corpus JSONL file |
-| `use_contextpilot` | bool | `True` | Enable ContextPilot optimization |
-| `use_gpu` | bool | `False` | Use GPU for distance computation |
-| `inference` | InferenceConfig | `None` | Configuration for LLM generation |
-| `index_path` | str | `None` | Path to FAISS index (for faiss retriever) |
-| `embedding_model` | str | `None` | Embedding model name (for faiss) |
-| `embedding_base_url` | str | `None` | Embedding server URL (for faiss) |
-
-### Methods
-
-#### `run()`
-
-Run the complete pipeline.
-
-```python
-results = pipeline.run(
-    queries=["What is ML?", "What is AI?"],
-    top_k=20,
-    generate_responses=True
-)
-```
-
-**Returns:**
-```python
-{
-    "retrieval_results": [...],
-    "optimized_batch": [...],
-    "generation_results": [...],
-    "metadata": {
-        "num_queries": 2,
-        "num_groups": 1,
-        "total_time": 1.5
-    }
-}
-```
-
-#### `retrieve()`
-
-Retrieve documents only.
-
-```python
-results = pipeline.retrieve(queries=["What is ML?"], top_k=20)
-```
-
-#### `optimize()`
-
-Optimize retrieved results.
-
-```python
-optimized = pipeline.optimize(retrieval_results)
-```
-
-#### `generate()`
-
-Generate responses from optimized results.
-
-```python
-generation_results = pipeline.generate(optimized)
-```
-
-#### `save_results()`
-
-Save results to file.
-
-```python
-pipeline.save_results(results, "output.jsonl")
-```
-
-#### `process_conversation_turn()`
-
-Process a multi-turn conversation turn.
-
-```python
-result = pipeline.process_conversation_turn(
-    conversation_id="session_123",
-    query="What is ML?",
-    top_k=10,
-    enable_deduplication=True,
-    generate_response=True
-)
-```
-
-#### `reset_conversation()`
-
-Reset a conversation's history.
-
-```python
-pipeline.reset_conversation("session_123")
-```
-
-#### `reset_all_conversations()`
-
-Reset all conversation histories.
-
-```python
-pipeline.reset_all_conversations()
-```
-
----
-
 ## ContextPilot
 
-The core class for context reordering and multi-turn deduplication.
+The core class for context optimization.
 
 ### Constructor
 
@@ -154,7 +31,7 @@ Reorder contexts and return ready-to-use OpenAI messages. This is the simplest w
 messages = engine.optimize(
     docs=["Doc about ML", "Doc about AI", "Doc about DL"],
     query="What is ML?",
-    conversation_id="user_42",       # optional, for multi-turn
+    conversation_id="user_42",        # optional, for multi-turn
     system_instruction="Be concise.", # optional, prepended to system message
 )
 # messages is a list of dicts ready for client.chat.completions.create()
@@ -217,7 +94,7 @@ Remove already-seen documents from follow-up conversation turns.
 ```python
 results = engine.deduplicate(
     contexts,
-    conversation_id="user_42",       # REQUIRED
+    conversation_id="user_42",        # REQUIRED
     hint_template="See Doc {doc_id}", # optional
 )
 ```
@@ -240,52 +117,6 @@ results = engine.deduplicate(
 **Raises:**
 - `TypeError` if `conversation_id` is not provided
 - `ValueError` if `conversation_id` is empty or has no prior `.reorder()` history
-
----
-
-## Module-Level Convenience Functions
-
-These use a shared singleton `ContextPilot` instance internally — no need to create one yourself.
-
-```python
-import contextpilot as cp
-
-# Single query
-messages = cp.optimize(docs, query, conversation_id="user_42")
-
-# Batch
-messages_batch, order = cp.optimize_batch(all_docs, all_queries)
-```
-
-Signatures and parameters are identical to [`ContextPilot.optimize()`](#optimize) and [`ContextPilot.optimize_batch()`](#optimize_batch) above.
-
----
-
-## InferenceConfig
-
-Configuration for LLM generation.
-
-```python
-from contextpilot.pipeline import InferenceConfig
-
-config = InferenceConfig(
-    model_name="Qwen/Qwen2.5-7B-Instruct",
-    backend="sglang",              # "sglang" or "vllm"
-    base_url="http://localhost:30000",
-    max_tokens=256,
-    temperature=0.0
-)
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `model_name` | str | Required | Model name/path |
-| `backend` | str | `"sglang"` | Inference backend |
-| `base_url` | str | Required | Server URL |
-| `max_tokens` | int | `256` | Maximum generation tokens |
-| `temperature` | float | `0.0` | Sampling temperature |
 
 ---
 
@@ -335,61 +166,17 @@ Detailed health check with index statistics.
 }
 ```
 
-### Schedule / Reorder (Stateless)
+### Reorder
 
 ```
 POST /reorder
-POST /schedule   # deprecated alias
 ```
 
-Compute optimal context reordering without maintaining state.
+Reorder contexts. Auto-detects mode based on whether an index exists:
+- **Stateless** (no index): computes reordering without maintaining state.
+- **Stateful** (index present): builds or incrementally updates the index. Call `POST /reset` to force a fresh build.
 
-**Request (with integer doc IDs):**
-```json
-{
-    "contexts": [[1, 2, 3], [2, 3, 4]]
-}
-```
-
-**Request (with string documents):**
-```json
-{
-    "contexts": [
-        ["Document text A", "Document text B", "Document text C"],
-        ["Document text B", "Document text C", "Document text D"]
-    ]
-}
-```
-
-The server auto-detects input type and handles string-to-ID mapping internally.
-
-**Response:**
-```json
-{
-    "status": "success",
-    "mode": "stateless",
-    "input_type": "integer",
-    "num_contexts": 2,
-    "num_groups": 1,
-    "reordered_contexts": [[2, 3, 1], [2, 3, 4]],
-    "original_indices": [0, 1],
-    "groups": [...],
-    "stats": {...}
-}
-```
-
-### Build Index (Stateful)
-
-```
-POST /reorder          # primary (auto-detects stateful mode)
-POST /build            # deprecated alias
-```
-
-Build the index or incrementally update an existing one. Auto-detects mode: empty index → initial build, existing index → incremental update. Call `POST /reset` to force initial build. Supports multi-turn deduplication.
-
-The response always includes `reordered_contexts` and `original_indices`.
-
-**Request (integer doc IDs):**
+**Request:**
 ```json
 {
     "contexts": [[1, 2, 3], [2, 3, 4]],
@@ -403,22 +190,11 @@ The response always includes `reordered_contexts` and `original_indices`.
 }
 ```
 
-**Request (string documents):**
-```json
-{
-    "contexts": [
-        ["Full text of doc A", "Full text of doc B"],
-        ["Full text of doc B", "Full text of doc C"]
-    ],
-    "alpha": 0.001
-}
-```
-
-Identical strings are automatically mapped to the same internal ID.
+Accepts both integer doc IDs and string documents — the server auto-detects input type.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `contexts` | List[List[int]] | Required | List of contexts (doc ID lists) |
+| `contexts` | List[List] | Required | List of contexts (doc IDs or strings) |
 | `initial_tokens_per_context` | int | `0` | Initial token count per context |
 | `alpha` | float | `0.001` | Distance computation parameter |
 | `use_gpu` | bool | `false` | Use GPU for distance computation |
@@ -427,77 +203,33 @@ Identical strings are automatically mapped to the same internal ID.
 | `parent_request_ids` | List[str\|null] | `null` | Parent request IDs for deduplication |
 | `hint_template` | str | `null` | Custom template for reference hints |
 
-**Response (initial build):**
+**Response:**
 ```json
 {
     "status": "success",
-    "message": "Index built successfully",
     "mode": "initial",
     "input_type": "integer",
     "num_contexts": 2,
     "matched_count": 0,
     "inserted_count": 2,
-    "request_id_mapping": {...},
     "request_ids": ["contextpilot_abc123", "contextpilot_def456"],
     "reordered_contexts": [[2, 3, 1], [2, 3, 4]],
     "original_indices": [0, 1],
-    "stats": {...}
+    "stats": {}
 }
 ```
 
-**Response (incremental build — index already exists):**
-```json
-{
-    "status": "success",
-    "message": "Incremental build completed",
-    "mode": "incremental",
-    "input_type": "integer",
-    "num_contexts": 1,
-    "matched_count": 1,
-    "merged_count": 0,
-    "request_ids": ["contextpilot_ghi789"],
-    "reordered_contexts": [[2, 3, 5]],
-    "original_indices": [0],
-    "groups": [...],
-    "stats": {...}
-}
-```
-
-**Response (with deduplication):**
-```json
-{
-    "status": "success",
-    "request_ids": ["contextpilot_abc123", "contextpilot_def456"],
-    "deduplication": {
-        "enabled": true,
-        "results": [
-            {
-                "request_id": "contextpilot_abc123",
-                "original_docs": [1, 2, 3],
-                "deduplicated_docs": [3],
-                "overlapping_docs": [1, 2],
-                "new_docs": [3],
-                "reference_hints": ["Refer to Doc 1...", "Refer to Doc 2..."]
-            }
-        ],
-        "total_docs_deduplicated": 2
-    }
-}
-```
-
-### Deduplicate (Lightweight)
+### Deduplicate
 
 ```
 POST /deduplicate
 ```
 
-Deduplicate contexts for multi-turn conversations **without index operations**.
+Deduplicate contexts for multi-turn conversations without index operations.
 
-This is a lightweight endpoint designed for **Turn 2+** in multi-turn conversations. It only performs deduplication against conversation history - no index build or search operations.
-
-**Recommended Flow:**
+**Recommended flow:**
 1. **Turn 1**: Call `/reorder` (builds index, registers request in tracker)
-2. **Turn 2+**: Call `/deduplicate` (just deduplicates, no index ops)
+2. **Turn 2+**: Call `/deduplicate` (deduplicates only, no index ops)
 
 **Request:**
 ```json
@@ -518,7 +250,6 @@ This is a lightweight endpoint designed for **Turn 2+** in multi-turn conversati
 ```json
 {
     "status": "success",
-    "message": "Deduplication completed",
     "request_ids": ["dedup_abc123", "dedup_def456"],
     "results": [
         {
@@ -531,21 +262,17 @@ This is a lightweight endpoint designed for **Turn 2+** in multi-turn conversati
             "reference_hints": ["Refer to Doc 4...", "Refer to Doc 3..."],
             "is_new_conversation": false
         }
-    ],
-    "summary": {
-        "total_contexts": 2,
-        "new_conversations": 0,
-        "continued_conversations": 2,
-        "total_docs_deduplicated": 4
-    }
+    ]
 }
 ```
 
-### Evict (Stateful)
+### Evict
 
 ```
 POST /evict
 ```
+
+Notify ContextPilot that KV cache entries have been evicted by the inference engine.
 
 **Request:**
 ```json
@@ -562,16 +289,6 @@ POST /reset
 
 Reset the index and conversation tracker. Clears all state and frees memory.
 
-**When to call `/reset`:**
-- Before starting a completely new batch session
-- When a user's multi-turn conversation is fully complete
-- During scheduled maintenance to clear accumulated state
-- After deploying new code or configuration
-
-**When NOT to call `/reset`:**
-- Between turns of the same conversation (you'll lose deduplication benefits)
-- When processing concurrent conversations (you'll break other sessions)
-
 **Response:**
 ```json
 {
@@ -581,7 +298,7 @@ Reset the index and conversation tracker. Clears all state and frees memory.
 }
 ```
 
-### Stats (Stateful)
+### Stats
 
 ```
 GET /stats
@@ -605,7 +322,7 @@ Get detailed index statistics.
 }
 ```
 
-### Get Requests (Stateful)
+### Get Requests
 
 ```
 GET /requests
@@ -616,16 +333,12 @@ Get all tracked request IDs in the index.
 **Response:**
 ```json
 {
-    "request_ids": [
-        "contextpilot_abc123",
-        "contextpilot_def456",
-        "contextpilot_ghi789"
-    ],
-    "count": 3
+    "request_ids": ["contextpilot_abc123", "contextpilot_def456"],
+    "count": 2
 }
 ```
 
-### Search Context (Stateful)
+### Search Context
 
 ```
 POST /search
@@ -641,23 +354,17 @@ Search for a context in the index and return its location.
 }
 ```
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `context` | List[int] | Required | Context to search for |
-| `update_access` | bool | `true` | Update access time for LRU tracking |
-
 **Response:**
 ```json
 {
     "status": "success",
     "search_path": [0, 1, 5, 12],
     "node_id": 12,
-    "prefix_length": 3,
-    "message": "Context found with prefix length 3"
+    "prefix_length": 3
 }
 ```
 
-### Insert Context (Stateful)
+### Insert Context
 
 ```
 POST /insert
@@ -674,24 +381,15 @@ Insert a new context into the index at a specific location.
 }
 ```
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `context` | List[int] | Required | Context to insert |
-| `search_path` | List[int] | Required | Path in tree where to insert |
-| `total_tokens` | int | `0` | Initial token count for this context |
-
 **Response:**
 ```json
 {
     "status": "success",
     "node_id": 42,
     "search_path": [0, 1, 5, 42],
-    "request_id": "contextpilot_xyz789",
-    "message": "Context inserted successfully"
+    "request_id": "contextpilot_xyz789"
 }
 ```
-
-**Note:** The `request_id` is auto-generated and can be used for token tracking with the inference engine.
 
 ---
 
@@ -704,17 +402,17 @@ from contextpilot.server.http_client import ContextPilotIndexClient
 
 client = ContextPilotIndexClient("http://localhost:8765", timeout=1.0)
 
-# Primary API — works in both stateless and stateful modes
-reordered, order = client.reorder(contexts)  # simple tuple return
-result = client.reorder_raw(contexts)        # full server response dict
+# Primary API
+reordered, order = client.reorder(contexts)       # returns (reordered_contexts, original_indices)
+result = client.reorder_raw(contexts)              # returns full server response dict
 
-# Stateful-only options
+# Stateful options
 result = client.reorder_raw(
     contexts, deduplicate=True, parent_request_ids=[None]
 )
 client.deduplicate(contexts, parent_request_ids, hint_template=None)
-client.evict(request_ids)  # Evict specific requests
-client.reset()  # Clear index and conversation tracker
+client.evict(request_ids)
+client.reset()
 
 # Queries
 client.search(context, update_access=True)
@@ -731,11 +429,9 @@ client.close()
 
 | Method | Description |
 |--------|-------------|
-| `reorder(contexts, ...)` | Reorder contexts, returns `(reordered_contexts, original_indices)` tuple |
+| `reorder(contexts, ...)` | Reorder contexts, returns `(reordered_contexts, original_indices)` |
 | `reorder_raw(contexts, ...)` | Reorder contexts, returns full server response dict |
-| `build(...)` | **Deprecated** — alias for `reorder_raw()` |
-| `schedule(...)` | **Deprecated** — alias for `reorder_raw()` |
-| `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+, lightweight) |
+| `deduplicate(contexts, parent_request_ids, hint_template)` | Deduplicate contexts (Turn 2+) |
 | `evict(request_ids)` | Remove requests from index |
 | `reset()` | Reset index and conversation tracker |
 | `get_stats()` | Get index statistics |
@@ -744,14 +440,14 @@ client.close()
 | `is_ready()` | Check if server is ready |
 | `close()` | Close connection |
 
-### Deduplication Example
+### Example
 
 ```python
 from contextpilot.server.http_client import ContextPilotIndexClient
 
 client = ContextPilotIndexClient("http://localhost:8765")
 
-# Turn 1: Build index via /reorder
+# Turn 1: build index
 turn1 = client.reorder_raw(
     contexts=[[4, 3, 1]],
     deduplicate=True,
@@ -759,16 +455,152 @@ turn1 = client.reorder_raw(
 )
 turn1_id = turn1["request_ids"][0]
 
-# Turn 2+: Lightweight deduplication
+# Turn 2+: lightweight deduplication
 turn2 = client.deduplicate(
     contexts=[[4, 3, 2]],
     parent_request_ids=[turn1_id]
 )
-
 result = turn2["results"][0]
 print(f"Overlapping: {result['overlapping_docs']}")  # [4, 3]
 print(f"New docs: {result['new_docs']}")             # [2]
-print(f"Hints: {result['reference_hints']}")
 
 client.close()
+```
+
+---
+
+## Module-Level Convenience Functions
+
+These use a shared singleton `ContextPilot` instance internally — no need to create one yourself.
+
+```python
+import contextpilot as cp
+
+messages = cp.optimize(docs, query, conversation_id="user_42")
+messages_batch, order = cp.optimize_batch(all_docs, all_queries)
+```
+
+Signatures and parameters are identical to [`ContextPilot.optimize()`](#optimize) and [`ContextPilot.optimize_batch()`](#optimize_batch) above.
+
+---
+
+## InferenceConfig
+
+Configuration for LLM generation used by `RAGPipeline`.
+
+```python
+from contextpilot.pipeline import InferenceConfig
+
+config = InferenceConfig(
+    model_name="Qwen/Qwen2.5-7B-Instruct",
+    backend="sglang",
+    base_url="http://localhost:30000",
+    max_tokens=256,
+    temperature=0.0
+)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `model_name` | str | Required | Model name/path |
+| `backend` | str | `"sglang"` | Inference backend (`"sglang"` or `"vllm"`) |
+| `base_url` | str | Required | Server URL |
+| `max_tokens` | int | `256` | Maximum generation tokens |
+| `temperature` | float | `0.0` | Sampling temperature |
+
+---
+
+## RAGPipeline
+
+High-level pipeline combining retrieval and ContextPilot optimization.
+
+### Constructor
+
+```python
+from contextpilot.pipeline import RAGPipeline, InferenceConfig
+
+pipeline = RAGPipeline(
+    retriever="bm25",
+    corpus_path="corpus.jsonl",
+    use_contextpilot=True,
+    use_gpu=False,
+    inference=InferenceConfig(...)
+)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `retriever` | str | Required | Retriever type: `"bm25"`, `"faiss"`, or custom |
+| `corpus_path` | str | Required | Path to corpus JSONL file |
+| `use_contextpilot` | bool | `True` | Enable ContextPilot optimization |
+| `use_gpu` | bool | `False` | Use GPU for distance computation |
+| `inference` | InferenceConfig | `None` | Configuration for LLM generation |
+| `index_path` | str | `None` | Path to FAISS index (faiss retriever only) |
+| `embedding_model` | str | `None` | Embedding model name (faiss retriever only) |
+| `embedding_base_url` | str | `None` | Embedding server URL (faiss retriever only) |
+
+### Methods
+
+#### `run()`
+
+```python
+results = pipeline.run(queries=["What is ML?"], top_k=20, generate_responses=True)
+```
+
+**Returns:**
+```python
+{
+    "retrieval_results": [...],
+    "optimized_batch": [...],
+    "generation_results": [...],
+    "metadata": {"num_queries": 1, "num_groups": 1, "total_time": 1.5}
+}
+```
+
+#### `retrieve()`
+
+```python
+results = pipeline.retrieve(queries=["What is ML?"], top_k=20)
+```
+
+#### `optimize()`
+
+```python
+optimized = pipeline.optimize(retrieval_results)
+```
+
+#### `generate()`
+
+```python
+generation_results = pipeline.generate(optimized)
+```
+
+#### `save_results()`
+
+```python
+pipeline.save_results(results, "output.jsonl")
+```
+
+#### `process_conversation_turn()`
+
+```python
+result = pipeline.process_conversation_turn(
+    conversation_id="session_123",
+    query="What is ML?",
+    top_k=10,
+    enable_deduplication=True,
+    generate_response=True
+)
+```
+
+#### `reset_conversation()`
+
+```python
+pipeline.reset_conversation("session_123")
+```
+
+#### `reset_all_conversations()`
+
+```python
+pipeline.reset_all_conversations()
 ```

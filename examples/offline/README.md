@@ -97,5 +97,5 @@ The prepared batch contains grouped queries optimized for inference:
 
 ## See Also
 
-- [API Reference](../../docs/reference/api.md) - Full endpoint and class reference
-- [Offline Usage](../../docs/guides/offline_usage.md) - Complete workflow guide
+- [API Reference](https://efficientcontext.github.io/contextpilot-docs/reference/api) - Full endpoint and class reference
+- [Offline Usage](https://efficientcontext.github.io/contextpilot-docs/guides/offline_usage) - Complete workflow guide

@@ -1,147 +1,158 @@
 # Offline Usage
 
-Offline mode is best for **batch processing** where you have all queries upfront and want to maximize KV-cache prefix sharing across the entire batch — no server, no live state.
+Offline mode is best for **batch processing** where you have all queries upfront and want to maximize KV-cache reuse across them — no server required.
 
 ## How It Works
 
 ContextPilot performs two levels of optimization:
 
-1. **Intra-context reordering** — shared documents are moved to the front of each context so adjacent requests have a common token prefix
-2. **Inter-context reordering** — requests sharing the most documents are scheduled consecutively so the prefix is already cached when they run
+1. **Inter-Context Reordering**: Queries with overlapping context blocks are scheduled together
+2. **Intra-Context Reordering**: Context blocks within each query are reordered so shared blocks appear first as a common prefix
 
-For example, if Query A retrieves docs `[5, 1, 8, 2]` and Query B retrieves `[2, 9, 1, 5]`, after optimization:
-- Query A: `[1, 2, 5, 8]` (shared IDs first)
-- Query B: `[1, 2, 5, 9]` (same prefix `[1, 2, 5]`!)
-
----
+For example, if Query A has `["block_C", "block_A", "block_D", "block_B"]` and Query B has `["block_B", "block_E", "block_A", "block_C"]`, after optimization:
+- Query A: `["block_A", "block_B", "block_C", "block_D"]` (shared blocks first)
+- Query B: `["block_A", "block_B", "block_C", "block_E"]` (same prefix — cache hit!)
 
 ## Prerequisites
 
-Start your inference engine with prefix caching enabled:
+Start your inference engine:
 
 ```bash
-# SGLang
-sglang serve --model-path Qwen/Qwen3-4B --port 30000
+# SGLang:
+python -m sglang.launch_server \
+    --model-path Qwen/Qwen2.5-7B-Instruct \
+    --port 30000
 
-# vLLM
-vllm serve Qwen/Qwen3-4B --port 30000 --enable-prefix-caching
-
-# llama.cpp (brew install llama.cpp)
-contextpilot-llama-server -m models/Qwen3-4B-Q4_K_M.gguf --port 30000 --cache-reuse 256
+# or vLLM:
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --port 30000 \
+    --enable-prefix-caching
 ```
 
 ---
 
-## Two-Line Integration
+## Using `cp.optimize_batch()` (Simplest)
 
-The simplest way to add ContextPilot to an existing pipeline:
+Pass your context blocks and queries — ContextPilot handles reordering and returns ready-to-use OpenAI messages in the optimal execution order.
 
 ```python
+import asyncio
+import openai
 import contextpilot as cp
-from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
+BASE_URL = "http://localhost:30000/v1"
+engine = cp.ContextPilot(use_gpu=False)
 
-# Single request — reorders docs for max prefix sharing
-docs = get_retrieved_docs(query)   # your RAG retriever
-messages = cp.optimize(docs, query)
-response = client.chat.completions.create(model="Qwen/Qwen3-4B", messages=messages)
+queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
+all_contexts = [
+    ["AI is the simulation of human intelligence", "Machine learning is a subset of AI", "Deep learning uses neural networks"],
+    ["Neural networks are inspired by the brain", "Machine learning is a subset of AI", "Backpropagation trains neural networks"],
+    ["Deep learning uses neural networks", "Machine learning is a subset of AI", "GPUs accelerate deep learning training"],
+]
+
+# Returns messages in scheduled order + the original index mapping
+messages_batch, order = engine.optimize_batch(all_contexts, queries)
+
+async def generate_all():
+    client = openai.AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
+    return await asyncio.gather(*[
+        client.chat.completions.create(model="Qwen/Qwen2.5-7B-Instruct", messages=m)
+        for m in messages_batch
+    ])
+
+for resp, idx in zip(asyncio.run(generate_all()), order):
+    print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
+
+`messages_batch[i]` corresponds to `queries[order[i]]` — send them in this order to the inference engine for maximum prefix sharing, then use `order` to map results back.
 
 ---
 
-## Batch Processing
+## Using `cp.reorder()` (Manual Control)
 
-`optimize_batch` schedules an entire batch in the globally optimal execution order — queries sharing the most documents execute consecutively:
+Use `reorder()` when you need full control over prompt construction — it returns reordered context blocks and the execution order, and you build the prompts yourself.
 
 ```python
+import asyncio
+import openai
 import contextpilot as cp
-from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:30000/v1", api_key="EMPTY")
+BASE_URL = "http://localhost:30000/v1"
+engine = cp.ContextPilot(use_gpu=False)
 
-queries = ["What is machine learning?", "Explain neural networks", "What is deep learning?"]
-all_docs = [get_retrieved_docs(q) for q in queries]   # your RAG retriever
+queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
+all_contexts = [
+    ["AI is the simulation of human intelligence", "Machine learning is a subset of AI", "Deep learning uses neural networks"],
+    ["Neural networks are inspired by the brain", "Machine learning is a subset of AI", "Backpropagation trains neural networks"],
+    ["Deep learning uses neural networks", "Machine learning is a subset of AI", "GPUs accelerate deep learning training"],
+]
 
-# Reorder entire batch at once
-messages_batch, original_indices = cp.optimize_batch(all_docs, queries)
+# reordered[i] = reordered blocks for the i-th scheduled query
+# order[i]     = index into the original queries list
+reordered, order = engine.reorder(all_contexts)
 
-print(f"Scheduled order: {original_indices}")  # e.g. [0, 2, 1] — most overlap runs first
+def build_prompt(query, blocks):
+    context_text = "\n".join(f"[{i+1}] {b}" for i, b in enumerate(blocks))
+    return [
+        {"role": "system", "content": f"Answer based on the context:\n{context_text}"},
+        {"role": "user", "content": query},
+    ]
 
-# Run inference in scheduled order
-answers = [""] * len(queries)
-for messages, orig_idx in zip(messages_batch, original_indices):
-    response = client.chat.completions.create(
-        model="Qwen/Qwen3-4B",
-        messages=messages,
-        max_tokens=256,
-    )
-    answers[orig_idx] = response.choices[0].message.content
+messages_batch = [build_prompt(queries[order[i]], reordered[i]) for i in range(len(order))]
 
-# answers[i] corresponds to queries[i]
+async def generate_all():
+    client = openai.AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
+    return await asyncio.gather(*[
+        client.chat.completions.create(model="Qwen/Qwen2.5-7B-Instruct", messages=m)
+        for m in messages_batch
+    ])
+
+results = [None] * len(queries)
+for resp, idx in zip(asyncio.run(generate_all()), order):
+    results[idx] = resp.choices[0].message.content
+
+for q, a in zip(queries, results):
+    print(f"Q: {q}\nA: {a}\n")
 ```
 
 ---
 
-## Multi-Turn Conversations
+## RAG Pipeline (with Built-in Retrieval)
 
-Pass a stable `conversation_id` so ContextPilot deduplicates documents already seen in earlier turns:
-
-```python
-import uuid
-import contextpilot as cp
-
-conversation_id = f"conv-{uuid.uuid4().hex[:8]}"
-
-for query in conversation_turns:
-    docs = get_retrieved_docs(query)
-    messages = cp.optimize(docs, query, conversation_id=conversation_id)
-    response = client.chat.completions.create(model="Qwen/Qwen3-4B", messages=messages)
-```
-
----
-
-## Pipeline API
-
-For a higher-level interface that wires retrieval + optimization + inference in one call, use `RAGPipeline`:
+If you have a document corpus and want ContextPilot to handle retrieval + optimization in one call, use `RAGPipeline`:
 
 ```python
 from contextpilot.pipeline import RAGPipeline, InferenceConfig
 
 pipeline = RAGPipeline(
-    retriever="bm25",
+    retriever="bm25",          # or "faiss" for semantic search
     corpus_path="corpus.jsonl",
     use_contextpilot=True,
     inference=InferenceConfig(
-        model_name="Qwen/Qwen3-4B",
+        model_name="Qwen/Qwen2.5-7B-Instruct",
         base_url="http://localhost:30000",
         max_tokens=256,
     )
 )
 
 results = pipeline.run(
-    queries=["What is machine learning?", "Explain neural networks"],
+    queries=["What is machine learning?", "Explain neural networks", "What is deep learning?"],
     top_k=20,
     generate_responses=True,
 )
 
-for gen in results["generation_results"]:
-    if gen["success"]:
-        print(gen["generated_text"])
+for gen_result in results["generation_results"]:
+    if gen_result["success"]:
+        print(gen_result["generated_text"][:200])
 ```
 
-Supported retrievers: `"bm25"`, `"faiss"`, `"mem0"`, `"pageindex"`.
-
----
-
-## Complete End-to-End Example
-
-See **[examples/stateless_sglang_e2e.py](../../examples/stateless_sglang_e2e.py)** for a full working example covering document retrieval, tokenization, ContextPilot scheduling, prompt building, inference, and result reordering.
+See the [API Reference](../reference/api.md) for full `RAGPipeline` options including FAISS retrieval, step-by-step control, and saving results.
 
 ---
 
 ## Next Steps
 
-- [Online Usage](online_usage.md) — Live index server with eviction tracking (stateful mode)
-- [Multi-Turn](multi_turn.md) — Cross-turn deduplication in detail
-- [API Reference](../reference/api.md) — Full API documentation
+- [Online Usage](online_usage.md) - Live index server for stateful cache tracking
+- [Multi-Turn](multi_turn.md) - Context deduplication across conversation turns
+- [API Reference](../reference/api.md) - Full API documentation

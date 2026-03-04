@@ -2,59 +2,52 @@
 
 This guide covers installing ContextPilot and its dependencies.
 
-## Requirements
+**Requirements:** Python >= 3.10
 
-- Python >= 3.10
-- CUDA 12.x (optional — for GPU-accelerated distance computation; not required on Mac)
-- An inference engine: [SGLang](https://github.com/sgl-project/sglang), [vLLM](https://github.com/vllm-project/vllm), [llama.cpp](https://github.com/ggerganov/llama.cpp), or any OpenAI-compatible server
+---
 
-## Install ContextPilot
+## vLLM / SGLang
 
-**CPU (Mac / Apple Silicon or no CUDA):**
+ContextPilot works with both CPU and GPU backends for building the context index. The `[gpu]` extra enables GPU-accelerated distance computation (via `cupy-cuda12x`) and is faster for large batches; without it, ContextPilot falls back to the CPU backend automatically.
+
+**From PyPI** — the vLLM and SGLang hooks are installed automatically:
 ```bash
-pip install contextpilot
+pip install contextpilot          # CPU index computation
+pip install "contextpilot[gpu]"   # GPU index computation (CUDA 12.x)
 ```
 
-**GPU (Linux + CUDA 12.x):**
-```bash
-pip install "contextpilot[gpu]"
-```
-
-The `[gpu]` extra installs `cupy-cuda12x` for GPU-accelerated distance computation. Without it, ContextPilot falls back to the CPU backend automatically.
-
-Or install from source:
+**From source** — run `install_hook` manually after install, since editable installs do not copy the `.pth` file to site-packages:
 ```bash
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
-pip install -e .          # CPU
-pip install -e ".[gpu]"   # GPU (CUDA 12.x)
+pip install -e .                  # CPU
+pip install -e ".[gpu]"           # GPU (CUDA 12.x)
+python -m contextpilot.install_hook   # one-time: enables automatic vLLM / SGLang integration
 ```
 
-This installs the core dependencies:
+The `install_hook` step writes a `.pth` file into your site-packages so the vLLM and SGLang hooks load automatically at Python startup — no code changes required. To uninstall: `python -m contextpilot.install_hook --remove`.
 
-| Package | Purpose |
-|---------|--------|
-| `fastapi[all]` | HTTP server |
-| `aiohttp` | Async inference engine proxy |
-| `scipy` | Hierarchical clustering |
-| `transformers` | Tokenizer / chat templates |
-| `cupy-cuda12x` | GPU distance computation (`[gpu]` extra only) |
-| `elasticsearch` | BM25 retriever (optional) |
-| `datasets` | Loading benchmark datasets |
+---
 
-## Install an Inference Engine
+## Mac / Apple Silicon — llama.cpp
 
-**SGLang:**
+**From PyPI:**
 ```bash
-pip install "sglang>=0.5"
+pip install contextpilot
+xcode-select --install    # one-time: provides clang++ to compile the native hook
 ```
 
-**vLLM:**
+**From source:**
 ```bash
-pip install vllm
+git clone https://github.com/EfficientContext/ContextPilot.git
+cd ContextPilot
+pip install -e .
+xcode-select --install    # one-time: provides clang++ to compile the native hook
 ```
 
-Both engines are supported via zero-patch runtime hooks — just set `CONTEXTPILOT_INDEX_URL` when launching. See [Online Usage Guide](../guides/online_usage.md#inference-engine-integration).
+> **Why `xcode-select`?** The llama.cpp integration uses a small C++ shared library injected into `llama-server` via `DYLD_INSERT_LIBRARIES`. It is compiled automatically on first use and requires `clang++` from Xcode Command Line Tools.
+
+---
 
 ## Distributed Setup
 
@@ -68,15 +61,22 @@ curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/co
 
 The installer downloads the hook from GitHub and installs it into site-packages. No `contextpilot` clone or install needed — just `requests` as a runtime dependency.
 
-**llama.cpp (Mac / Apple Silicon — no CUDA required):**
-```bash
-brew install llama.cpp
-```
+## Core Dependencies
 
-Then download a GGUF model and start llama-server with prefix caching enabled. See the [Mac + llama.cpp guide](../guides/mac_llama_cpp.md) for the full setup.
+| Package | Purpose |
+|---------|--------|
+| `fastapi[all]` | HTTP server |
+| `aiohttp` | Async inference engine proxy |
+| `scipy` | Hierarchical clustering |
+| `transformers` | Tokenizer / chat templates |
+| `cupy-cuda12x` | GPU distance computation (`[gpu]` extra only) |
+| `elasticsearch` | BM25 retriever (optional) |
+| `datasets` | Loading benchmark datasets |
 
 ## Verify Installation
 
 ```bash
 python -c "import contextpilot; print('ContextPilot', contextpilot.__version__)"
 ```
+
+Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](docker.md).

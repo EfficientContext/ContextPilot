@@ -43,14 +43,26 @@ SGLang and vLLM run inside Python, so ContextPilot's `.pth` file in site-package
 ### Prerequisites
 
 - Apple Silicon Mac (M1 or later)
-- llama-server: `brew install llama.cpp`
 - A GGUF model (e.g. `Qwen3-8B-Q4_K_M.gguf`)
 
-### Install dependencies
+### Install
 
+**From PyPI:**
 ```bash
-pip install -e .
+pip install contextpilot
+xcode-select --install    # one-time: provides clang++ to compile the native hook
 ```
+
+**From source:**
+```bash
+git clone https://github.com/EfficientContext/ContextPilot.git
+cd ContextPilot
+pip install -e .
+brew install llama.cpp
+xcode-select --install    # one-time: provides clang++ to compile the native hook
+```
+
+> `xcode-select --install` is only needed once per machine. If you already have Xcode Command Line Tools installed, skip it.
 
 ### Start
 

@@ -84,25 +84,50 @@ Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cac
 
 **Requirements:** Python >= 3.10
 
-**CPU (Mac / Apple Silicon or no CUDA):**
+---
+
+### vLLM / SGLang
+
+ContextPilot works with both CPU and GPU backends for building the context index. The `[gpu]` extra enables GPU-accelerated distance computation (via `cupy-cuda12x`) and is faster for large batches; without it, ContextPilot falls back to the CPU backend automatically.
+
+**From PyPI** — the vLLM and SGLang hooks are installed automatically:
 ```bash
-pip install contextpilot # This will automatically install the contextpilot_hook into your site packages.
+pip install contextpilot          # CPU index computation
+pip install "contextpilot[gpu]"   # GPU index computation (CUDA 12.x)
 ```
 
-**GPU (Linux + CUDA 12.x):**
-```bash
-pip install "contextpilot[gpu]"
-```
-
-The `[gpu]` extra installs `cupy-cuda12x` for GPU-accelerated distance computation. Without it, ContextPilot falls back to the CPU backend automatically.
-
-Or install from source:
+**From source** — run `install_hook` manually after install, since editable installs do not copy the `.pth` file to site-packages:
 ```bash
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
-pip install -e .          # CPU
-pip install -e ".[gpu]"   # GPU (CUDA 12.x)
+pip install -e .                  # CPU
+pip install -e ".[gpu]"           # GPU (CUDA 12.x)
+python -m contextpilot.install_hook   # one-time: enables automatic vLLM / SGLang integration
 ```
+
+The `install_hook` step writes a `.pth` file into your site-packages so the vLLM and SGLang hooks load automatically at Python startup — no code changes required. To uninstall: `python -m contextpilot.install_hook --remove`.
+
+---
+
+### Mac / Apple Silicon — llama.cpp
+
+**From PyPI:**
+```bash
+pip install contextpilot
+xcode-select --install    # one-time: provides clang++ to compile the native hook
+```
+
+**From source:**
+```bash
+git clone https://github.com/EfficientContext/ContextPilot.git
+cd ContextPilot
+pip install -e .
+xcode-select --install    # one-time: provides clang++ to compile the native hook
+```
+
+> **Why `xcode-select`?** The llama.cpp integration uses a small C++ shared library injected into `llama-server` via `DYLD_INSERT_LIBRARIES`. It is compiled automatically on first use and requires `clang++` from Xcode Command Line Tools.
+
+---
 
 More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation) are available in the docs.
 

@@ -146,39 +146,6 @@ Add **one call** (`cp_instance.optimize()`) before inference to rearrange contex
 
 Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no changes to your inference deployment. They support both direct API calls (shown below) and HTTP server deployment (see the [online usage guide](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage)).
 
-#### Running with vLLM / SGLang (GPU)
-
-Start the ContextPilot index server, then launch your inference engine with `CONTEXTPILOT_INDEX_URL` set:
-
-```bash
-# Terminal 1 — ContextPilot index server
-python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
-
-# Terminal 2 — your inference engine (example: SGLang)
-CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
-    --model-path Qwen/Qwen3-4B --port 30000
-```
-
-#### Running with llama.cpp (Mac / Apple Silicon)
-
-Use `contextpilot-llama-server` as a drop-in replacement for `llama-server`. It compiles and injects the native eviction hook on first run, then launches `llama-server` transparently:
-
-```bash
-# Terminal 1 — ContextPilot index server
-python -m contextpilot.server.http_server --port 8765 --stateless
-
-# Terminal 2 — llama-server with ContextPilot hook injected
-CONTEXTPILOT_INDEX_URL=http://localhost:8765 \
-  contextpilot-llama-server \
-  -m /path/to/model.gguf \
-  --host 0.0.0.0 --port 8889 \
-  -ngl 99 --cache-reuse 256 --parallel 4 -c 32768
-```
-
-> If `llama-server` is not in PATH, set `LLAMA_SERVER_BIN=/path/to/llama-server` or use `python -m contextpilot._llamacpp_hook /path/to/llama-server ...` directly.
-
-See the full [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md) for details.
-
 ---
 
 #### Accelerating Online Inference

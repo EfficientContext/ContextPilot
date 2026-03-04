@@ -1,28 +1,28 @@
 # Offline Usage
 
-Offline mode is best for **batch processing** where you process all queries at once without needing live cache management.
+Offline mode is best for **batch processing** where you have all queries upfront and want to maximize KV-cache reuse across them — no server required.
 
-## How ContextPilot Optimizes Batches
+## How It Works
 
-ContextPilot performs **two levels of optimization** to maximize KV-cache prefix sharing:
+ContextPilot performs two levels of optimization:
 
-1. **Inter-Context Reordering**: Queries with similar retrieved documents are scheduled together
-2. **Intra-Context Reordering**: Document IDs within each query are reordered so shared documents appear first as a common prefix
+1. **Inter-Context Reordering**: Queries with overlapping context blocks are scheduled together
+2. **Intra-Context Reordering**: Context blocks within each query are reordered so shared blocks appear first as a common prefix
 
-For example, if Query A retrieves docs `[5, 1, 8, 2]` and Query B retrieves `[2, 9, 1, 5]`, after optimization:
-- Query A: `[1, 2, 5, 8]` (shared IDs first)
-- Query B: `[1, 2, 5, 9]` (same prefix `[1, 2, 5]`!)
-
-This creates identical prefixes that the inference engine can cache and reuse.
+For example, if Query A has `["block_C", "block_A", "block_D", "block_B"]` and Query B has `["block_B", "block_E", "block_A", "block_C"]`, after optimization:
+- Query A: `["block_A", "block_B", "block_C", "block_D"]` (shared blocks first)
+- Query B: `["block_A", "block_B", "block_C", "block_E"]` (same prefix — cache hit!)
 
 ## Prerequisites
 
-1. **Start your inference engine:**
+Start your inference engine:
+
 ```bash
 # SGLang:
 python -m sglang.launch_server \
     --model-path Qwen/Qwen2.5-7B-Instruct \
     --port 30000
+
 # or vLLM:
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen2.5-7B-Instruct \
@@ -30,190 +30,129 @@ python -m vllm.entrypoints.openai.api_server \
     --enable-prefix-caching
 ```
 
-2. **Prepare your data:**
-   - `corpus.jsonl`: Documents with `doc_id` and `text` fields
-   - Queries: List of strings or query objects
+---
+
+## Using `cp.optimize_batch()` (Simplest)
+
+Pass your context blocks and queries — ContextPilot handles reordering and returns ready-to-use OpenAI messages in the optimal execution order.
+
+```python
+import asyncio
+import openai
+import contextpilot as cp
+
+BASE_URL = "http://localhost:30000/v1"
+engine = cp.ContextPilot(use_gpu=False)
+
+queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
+all_contexts = [
+    ["AI is the simulation of human intelligence", "Machine learning is a subset of AI", "Deep learning uses neural networks"],
+    ["Neural networks are inspired by the brain", "Machine learning is a subset of AI", "Backpropagation trains neural networks"],
+    ["Deep learning uses neural networks", "Machine learning is a subset of AI", "GPUs accelerate deep learning training"],
+]
+
+# Returns messages in scheduled order + the original index mapping
+messages_batch, order = engine.optimize_batch(all_contexts, queries)
+
+async def generate_all():
+    client = openai.AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
+    return await asyncio.gather(*[
+        client.chat.completions.create(model="Qwen/Qwen2.5-7B-Instruct", messages=m)
+        for m in messages_batch
+    ])
+
+for resp, idx in zip(asyncio.run(generate_all()), order):
+    print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
+```
+
+`messages_batch[i]` corresponds to `queries[order[i]]` — send them in this order to the inference engine for maximum prefix sharing, then use `order` to map results back.
 
 ---
 
-## Example 1: End-to-End Pipeline
+## Using `cp.reorder()` (Manual Control)
 
-Retrieve, optimize, and generate in one call:
+Use `reorder()` when you need full control over prompt construction — it returns reordered context blocks and the execution order, and you build the prompts yourself.
+
+```python
+import asyncio
+import openai
+import contextpilot as cp
+
+BASE_URL = "http://localhost:30000/v1"
+engine = cp.ContextPilot(use_gpu=False)
+
+queries = ["What is AI?", "Explain neural networks", "What is deep learning?"]
+all_contexts = [
+    ["AI is the simulation of human intelligence", "Machine learning is a subset of AI", "Deep learning uses neural networks"],
+    ["Neural networks are inspired by the brain", "Machine learning is a subset of AI", "Backpropagation trains neural networks"],
+    ["Deep learning uses neural networks", "Machine learning is a subset of AI", "GPUs accelerate deep learning training"],
+]
+
+# reordered[i] = reordered blocks for the i-th scheduled query
+# order[i]     = index into the original queries list
+reordered, order = engine.reorder(all_contexts)
+
+def build_prompt(query, blocks):
+    context_text = "\n".join(f"[{i+1}] {b}" for i, b in enumerate(blocks))
+    return [
+        {"role": "system", "content": f"Answer based on the context:\n{context_text}"},
+        {"role": "user", "content": query},
+    ]
+
+messages_batch = [build_prompt(queries[order[i]], reordered[i]) for i in range(len(order))]
+
+async def generate_all():
+    client = openai.AsyncOpenAI(base_url=BASE_URL, api_key="EMPTY")
+    return await asyncio.gather(*[
+        client.chat.completions.create(model="Qwen/Qwen2.5-7B-Instruct", messages=m)
+        for m in messages_batch
+    ])
+
+results = [None] * len(queries)
+for resp, idx in zip(asyncio.run(generate_all()), order):
+    results[idx] = resp.choices[0].message.content
+
+for q, a in zip(queries, results):
+    print(f"Q: {q}\nA: {a}\n")
+```
+
+---
+
+## RAG Pipeline (with Built-in Retrieval)
+
+If you have a document corpus and want ContextPilot to handle retrieval + optimization in one call, use `RAGPipeline`:
 
 ```python
 from contextpilot.pipeline import RAGPipeline, InferenceConfig
 
 pipeline = RAGPipeline(
-    retriever="bm25",
+    retriever="bm25",          # or "faiss" for semantic search
     corpus_path="corpus.jsonl",
     use_contextpilot=True,
     inference=InferenceConfig(
         model_name="Qwen/Qwen2.5-7B-Instruct",
         base_url="http://localhost:30000",
         max_tokens=256,
-        temperature=0.0
     )
 )
 
 results = pipeline.run(
-    queries=[
-        "What is machine learning?",
-        "Explain neural networks",
-        "What is deep learning?"
-    ],
+    queries=["What is machine learning?", "Explain neural networks", "What is deep learning?"],
     top_k=20,
-    generate_responses=True
+    generate_responses=True,
 )
 
-print(f"Processed {results['metadata']['num_queries']} queries")
-print(f"Created {results['metadata']['num_groups']} optimized groups")
-
-for i, gen_result in enumerate(results["generation_results"]):
+for gen_result in results["generation_results"]:
     if gen_result["success"]:
-        print(f"\nQuery {i+1}: {gen_result['generated_text'][:200]}...")
+        print(gen_result["generated_text"][:200])
 ```
 
----
-
-## Example 2: Retrieval + Optimization Only
-
-Prepare optimized batches without generation (for later inference):
-
-```python
-from contextpilot.pipeline import RAGPipeline
-
-pipeline = RAGPipeline(
-    retriever="bm25",
-    corpus_path="corpus.jsonl",
-    use_contextpilot=True
-)
-
-results = pipeline.run(
-    queries=["What is AI?", "What is ML?"],
-    top_k=20,
-    generate_responses=False
-)
-
-# Save for later use
-pipeline.save_results(results, "optimized_batch.jsonl")
-print(f"Saved {len(results['optimized_batch'])} groups")
-```
-
----
-
-## Example 3: Step-by-Step Control
-
-Fine-grained control over each pipeline stage:
-
-```python
-from contextpilot.pipeline import RAGPipeline, InferenceConfig
-
-pipeline = RAGPipeline(
-    retriever="bm25",
-    corpus_path="corpus.jsonl",
-    inference=InferenceConfig(
-        model_name="Qwen/Qwen2.5-7B-Instruct",
-        base_url="http://localhost:30000"
-    )
-)
-
-queries = ["What is machine learning?", "Explain neural networks"]
-
-# Step 1: Retrieve documents
-retrieval_results = pipeline.retrieve(queries=queries, top_k=20)
-print(f"Retrieved documents for {len(retrieval_results)} queries")
-
-# Step 2: Optimize context ordering
-optimized = pipeline.optimize(retrieval_results)
-print(f"Created {len(optimized['groups'])} optimized groups")
-
-# Step 3: Generate responses
-generation_results = pipeline.generate(optimized)
-print(f"Generated {generation_results['metadata']['successful_requests']} responses")
-
-# Inspect groups
-for group in optimized['groups']:
-    print(f"Group {group['group_id']}: {group['group_size']} queries, score={group['group_score']:.3f}")
-```
-
----
-
-## Example 4: Compare With/Without ContextPilot
-
-```python
-from contextpilot.pipeline import RAGPipeline, InferenceConfig
-
-queries = ["What is AI?", "What is ML?", "What is DL?"]
-
-# With ContextPilot optimization
-pipeline_optimized = RAGPipeline(
-    retriever="bm25",
-    corpus_path="corpus.jsonl",
-    use_contextpilot=True,
-    inference=InferenceConfig(
-        model_name="Qwen/Qwen2.5-7B-Instruct",
-        base_url="http://localhost:30000"
-    )
-)
-results_optimized = pipeline_optimized.run(queries=queries, generate_responses=True)
-
-# Without ContextPilot (standard RAG)
-pipeline_standard = RAGPipeline(
-    retriever="bm25",
-    corpus_path="corpus.jsonl",
-    use_contextpilot=False,
-    inference=InferenceConfig(
-        model_name="Qwen/Qwen2.5-7B-Instruct",
-        base_url="http://localhost:30000"
-    )
-)
-results_standard = pipeline_standard.run(queries=queries, generate_responses=True)
-
-# Compare timings
-print(f"ContextPilot: {results_optimized['metadata']['total_time']:.2f}s")
-print(f"Standard: {results_standard['metadata']['total_time']:.2f}s")
-```
-
----
-
-## Example 5: Using FAISS Retriever
-
-For semantic search with embeddings:
-
-```bash
-# First, start an embedding server (e.g. SGLang):
-python -m sglang.launch_server \
-    --model-path Alibaba-NLP/gte-Qwen2-7B-instruct \
-    --is-embedding \
-    --port 30001
-```
-
-```python
-from contextpilot.pipeline import RAGPipeline, InferenceConfig
-
-pipeline = RAGPipeline(
-    retriever="faiss",
-    corpus_path="corpus.jsonl",
-    index_path="faiss_index.faiss",  # Created if doesn't exist
-    embedding_model="Alibaba-NLP/gte-Qwen2-7B-instruct",
-    embedding_base_url="http://localhost:30001",
-    use_contextpilot=True,
-    inference=InferenceConfig(
-        model_name="Qwen/Qwen2.5-7B-Instruct",
-        base_url="http://localhost:30000"
-    )
-)
-
-results = pipeline.run(
-    queries=["Explain quantum computing"],
-    generate_responses=True
-)
-```
+See the [API Reference](../reference/api.md) for full `RAGPipeline` options including FAISS retrieval, step-by-step control, and saving results.
 
 ---
 
 ## Next Steps
 
-- [Online Usage](online_usage.md) - Live index server modes
-- [Multi-Turn](multi_turn.md) - Conversation handling
+- [Online Usage](online_usage.md) - Live index server for stateful cache tracking
+- [Multi-Turn](multi_turn.md) - Context deduplication across conversation turns
 - [API Reference](../reference/api.md) - Full API documentation

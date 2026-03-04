@@ -16,27 +16,27 @@ The server auto-dispatches based on its mode — your client code is the same ei
 ContextPilot performs **two levels of optimization** to maximize KV-cache prefix sharing:
 
 ### 1. Inter-Context Reordering
-Contexts with similar document IDs are scheduled together. For example:
+Contexts with overlapping context blocks are scheduled together. For example:
 ```
 Original order: [Context0, Context1, Context2, Context3]
-Scheduled:      [Context0, Context2, Context1, Context3]  # 0 and 2 share docs, now adjacent
+Scheduled:      [Context0, Context2, Context1, Context3]  # 0 and 2 share blocks, now adjacent
 ```
 
-### 2. Intra-Context Reordering  
-Within each context, document IDs are reordered so that **shared IDs appear first** as a common prefix:
+### 2. Intra-Context Reordering
+Within each context, blocks are reordered so that **shared blocks appear first** as a common prefix:
 ```
 Original:
-  Context 0: [999, 1, 888, 2, 777, 3]   # IDs scattered
-  Context 2: [3, 666, 1, 555, 2, 444]   # Same IDs, different order
+  Context 0: ["block_G", "block_A", "block_F", "block_B", "block_E", "block_C"]   # shared blocks scattered
+  Context 2: ["block_C", "block_D", "block_A", "block_H", "block_B", "block_I"]   # same blocks, different order
 
 After scheduling:
-  Context 0: [1, 2, 3, 999, 888, 777]   # Shared {1,2,3} moved to front
-  Context 2: [1, 2, 3, 666, 555, 444]   # Same prefix [1,2,3]!
+  Context 0: ["block_A", "block_B", "block_C", "block_G", "block_F", "block_E"]   # shared {A,B,C} moved to front
+  Context 2: ["block_A", "block_B", "block_C", "block_D", "block_H", "block_I"]   # same prefix [A,B,C]!
 ```
 
 This ensures adjacent contexts have **identical prefixes** that can be cached and reused.
 
-> **Important:** Use `reordered_contexts` (not `original_indices`) when building prompts to get the reordered document IDs.
+> **Important:** Use `reordered_contexts` (not `original_indices`) when building prompts to get the reordered context blocks.
 
 ---
 
@@ -57,12 +57,12 @@ python -m contextpilot.server.http_server --port 8765 --stateless --infer-api-ur
 ```python
 import requests
 
-# Prepare contexts (each context = list of doc IDs for a query)
+# Prepare contexts (each context = list of context blocks for a query)
 contexts = [
-    [1, 5, 10, 15, 20],   # Query 0: uses docs 1, 5, 10, 15, 20
-    [2, 5, 11, 16, 21],   # Query 1: shares doc 5 with Query 0
-    [1, 5, 12, 17, 22],   # Query 2: shares docs 1, 5 with Query 0
-    [3, 6, 13, 18, 23],   # Query 3: completely different
+    ["Transformers use self-attention", "BERT is bidirectional", "GPT uses causal attention", "Attention is O(n²)"],
+    ["RNNs have vanishing gradients", "Transformers use self-attention", "LSTMs use gating", "GRUs are efficient"],
+    ["Transformers use self-attention", "BERT is bidirectional", "ViT applies transformers to vision", "CLIP uses contrastive loss"],
+    ["CNNs use convolutions", "ResNet uses skip connections", "BatchNorm stabilizes training", "Dropout regularizes"],
 ]
 
 # One call — reorder for optimal prefix sharing
@@ -76,12 +76,12 @@ scheduled_contexts = result['reordered_contexts']
 scheduled_order = result['original_indices']
 print(f"Optimal order: {scheduled_order}")  # e.g., [0, 2, 1, 3]
 
-# Build prompts using the reordered contexts
+# Build prompts using the reordered context blocks
 # scheduled_contexts[i] corresponds to original query at scheduled_order[i]
-for i, reordered_ids in enumerate(scheduled_contexts):
+for i, reordered_blocks in enumerate(scheduled_contexts):
     original_query_idx = scheduled_order[i]
-    # Build prompt with reordered document IDs for maximum prefix sharing
-    # prompt = build_prompt(queries[original_query_idx], reordered_ids)
+    # Build prompt with reordered blocks for maximum prefix sharing
+    # prompt = build_prompt(queries[original_query_idx], reordered_blocks)
     # response = inference_client.generate(prompt)
     pass
 
@@ -97,7 +97,11 @@ from contextpilot.server.http_client import ContextPilotIndexClient
 client = ContextPilotIndexClient("http://localhost:8765")
 
 reordered, order = client.reorder(
-    contexts=[[1, 5, 10], [2, 5, 11], [1, 5, 12]]
+    contexts=[
+        ["Transformers use self-attention", "BERT is bidirectional", "GPT uses causal attention"],
+        ["RNNs have vanishing gradients", "Transformers use self-attention", "LSTMs use gating"],
+        ["Transformers use self-attention", "BERT is bidirectional", "ViT applies transformers to vision"],
+    ]
 )
 
 print(f"Scheduled order: {order}")
@@ -108,7 +112,7 @@ client.close()
 
 ## Stateful Mode
 
-Stateful mode maintains a **live index** that tracks tokens and synchronizes with the inference engine's cache.
+Stateful mode maintains a **live index** synchronized with the inference engine's KV cache via eviction callbacks.
 
 **Best for:** Long-running services, cache-aware scheduling, inference engine integration.
 
@@ -117,15 +121,12 @@ Stateful mode maintains a **live index** that tracks tokens and synchronizes wit
 ```
 ┌─────────────┐         ┌─────────────────────┐         ┌─────────────────┐
 │   Client    │ ──────► │  ContextPilot Index │ ──────► │ Inference Engine│
-│             │         │  Server (8765)      │         │ (30000)         │
+│             │  reorder│  Server (8765)      │  proxy  │ (30000)         │
 └─────────────┘         └─────────────────────┘         └─────────────────┘
-                               │
-                               ▼
-                        ┌─────────────────┐
-                        │ ContextPilot     │
-                        │- Token tracking  │
-                        │- LRU eviction    │
-                        └─────────────────┘
+                               ▲                               │
+                               │    POST /evict                │
+                               └───────────────────────────────┘
+                             (engine notifies on KV cache eviction)
 ```
 
 ### Inference Engine Integration
@@ -152,16 +153,12 @@ That's it. ContextPilot's `.pth` hook automatically monkey-patches SGLang's `Rad
 **Distributed setup** (SGLang and ContextPilot on different machines): You don't need to install the full `contextpilot` package on the SGLang machine. Copy the standalone install script instead:
 
 ```bash
-# On the SGLang machine:
-wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/scripts/install_engine_hook.py
-wget https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/_sglang_hook.py
-python install_engine_hook.py
-
-# Then start SGLang pointing to the remote ContextPilot server:
-CONTEXTPILOT_INDEX_URL=http://<contextpilot-host>:8765 sglang serve --model-path Qwen/Qwen3-4B
+# In the engine's Python environment (one command, no clone needed):
+pip install requests
+curl -sL https://raw.githubusercontent.com/EfficientContext/ContextPilot/main/contextpilot/install_standalone.py | python -
 ```
 
-Compatible with SGLang **0.5.x**.
+Then start the engine with `CONTEXTPILOT_INDEX_URL` set as above.
 
 #### vLLM (automatic, zero-patch)
 
@@ -179,6 +176,34 @@ ContextPilot's `.pth` hook automatically monkey-patches vLLM's `BlockPool` at im
 ```
 
 Compatible with vLLM **0.15.x** (v1 block manager architecture).
+
+#### llama.cpp (native C++ hook)
+
+llama.cpp is a compiled C++ binary, so it cannot be monkey-patched at import time. Instead, ContextPilot provides `contextpilot-llama-server` — a drop-in replacement for `llama-server` that compiles a small shared library and injects it via `DYLD_INSERT_LIBRARIES` (macOS) / `LD_PRELOAD` (Linux), giving **exact, zero-latency** eviction signals with no polling.
+
+The usage pattern is identical to SGLang and vLLM — just set `CONTEXTPILOT_INDEX_URL`:
+
+```bash
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 contextpilot-llama-server \
+    -m models/Qwen3-8B-Q4_K_M.gguf \
+    --host 0.0.0.0 --port 8889 \
+    -ngl 99 --cache-reuse 256 --parallel 4 -c 32768
+```
+
+`contextpilot-llama-server` is a drop-in for `llama-server` — same flags, same behavior. It compiles the hook once (cached in `/tmp`) and transparently exec's `llama-server` with the injection set. You will see in stderr:
+
+```
+[ContextPilot] Hook compiled: /tmp/contextpilot_llama_hook.dylib
+[ContextPilot] Launching with DYLD_INSERT_LIBRARIES injected: /usr/local/bin/llama-server ...
+```
+
+When `CONTEXTPILOT_INDEX_URL` is not set, `contextpilot-llama-server` exec's `llama-server` directly with zero overhead.
+
+**Requirements:**
+- `llama-server` in PATH: `brew install llama.cpp` (or set `LLAMA_SERVER_BIN=/path/to/llama-server`)
+- `clang++` (macOS, via `xcode-select --install`) or `g++` (Linux)
+
+See the [Mac + llama.cpp guide](mac_llama_cpp.md) for the full Apple Silicon setup.
 
 #### How It Works
 
@@ -235,9 +260,9 @@ import requests
 
 response = requests.post("http://localhost:8765/reorder", json={
     "contexts": [
-        [1, 5, 10, 15, 20],
-        [2, 5, 11, 16, 21],
-        [1, 5, 12, 17, 22],
+        ["Transformers use self-attention", "BERT is bidirectional", "GPT uses causal attention", "Attention is O(n²)"],
+        ["RNNs have vanishing gradients", "Transformers use self-attention", "LSTMs use gating", "GRUs are efficient"],
+        ["Transformers use self-attention", "BERT is bidirectional", "ViT applies transformers to vision", "CLIP uses contrastive loss"],
     ]
 })
 
@@ -251,7 +276,7 @@ print(f"Reordered {len(request_ids)} contexts, mode: {result['mode']}")
 
 ### Step 2: Send Requests via Proxy
 
-The server proxies requests to the inference engine and tracks tokens automatically:
+The server proxies requests to the inference engine, associating each request with its reordered context:
 
 ```python
 response = requests.post("http://localhost:8765/v1/completions", json={
@@ -295,7 +320,7 @@ print(f"Cleared {result['conversations_cleared']} conversations")
 | `/reorder` | POST | **Primary** — reorder contexts (auto-dispatches stateless / stateful) |
 | `/health` | GET | Health check |
 | `/deduplicate` | POST | Multi-turn deduplication (lightweight, stateful only) |
-| `/evict` | POST | Remove evicted requests (stateful only) |
+| `/evict` | POST | Remove evicted requests by request_id — called by SGLang, vLLM, and llama.cpp hooks |
 | `/reset` | POST | Reset index and conversation tracker (stateful only) |
 | `/stats` | GET | Get index statistics (stateful only) |
 | `/build` | POST | _Deprecated alias → `/reorder`_ |

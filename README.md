@@ -13,10 +13,11 @@
 
 --------------------------------------------------------------------------------
 
-| [**Documentation**](docs/README.md) | [**Examples**](examples/) | [**Benchmarks**](docs/reference/benchmarks.md) |
+| [**Documentation**](https://efficientcontext.github.io/contextpilot-docs/) | [**Examples**](examples/) | [**Benchmarks**](https://efficientcontext.github.io/contextpilot-docs/reference/benchmarks) | [**Docker**](https://efficientcontext.github.io/contextpilot-docs/getting_started/docker) | [**Paper**](https://arxiv.org/abs/2511.03475) |
 
 ## News
 
+- [2026/03] ContextPilot now can run on **macOS / Apple Silicon** via [llama.cpp](docs/guides/mac_llama_cpp.md).
 - [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.
 
@@ -27,17 +28,17 @@ Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many co
 ContextPilot sits between context assembly and inference to maximize prefix reuse and remove duplicates:
 
 1. **Higher throughput & cache hits** — boosts prefill throughput and prefix cache hit ratio via context reuse.  
-2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang).  
+2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) / [llama.cpp](docs/guides/mac_llama_cpp.md).
 3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
 4. **Widely tested** — validated across diverse RAG and agentic workloads.
 
 It maintains a **Context Index** of cached content, then per request applies **Reorder** (align shared blocks into a common prefix) and/or **Deduplicate** (replace repeats with reference hints), plus **cache-aware scheduling** to maximize prefix sharing. The optimized prompt is sent via the OpenAI-compatible API; `POST /evict` keeps the index synced when KV cache is reclaimed. See its design overview below.
 
 <div align="center">
-<img src="assets/system_description.png" alt="ContextPilot Architecture" width="600"/>
+<img src="assets/system_description.jpg" alt="ContextPilot Architecture" width="600"/>
 </div>
 
-> For more design details, see [Paper](https://arxiv.org/abs/2511.03475) and [Documentation](docs/README.md).
+> For more design details, see [Paper](https://arxiv.org/abs/2511.03475) and [Documentation](https://efficientcontext.github.io/contextpilot-docs/).
 
 ## Performance at a Glance
 
@@ -70,23 +71,42 @@ ContextPilot is validated across three representative settings: single-node acad
 
 >ContextPilot results in mem0 table are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 
+**Llama-3.2-1B on Apple M3 (MacBook Air, 16 GB)** — MultihopRAG on Apple Silicon with llama.cpp, no GPU server required.
+
+| Method | Avg Latency (ms) |
+|--------|-----------------|
+| llama.cpp | 3,315 |
+| **llama.cpp + ContextPilot** | **1,378** |
+
+Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cache-reuse 256`, `--parallel 4`, context 32768 tokens. See the [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md).
+
 ## Installation
 
 **Requirements:** Python >= 3.10
 
+**CPU (Mac / Apple Silicon or no CUDA):**
 ```bash
-pip install contextpilot
+pip install contextpilot # This will automatically install the contextpilot_hook into your site packages.
 ```
+
+**GPU (Linux + CUDA 12.x):**
+```bash
+pip install "contextpilot[gpu]"
+```
+
+The `[gpu]` extra installs `cupy-cuda12x` for GPU-accelerated distance computation. Without it, ContextPilot falls back to the CPU backend automatically.
 
 Or install from source:
 ```bash
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
-pip install -e .
-python -m contextpilot.install_hook   # one-time: enables automatic SGLang/vLLM integration
+pip install -e .          # CPU
+pip install -e ".[gpu]"   # GPU (CUDA 12.x)
 ```
 
-More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
+More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation) are available in the docs.
+
+Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/docker).
 
 ## Getting Started
 
@@ -99,7 +119,7 @@ Add **one call** (`cp_instance.optimize()`) before inference to rearrange contex
 | **Online** | Multi-turn (e.g., chatbot + [Mem0](https://github.com/mem0ai/mem0)) | Tracks previously cached blocks; moves overlapping ones to the prefix each turn |
 | **Offline** | Batch / single-shot | Globally reorders and schedules all requests for maximum prefix sharing |
 
-Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no changes to your inference deployment. They support both direct API calls (shown below) and HTTP server deployment (see the [online usage guide](docs/guides/online_usage.md)).
+Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no changes to your inference deployment. They support both direct API calls (shown below) and HTTP server deployment (see the [online usage guide](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage)).
 
 ---
 
@@ -128,13 +148,13 @@ for query in queries:
     print(f"Q: {query}\nA: {response.choices[0].message.content}\n")
 ```
 
-> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set the `CONTEXTPILOT_INDEX_URL` environment variable when starting your inference engine to enable automatic eviction sync — **no engine patches required**. See the [online usage guide](docs/guides/online_usage.md#inference-engine-integration).
+> **Note:** When the engine evicts KV-cache entries under memory pressure, ContextPilot's index can go stale. Set `CONTEXTPILOT_INDEX_URL` when launching [SGLang or vLLM](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage#inference-engine-integration) to enable automatic eviction sync. For distributed setups, see [Distributed Setup](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation#distributed-setup).
 
 ---
 
 #### Accelerating Offline Inference
 
-Batch of requests with overlapping context blocks. `cp_instance.optimize_batch()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](docs/guides/offline_usage.md) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](docs/guides/online_usage.md#stateless-mode).
+Batch of requests with overlapping context blocks. `cp_instance.optimize_batch()` globally reorders blocks and schedules execution order so queries with similar contexts run consecutively, maximizing cache reuse. See the [offline usage guide](https://efficientcontext.github.io/contextpilot-docs/guides/offline_usage) for details. Offline mode can also be deployed as an HTTP server without eviction sync — see [Stateless Mode](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage#stateless-mode).
 
 ```python
 import asyncio
@@ -161,11 +181,11 @@ for resp, idx in zip(asyncio.run(generate_all()), order):
     print(f"Q: {queries[idx]}\nA: {resp.choices[0].message.content}\n")
 ```
 
-For a detailed walkthrough with concrete examples, see the [Quick Start Guide](docs/getting_started/quickstart.md). For more fine-grained control, you can also use `cp_instance.reorder()` and `cp_instance.deduplicate()` directly — see the [API reference](docs/reference/api.md) and [multi-turn deduplication guide](docs/guides/multi_turn.md).
+For a detailed walkthrough with concrete examples, see the [Quick Start Guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/quickstart). For more fine-grained control, you can also use `cp_instance.reorder()` and `cp_instance.deduplicate()` directly — see the [API reference](https://efficientcontext.github.io/contextpilot-docs/reference/api) and [multi-turn deduplication guide](https://efficientcontext.github.io/contextpilot-docs/guides/multi_turn).
 
 ### Adoption Examples
 
-See many useful adoption examples: [Mem0 integration](docs/guides/mem0.md), [PageIndex RAG](docs/guides/pageindex.md), [offline batch scheduling](docs/guides/offline_usage.md), and [multi-turn deduplication](docs/guides/multi_turn.md).
+See many useful adoption examples: [Mem0 integration](https://efficientcontext.github.io/contextpilot-docs/guides/mem0), [PageIndex RAG](https://efficientcontext.github.io/contextpilot-docs/guides/pageindex), [offline batch scheduling](https://efficientcontext.github.io/contextpilot-docs/guides/offline_usage), and [multi-turn deduplication](https://efficientcontext.github.io/contextpilot-docs/guides/multi_turn).
 
 ## Citation
 ```bibtex

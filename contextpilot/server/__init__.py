@@ -11,14 +11,12 @@ from .metadata import NodeMetadata
 from .eviction_heap import EvictionHeap
 from .live_index import ContextPilot
 
-# HTTP server/client (optional - requires fastapi/requests)
+# HTTP client (optional - requires requests)
 try:
-    from .http_server import app as http_app
     from .http_client import ContextPilotIndexClient, evict_tokens
     _HTTP_AVAILABLE = True
 except ImportError:
     _HTTP_AVAILABLE = False
-    http_app = None
     ContextPilotIndexClient = None
     evict_tokens = None
 
@@ -28,5 +26,4 @@ __all__ = [
     'ContextPilot',
     'ContextPilotIndexClient',
     'evict_tokens',
-    'http_app',
 ]

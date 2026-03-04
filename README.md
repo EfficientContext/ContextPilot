@@ -13,7 +13,7 @@
 
 --------------------------------------------------------------------------------
 
-| [**Documentation**](docs/README.md) | [**Examples**](examples/) | [**Benchmarks**](docs/reference/benchmarks.md) |
+| [**Documentation**](docs/README.md) | [**Examples**](examples/) | [**Benchmarks**](docs/reference/benchmarks.md) | [**Docker**](docs/guides/docker.md) |
 
 ## News
 
@@ -98,6 +98,8 @@ pip install -e ".[gpu]"   # GPU (CUDA 12.x)
 **Mac / Apple Silicon:** no CUDA required — use [llama.cpp](https://github.com/ggerganov/llama.cpp) as the inference backend (`brew install llama.cpp`). See the [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md) for the full setup.
 
 More [detailed installation instructions](docs/getting_started/installation.md) are available in the docs.
+
+Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](docs/guides/docker.md).
 
 ## Getting Started
 

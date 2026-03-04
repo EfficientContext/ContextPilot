@@ -84,25 +84,47 @@ Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cac
 
 **Requirements:** Python >= 3.10
 
-**CPU (Mac / Apple Silicon or no CUDA):**
-```bash
-pip install contextpilot # This will automatically install the contextpilot_hook into your site packages.
-```
+---
 
-**GPU (Linux + CUDA 12.x):**
+### GPU (Linux + CUDA — vLLM / SGLang)
+
 ```bash
 pip install "contextpilot[gpu]"
+python -m contextpilot.install_hook   # one-time: enables automatic vLLM / SGLang integration
 ```
 
 The `[gpu]` extra installs `cupy-cuda12x` for GPU-accelerated distance computation. Without it, ContextPilot falls back to the CPU backend automatically.
+
+The `install_hook` step writes a `.pth` file into your site-packages so the vLLM and SGLang hooks are loaded automatically at Python startup — no code changes required. To uninstall: `python -m contextpilot.install_hook --remove`.
 
 Or install from source:
 ```bash
 git clone https://github.com/EfficientContext/ContextPilot.git
 cd ContextPilot
-pip install -e .          # CPU
-pip install -e ".[gpu]"   # GPU (CUDA 12.x)
+pip install -e ".[gpu]"
+python -m contextpilot.install_hook
 ```
+
+---
+
+### Mac / Apple Silicon — llama.cpp
+
+```bash
+pip install contextpilot
+brew install llama.cpp
+xcode-select --install    # one-time: provides clang++ to compile the native hook
+```
+
+> **Why `xcode-select`?** The llama.cpp integration uses a small C++ shared library injected into `llama-server` via `DYLD_INSERT_LIBRARIES`. It is compiled automatically on first use and requires `clang++` from Xcode Command Line Tools.
+
+Or install from source:
+```bash
+git clone https://github.com/EfficientContext/ContextPilot.git
+cd ContextPilot
+pip install -e .
+```
+
+---
 
 More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation) are available in the docs.
 
@@ -120,6 +142,39 @@ Add **one call** (`cp_instance.optimize()`) before inference to rearrange contex
 | **Offline** | Batch / single-shot | Globally reorders and schedules all requests for maximum prefix sharing |
 
 Both modes work with any OpenAI-compatible endpoint (vLLM, SGLang, etc.) — no changes to your inference deployment. They support both direct API calls (shown below) and HTTP server deployment (see the [online usage guide](https://efficientcontext.github.io/contextpilot-docs/guides/online_usage)).
+
+#### Running with vLLM / SGLang (GPU)
+
+Start the ContextPilot index server, then launch your inference engine with `CONTEXTPILOT_INDEX_URL` set:
+
+```bash
+# Terminal 1 — ContextPilot index server
+python -m contextpilot.server.http_server --port 8765 --infer-api-url http://localhost:30000
+
+# Terminal 2 — your inference engine (example: SGLang)
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server \
+    --model-path Qwen/Qwen3-4B --port 30000
+```
+
+#### Running with llama.cpp (Mac / Apple Silicon)
+
+Use `contextpilot-llama-server` as a drop-in replacement for `llama-server`. It compiles and injects the native eviction hook on first run, then launches `llama-server` transparently:
+
+```bash
+# Terminal 1 — ContextPilot index server
+python -m contextpilot.server.http_server --port 8765 --stateless
+
+# Terminal 2 — llama-server with ContextPilot hook injected
+CONTEXTPILOT_INDEX_URL=http://localhost:8765 \
+  contextpilot-llama-server \
+  -m /path/to/model.gguf \
+  --host 0.0.0.0 --port 8889 \
+  -ngl 99 --cache-reuse 256 --parallel 4 -c 32768
+```
+
+> If `llama-server` is not in PATH, set `LLAMA_SERVER_BIN=/path/to/llama-server` or use `python -m contextpilot._llamacpp_hook /path/to/llama-server ...` directly.
+
+See the full [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md) for details.
 
 ---
 

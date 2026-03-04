@@ -71,6 +71,15 @@ ContextPilot is validated across three representative settings: single-node acad
 
 >ContextPilot results in mem0 table are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 
+**Llama-3.2-1B on Apple M3 (MacBook Air, 16 GB)** — MultihopRAG on Apple Silicon with llama.cpp, no GPU server required.
+
+| Method | Avg Latency (ms) |
+|--------|-----------------|
+| llama.cpp | 3,315 |
+| **llama.cpp + ContextPilot** | **1,378** |
+
+Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cache-reuse 256`, `--parallel 4`, context 32768 tokens. See the [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md).
+
 ## Installation
 
 **Requirements:** Python >= 3.10

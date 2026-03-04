@@ -18,10 +18,9 @@ Activation:
     CONTEXTPILOT_INDEX_URL=http://localhost:8765 python -m sglang.launch_server ...
     CONTEXTPILOT_INDEX_URL=http://localhost:8765 vllm serve ...
 
-    # llama.cpp (polling watcher activates automatically):
+    # llama.cpp (polling watcher — pass llama-server URL as argument):
     CONTEXTPILOT_INDEX_URL=http://localhost:8765 \\
-    CONTEXTPILOT_LLAMACPP_URL=http://localhost:8889 \\
-    python contextpilot_hook.py
+    python contextpilot_hook.py http://localhost:8889
 
 Manual activation (without .pth):
     import contextpilot_hook        # registers import hooks for SGLang/vLLM
@@ -41,7 +40,6 @@ import time
 logger = logging.getLogger("contextpilot_hook")
 
 CONTEXTPILOT_INDEX_URL = os.environ.get("CONTEXTPILOT_INDEX_URL")
-CONTEXTPILOT_LLAMACPP_URL = os.environ.get("CONTEXTPILOT_LLAMACPP_URL")
 _TRACK_ONLY_PREFIX = os.environ.get("CONTEXTPILOT_TRACK_ONLY_PREFIX", "req-")
 
 # ---------------------------------------------------------------------------
@@ -728,11 +726,10 @@ def watch_llamacpp(
         raise ValueError(
             "No index URL provided.  Pass index_url= or set CONTEXTPILOT_INDEX_URL."
         )
-    lcpp_url = llamacpp_url or CONTEXTPILOT_LLAMACPP_URL
+    lcpp_url = llamacpp_url
     if lcpp_url is None:
         raise ValueError(
-            "No llama.cpp URL provided.  "
-            "Pass llamacpp_url= or set CONTEXTPILOT_LLAMACPP_URL."
+            "No llama.cpp URL provided.  Pass llamacpp_url= to watch_llamacpp()."
         )
     watcher = LlamaCppSlotWatcher(
         llamacpp_url=lcpp_url,
@@ -747,12 +744,20 @@ def watch_llamacpp(
 # Auto-start llama.cpp watcher when both env vars are set
 # ---------------------------------------------------------------------------
 
-_llamacpp_watcher: LlamaCppSlotWatcher | None = None
-
-if CONTEXTPILOT_INDEX_URL and CONTEXTPILOT_LLAMACPP_URL:
-    _llamacpp_watcher = watch_llamacpp()
-    logger.debug(
-        "[ContextPilot] llama.cpp watcher auto-started "
-        "(index: %s, llama.cpp: %s)",
-        CONTEXTPILOT_INDEX_URL, CONTEXTPILOT_LLAMACPP_URL,
-    )
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) < 2:
+        print(
+            "Usage: CONTEXTPILOT_INDEX_URL=http://localhost:8765 "
+            "python contextpilot_hook.py http://localhost:8889",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    llamacpp_url = sys.argv[1]
+    watcher = watch_llamacpp(llamacpp_url=llamacpp_url)
+    try:
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        watcher.stop()

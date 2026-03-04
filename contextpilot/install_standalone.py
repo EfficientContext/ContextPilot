@@ -59,10 +59,9 @@ def install():
     print("  # SGLang / vLLM (import hook activates automatically):")
     print("  CONTEXTPILOT_INDEX_URL=http://host:8765 python -m sglang.launch_server ...")
     print()
-    print("  # llama.cpp (slot watcher activates automatically):")
+    print("  # llama.cpp (pass llama-server URL as argument):")
     print("  CONTEXTPILOT_INDEX_URL=http://host:8765 \\")
-    print("  CONTEXTPILOT_LLAMACPP_URL=http://localhost:8889 \\")
-    print("  python contextpilot_hook.py")
+    print("  python contextpilot_hook.py http://localhost:8889")
 
 
 def remove():

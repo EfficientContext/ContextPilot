@@ -112,14 +112,16 @@ _HOOK_SRC = textwrap.dedent(r"""
             strncpy(host, h, sizeof(host) - 1);
         }
 
-        /* Build HTTP/1.0 request (no keep-alive — simplest possible). */
-        char body[64];
-        snprintf(body, sizeof(body), "{\"slot_id\":%d}", slot_id);
+        /* Build HTTP/1.0 request (no keep-alive — simplest possible).
+           Use the existing /evict endpoint with a slot_{N} request_id
+           so no extra registry endpoints are needed on the server. */
+        char body[128];
+        snprintf(body, sizeof(body), "{\"request_ids\":[\"slot_%d\"]}", slot_id);
         size_t body_len = strlen(body);
 
         char req[512];
         int req_len = snprintf(req, sizeof(req),
-            "POST /evict_slot HTTP/1.0\r\n"
+            "POST /evict HTTP/1.0\r\n"
             "Host: %s:%d\r\n"
             "Content-Type: application/json\r\n"
             "Content-Length: %zu\r\n"

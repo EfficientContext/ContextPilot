@@ -319,10 +319,8 @@ print(f"Cleared {result['conversations_cleared']} conversations")
 | `/reorder` | POST | **Primary** — reorder contexts (auto-dispatches stateless / stateful) |
 | `/health` | GET | Health check |
 | `/deduplicate` | POST | Multi-turn deduplication (lightweight, stateful only) |
-| `/evict` | POST | Remove evicted requests by request_id — called by SGLang/vLLM hooks |
-| `/register_slot` | POST | Map a llama.cpp slot_id → request_id (native hook integration) |
-| `/evict_slot` | POST | Evict by slot_id — called automatically by the native C++ hook |
-| `/reset` | POST | Reset index, slot registry, and conversation tracker (stateful only) |
+| `/evict` | POST | Remove evicted requests by request_id — called by SGLang, vLLM, and llama.cpp hooks |
+| `/reset` | POST | Reset index and conversation tracker (stateful only) |
 | `/stats` | GET | Get index statistics (stateful only) |
 | `/build` | POST | _Deprecated alias → `/reorder`_ |
 | `/schedule` | POST | _Deprecated alias → `/reorder` (always stateless)_ |

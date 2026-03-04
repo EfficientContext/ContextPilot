@@ -17,14 +17,14 @@ llama-server ships its own OpenAI-compatible `/v1/*` API (including `/v1/chat/co
 ```
 llama-server  :8889   (Metal, --cache-reuse 256, native hook injected)
       │  llama_memory_seq_rm() intercepted via DYLD_INSERT_LIBRARIES
-      │  POST /evict_slot fires instantly on cache clear (zero-latency)
+      │  POST /evict fires instantly on cache clear (zero-latency)
       ↓
 ContextPilot server  :8765   ← reorders contexts for max prefix reuse
       ↑
 your application
 ```
 
-The **native hook** (`contextpilot._llamacpp_hook`) compiles a small C++ library and injects it into llama-server at launch via `DYLD_INSERT_LIBRARIES`. It intercepts `llama_memory_seq_rm()` inside the llama-server process and fires `POST /evict_slot` the instant a slot's KV cache is discarded — no polling, zero latency.
+The **native hook** (`contextpilot._llamacpp_hook`) compiles a small C++ library and injects it into llama-server at launch via `DYLD_INSERT_LIBRARIES`. It intercepts `llama_memory_seq_rm()` inside the llama-server process and fires `POST /evict {"request_ids":["slot_N"]}` the instant a slot's KV cache is discarded — no polling, zero latency.
 
 ### Why `contextpilot-llama-server` instead of just `llama-server`
 
@@ -63,7 +63,7 @@ CONTEXTPILOT_INDEX_URL=http://localhost:8765 contextpilot-llama-server \
     -ngl 99 --cache-reuse 256 --parallel 4 -c 32768
 ```
 
-`contextpilot-llama-server` is a drop-in for `llama-server` — same flags, same behavior. It compiles the C++ hook once (cached in `/tmp`) and exec's `llama-server` with `DYLD_INSERT_LIBRARIES` set automatically. The hook fires `POST /evict_slot` the instant a slot's KV cache is discarded.
+`contextpilot-llama-server` is a drop-in for `llama-server` — same flags, same behavior. It compiles the C++ hook once (cached in `/tmp`) and exec's `llama-server` with `DYLD_INSERT_LIBRARIES` set automatically. The hook fires `POST /evict {"request_ids":["slot_N"]}` the instant a slot's KV cache is discarded.
 
 | llama-server flag | Purpose |
 |---|---|

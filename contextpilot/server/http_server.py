@@ -60,9 +60,6 @@ except ImportError:
 
 # Global state (initialized from env vars or CLI args)
 _index: Optional[ContextPilot] = None
-# Slot registry: maps llama.cpp slot_id → ContextPilot request_id.
-# Updated via POST /register_slot; read by POST /evict_slot (native hook).
-_slot_registry: Dict[int, str] = {}
 _max_tokens: Optional[int] = None
 _infer_api_url: Optional[str] = None
 _aiohttp_session: Optional[aiohttp.ClientSession] = None
@@ -193,18 +190,6 @@ class EvictRequest(BaseModel):
 
     request_ids: List[str] = Field(..., description="List of request IDs to evict/remove")
 
-
-class RegisterSlotRequest(BaseModel):
-    """Associate a llama.cpp slot ID with a ContextPilot request ID."""
-
-    slot_id: int = Field(..., description="llama.cpp slot ID (0-based, matches --parallel N)")
-    request_id: str = Field(..., description="ContextPilot request ID occupying this slot")
-
-
-class EvictSlotRequest(BaseModel):
-    """Evict by llama.cpp slot ID (posted by the native C++ hook)."""
-
-    slot_id: int = Field(..., description="llama.cpp slot ID whose KV cache was just cleared")
 
 
 class SearchRequest(BaseModel):
@@ -699,80 +684,6 @@ async def evict(request: EvictRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/register_slot")
-async def register_slot(request: RegisterSlotRequest):
-    """
-    Record which ContextPilot request_id currently occupies a llama.cpp slot.
-
-    Call this **after** sending a request to llama-server with ``id_slot=N``
-    in the request body.  The native hook (``_llamacpp_hook.py``) uses
-    this mapping when it receives an eviction signal for slot N.
-
-    Typical flow::
-
-        # 1. Get a request_id from /reorder
-        rid = reorder_result["request_ids"][i]
-
-        # 2. Send request to llama-server, pinning it to slot N
-        requests.post("http://localhost:8889/v1/chat/completions",
-                      json={..., "id_slot": N})
-
-        # 3. Register the mapping so the native hook can resolve evictions
-        requests.post("http://localhost:8765/register_slot",
-                      json={"slot_id": N, "request_id": rid})
-    """
-    _slot_registry[request.slot_id] = request.request_id
-    logger.debug(f"Slot registry: slot {request.slot_id} → {request.request_id}")
-    return {"status": "ok", "slot_id": request.slot_id, "request_id": request.request_id}
-
-
-@app.post("/evict_slot")
-async def evict_slot(request: EvictSlotRequest):
-    """
-    Evict a llama.cpp slot by slot ID.
-
-    This endpoint is called automatically by the native C++ hook
-    (``contextpilot._llamacpp_hook``) injected via
-    ``DYLD_INSERT_LIBRARIES`` / ``LD_PRELOAD``.  You do not need to call it
-    manually unless you are building a custom integration.
-
-    The slot ID is mapped to a request_id via the slot registry (populated by
-    ``POST /register_slot``).  If the slot is not registered the call is silently
-    ignored — this can happen for the first few requests before the registry is
-    populated, or for internal llama-server management calls.
-    """
-    if _index is None:
-        # Index not yet initialised — ignore silently (fires before first /reorder)
-        return {"status": "ignored", "reason": "index_not_initialized", "slot_id": request.slot_id}
-
-    request_id = _slot_registry.get(request.slot_id)
-    if not request_id:
-        logger.debug(f"evict_slot: slot {request.slot_id} not registered — ignoring")
-        return {"status": "ignored", "reason": "slot_not_registered", "slot_id": request.slot_id}
-
-    try:
-        result = _index.remove_requests([request_id])
-        tracker = get_conversation_tracker()
-        conversations_cleared = tracker.clear_conversation(request_id)
-
-        logger.info(
-            f"Native hook eviction: slot={request.slot_id} request_id={request_id} "
-            f"removed={result['removed_count']} conv_cleared={conversations_cleared}"
-        )
-
-        return {
-            "status": "success",
-            "slot_id": request.slot_id,
-            "request_id": request_id,
-            "conversations_cleared": conversations_cleared,
-            **result,
-        }
-
-    except Exception as e:
-        logger.error(f"Error in evict_slot: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/reset")
 async def reset_index():
     """
@@ -784,7 +695,7 @@ async def reset_index():
     
     After reset, you must call /reorder again before other operations.
     """
-    global _index, _str_to_id, _id_to_str, _next_str_id, _slot_registry
+    global _index, _str_to_id, _id_to_str, _next_str_id
 
     # Reset conversation tracker
     reset_conversation_tracker()
@@ -793,9 +704,6 @@ async def reset_index():
     _str_to_id = {}
     _id_to_str = {}
     _next_str_id = 0
-
-    # Reset slot registry
-    _slot_registry = {}
     
     if _index is None:
         return {

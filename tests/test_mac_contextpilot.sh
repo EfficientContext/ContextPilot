@@ -169,7 +169,7 @@ fi
 hr
 log "Step 4 — Starting llama-server on port $LLAMA_PORT"
 log "  contextpilot-llama-server compiles and injects the native C++ hook"
-log "  (DYLD_INSERT_LIBRARIES), firing POST /evict_slot on each slot eviction."
+log "  (DYLD_INSERT_LIBRARIES), firing POST /evict on each slot eviction."
 
 LLAMA_SERVER_BIN="$LLAMA_SERVER_BIN" \
 CONTEXTPILOT_INDEX_URL="http://localhost:${CP_PORT}" \

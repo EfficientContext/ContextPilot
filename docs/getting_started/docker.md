@@ -70,10 +70,10 @@ docker run --gpus all --ipc=host \
   -p 8000:8000 -p 8765:8765 \
   -e HUGGING_FACE_HUB_TOKEN=$HF_TOKEN \
   contextpilot-vllm \
-  Qwen/Qwen2.5-7B-Instruct --enable-prefix-caching
+  Qwen/Qwen3.5-2B --enable-prefix-caching
 ```
 
-Everything after the image name is passed to the engine. Defaults are `Qwen/Qwen2.5-7B-Instruct` for both images.
+Everything after the image name is passed to the engine. Defaults are `Qwen/Qwen3.5-2B` for both images.
 
 ## GPU Selection
 

@@ -214,10 +214,14 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         # Build context string directly from corpus map
         context_str = build_context_str(reordered_ids, cmap)
 
-        # Build importance ranking from original retrieval order
-        importance_ranking = None
+        # Build importance ranking — always include so prompt length is equal
+        # between baseline and reorder (fair TTFT comparison).
+        # Baseline: natural order [Doc_1] > [Doc_2] > ...
+        # Reorder:  original retrieval order mapped to reordered positions
         if use_reorder and reordered_ids != original_ids:
             importance_ranking = build_importance_ranking(original_ids, reordered_ids)
+        else:
+            importance_ranking = " > ".join(f"[Doc_{i+1}]" for i in range(len(reordered_ids)))
 
         # Build prompt and measure TTFT
         prompt = build_prompt(qa["question"], context_str, importance_ranking)
@@ -354,7 +358,7 @@ if __name__ == "__main__":
             label = f"top_k={top_k}" + (f"x{repeat_times}" if repeat_times > 1 else "")
             print(f"\n## {label}")
             results = {}
-            for use_reorder in [True, False]:
+            for use_reorder in [False, True]:
                 cp_reset()  # fresh tree for each mode
                 stats = run_multi_turn(
                     retriever, user_id, qa_pairs, model, top_k,

@@ -13,7 +13,7 @@ JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "gpt-4.1-2025-04-14")
 LOCOMO_URL = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
 LOCOMO_CACHE = Path(__file__).resolve().parent.parent / "tests" / ".locomo_cache" / "locomo10.json"
 
-CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
+CONV_INDEX = os.environ.get("LOCOMO_CONV_INDEX", "all")
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
@@ -328,20 +328,6 @@ if __name__ == "__main__":
         run_ttft("Hello, world.", model, max_tokens=4)
     print("Warmup done.\n")
 
-    retriever = Mem0Retriever(config={
-        "llm": {"provider": "openai", "config": {"model": "gpt-4.1-mini-2025-04-14"}},
-        "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
-    })
-
-    conv_data = all_convs[CONV_INDEX]
-    qa_pairs = conv_data["qa"][:MAX_QA]
-    conv = conv_data["conversation"]
-    print(f"\n{'='*70}")
-    print(f"CONV {CONV_INDEX}: {conv['speaker_a']} & {conv['speaker_b']}, {len(qa_pairs)} QA pairs")
-    print(f"{'='*70}")
-
-    user_id = f"locomo_{CONV_INDEX}_{uuid.uuid4().hex[:6]}"
-    n_memories = ingest_conversation(conv_data, retriever, user_id)
     # Parse TOP_K_LIST: supports "20", "50", or "5x10" (k=5, repeat 10 times)
     top_k_configs = []
     for entry in TOP_K_LIST.split(","):
@@ -352,47 +338,108 @@ if __name__ == "__main__":
         else:
             top_k_configs.append((int(entry), 1))
 
-    try:
-        all_rows = []
-        for top_k, repeat_times in top_k_configs:
-            label = f"top_k={top_k}" + (f"x{repeat_times}" if repeat_times > 1 else "")
-            print(f"\n## {label}")
-            results = {}
-            for use_reorder in [False, True]:
-                cp_reset()  # fresh tree for each mode
-                stats = run_multi_turn(
-                    retriever, user_id, qa_pairs, model, top_k,
-                    use_reorder=use_reorder, cp_available=cp_available,
-                    repeat_times=repeat_times)
-                results[stats["label"]] = stats
+    # Determine which conversations to run
+    if CONV_INDEX == "all":
+        conv_indices = list(range(len(all_convs)))
+    else:
+        conv_indices = [int(CONV_INDEX)]
 
-            base_ttft = results["baseline"]["ttft"]
+    grand_rows = []  # aggregate across all conversations
 
-            k_label = f"{top_k}x{repeat_times}" if repeat_times > 1 else str(top_k)
-            for name in ["baseline", "reorder"]:
-                s = results[name]
-                delta = (base_ttft - s["ttft"]) / base_ttft * 100 if base_ttft else 0
-                all_rows.append({
-                    "k": k_label,
-                    "mode": name,
-                    "ttft": f"{s['ttft']:.4f}s",
-                    "ttft_delta": f"{delta:+.1f}%" if name != "baseline" else "-",
-                    "prefix": f"{s['prefix']:.1%}",
-                    "f1": f"{s['f1']:.3f}",
-                    "judge": f"{s['judge']:.3f}",
-                })
-
-        # Summary table
+    for ci in conv_indices:
+        conv_data = all_convs[ci]
+        qa_pairs = conv_data["qa"][:MAX_QA]
+        conv = conv_data["conversation"]
         print(f"\n{'='*70}")
-        print(f"RESULTS (conv={CONV_INDEX}, memories={n_memories}, turns={min(NUM_TURNS, len(qa_pairs))})")
+        print(f"CONV {ci}: {conv['speaker_a']} & {conv['speaker_b']}, {len(qa_pairs)} QA pairs")
         print(f"{'='*70}")
-        print(pd.DataFrame(all_rows).to_string(index=False))
 
-    finally:
+        retriever = Mem0Retriever(config={
+            "llm": {"provider": "openai", "config": {"model": "gpt-4.1-mini-2025-04-14"}},
+            "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+        })
+
+        user_id = f"locomo_{ci}_{uuid.uuid4().hex[:6]}"
+        n_memories = ingest_conversation(conv_data, retriever, user_id)
+
         try:
-            retriever.delete_all_memories(user_id=user_id)
-            print(f"\nCleaned up memories for {user_id}")
-        except Exception as e:
-            print(f"\nCleanup warning: {e}")
-        del retriever
-        import gc; gc.collect()
+            conv_rows = []
+            for top_k, repeat_times in top_k_configs:
+                label = f"top_k={top_k}" + (f"x{repeat_times}" if repeat_times > 1 else "")
+                print(f"\n## {label}")
+                results = {}
+                for use_reorder in [False, True]:
+                    cp_reset()  # fresh tree for each mode
+                    stats = run_multi_turn(
+                        retriever, user_id, qa_pairs, model, top_k,
+                        use_reorder=use_reorder, cp_available=cp_available,
+                        repeat_times=repeat_times)
+                    results[stats["label"]] = stats
+
+                base_ttft = results["baseline"]["ttft"]
+
+                k_label = f"{top_k}x{repeat_times}" if repeat_times > 1 else str(top_k)
+                for name in ["baseline", "reorder"]:
+                    s = results[name]
+                    delta = (base_ttft - s["ttft"]) / base_ttft * 100 if base_ttft else 0
+                    row = {
+                        "conv": ci,
+                        "k": k_label,
+                        "mode": name,
+                        "ttft": s["ttft"],
+                        "ttft_delta": delta if name != "baseline" else 0,
+                        "prefix": s["prefix"],
+                        "f1": s["f1"],
+                        "judge": s["judge"],
+                    }
+                    conv_rows.append(row)
+                    grand_rows.append(row)
+
+            # Per-conversation summary
+            print(f"\n{'='*70}")
+            print(f"RESULTS (conv={ci}, memories={n_memories}, turns={min(NUM_TURNS, len(qa_pairs))})")
+            print(f"{'='*70}")
+            df = pd.DataFrame(conv_rows)
+            df_display = df.copy()
+            df_display["ttft"] = df_display["ttft"].map(lambda x: f"{x:.4f}s")
+            df_display["ttft_delta"] = df.apply(
+                lambda r: f"{r['ttft_delta']:+.1f}%" if r["mode"] != "baseline" else "-", axis=1)
+            df_display["prefix"] = df_display["prefix"].map(lambda x: f"{x:.1%}")
+            df_display["f1"] = df_display["f1"].map(lambda x: f"{x:.3f}")
+            df_display["judge"] = df_display["judge"].map(lambda x: f"{x:.3f}")
+            print(df_display.drop(columns=["conv"]).to_string(index=False))
+
+        finally:
+            try:
+                retriever.delete_all_memories(user_id=user_id)
+                print(f"\nCleaned up memories for {user_id}")
+            except Exception as e:
+                print(f"\nCleanup warning: {e}")
+            del retriever
+            import gc; gc.collect()
+
+    # Grand aggregate table across all conversations
+    if len(conv_indices) > 1:
+        print(f"\n{'='*70}")
+        print(f"AGGREGATE RESULTS ({len(conv_indices)} conversations)")
+        print(f"{'='*70}")
+        gdf = pd.DataFrame(grand_rows)
+        agg = gdf.groupby(["k", "mode"]).agg(
+            ttft=("ttft", "mean"),
+            prefix=("prefix", "mean"),
+            f1=("f1", "mean"),
+            judge=("judge", "mean"),
+        ).reset_index()
+        # Compute delta from baseline per k
+        for k_val in agg["k"].unique():
+            base = agg.loc[(agg["k"] == k_val) & (agg["mode"] == "baseline"), "ttft"].values[0]
+            agg.loc[agg["k"] == k_val, "ttft_delta"] = agg.loc[agg["k"] == k_val, "ttft"].apply(
+                lambda x: (base - x) / base * 100 if base else 0)
+        agg_display = agg.copy()
+        agg_display["ttft"] = agg_display["ttft"].map(lambda x: f"{x:.4f}s")
+        agg_display["ttft_delta"] = agg.apply(
+            lambda r: f"{r['ttft_delta']:+.1f}%" if r["mode"] != "baseline" else "-", axis=1)
+        agg_display["prefix"] = agg_display["prefix"].map(lambda x: f"{x:.1%}")
+        agg_display["f1"] = agg_display["f1"].map(lambda x: f"{x:.3f}")
+        agg_display["judge"] = agg_display["judge"].map(lambda x: f"{x:.3f}")
+        print(agg_display[["k", "mode", "ttft", "ttft_delta", "prefix", "f1", "judge"]].to_string(index=False))

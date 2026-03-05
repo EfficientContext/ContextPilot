@@ -17,7 +17,7 @@ CONV_INDEX = int(os.environ.get("LOCOMO_CONV_INDEX", "0"))
 MAX_QA = int(os.environ.get("LOCOMO_MAX_QA", "150"))
 MAX_GEN = int(os.environ.get("LOCOMO_MAX_TOKENS", "32"))
 NUM_TURNS = int(os.environ.get("LOCOMO_NUM_TURNS", "150"))
-TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,100")
+TOP_K_LIST = os.environ.get("LOCOMO_TOP_K_LIST", "20,50,5x10")
 
 
 async def _stream_ttft(prompt, model, max_tokens=512, request_id=None):
@@ -56,10 +56,38 @@ def run_ttft(prompt, model, max_tokens=512, request_id=None):
     return asyncio.run(_stream_ttft(prompt, model, max_tokens, request_id))
 
 
-def build_prompt(question, context_str):
-    return (f"Memories:\n{context_str}\n"
-            f"Based on the memories above, concisely answer the following "
-            f"question in as few words as possible.\nQuestion: {question}\nAnswer:")
+def build_prompt(question, context_str, importance_ranking=None):
+    prompt = (f"Memories:\n{context_str}\n"
+              f"Based on the memories above, concisely answer the following "
+              f"question in as few words as possible.\n")
+    if importance_ranking:
+        prompt += (f"Please read the documents in the following importance ranking:\n"
+                   f"{importance_ranking}\n"
+                   f"Prioritize information from higher-ranked documents.\n")
+    prompt += f"Question: {question}\nAnswer:"
+    return prompt
+
+
+def build_importance_ranking(original_ids, reordered_ids):
+    """Map original retrieval order to positions in the reordered doc list.
+
+    With repeated docs the same doc_id appears multiple times, so we track
+    the *first* occurrence of each unique doc in the original order and map
+    it to its first position in the reordered list.
+    """
+    # First occurrence of each doc in reordered list -> its [Doc_N] position
+    pos = {}
+    for i, did in enumerate(reordered_ids):
+        if did not in pos:
+            pos[did] = i + 1
+    # Deduplicate original_ids while preserving order
+    seen = set()
+    unique_original = []
+    for did in original_ids:
+        if did not in seen:
+            seen.add(did)
+            unique_original.append(did)
+    return " > ".join(f"[Doc_{pos[did]}]" for did in unique_original if did in pos)
 
 
 def llm_judge(question, prediction, ground_truth):
@@ -120,18 +148,20 @@ def strip_thinking(text):
 
 def build_context_str(doc_ids, corpus_map):
     parts = []
-    for did in doc_ids:
+    for i, did in enumerate(doc_ids):
         entry = corpus_map.get(str(did), {})
         text = entry.get("text", entry.get("content", f"[doc {did}]"))
-        parts.append(text)
+        parts.append(f"[Doc_{i+1}] {text}")
     return "\n\n".join(parts)
 
 
 def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
-                   use_reorder=False, cp_available=False):
+                   use_reorder=False, cp_available=False, repeat_times=1):
     """Run multi-turn benchmark: baseline vs reorder."""
     label = "reorder" if use_reorder else "baseline"
-    print(f"\n--- {label} ({NUM_TURNS} turns, k={top_k}) ---")
+    actual_k = top_k * repeat_times if repeat_times > 1 else top_k
+    suffix = f" (k={top_k}x{repeat_times}={actual_k} docs)" if repeat_times > 1 else f" (k={top_k})"
+    print(f"\n--- {label} ({NUM_TURNS} turns,{suffix}) ---")
 
     ttfts, prefix_matches, f1s, judges = [], [], [], []
 
@@ -146,6 +176,11 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         cmap = retriever.get_corpus_map()
         doc_ids = s[0]["top_k_doc_id"]
 
+        # Repeat docs to create long context if requested
+        if repeat_times > 1:
+            doc_ids = doc_ids * repeat_times
+
+        original_ids = list(doc_ids)  # preserve original retrieval order
         reordered_ids = doc_ids
         req_id = None
         server_prefix_len, server_has_prefix, server_node_id = 0, False, -1
@@ -179,8 +214,13 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         # Build context string directly from corpus map
         context_str = build_context_str(reordered_ids, cmap)
 
+        # Build importance ranking from original retrieval order
+        importance_ranking = None
+        if use_reorder and reordered_ids != original_ids:
+            importance_ranking = build_importance_ranking(original_ids, reordered_ids)
+
         # Build prompt and measure TTFT
-        prompt = build_prompt(qa["question"], context_str)
+        prompt = build_prompt(qa["question"], context_str, importance_ranking)
         out = run_ttft(prompt, model, MAX_GEN, request_id=req_id)
         gt = str(qa["answer"])
 
@@ -219,6 +259,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         "prefix": avg(prefix_matches),
         "f1": avg(f1s),
         "judge": avg(judges),
+        "repeat": repeat_times,
     }
     print(f"  [{label}] TTFT={stats['ttft']:.4f}s  Prefix={stats['prefix']:.1%}"
           f"  F1={stats['f1']:.3f}  Judge={stats['judge']:.3f}")
@@ -297,27 +338,38 @@ if __name__ == "__main__":
 
     user_id = f"locomo_{CONV_INDEX}_{uuid.uuid4().hex[:6]}"
     n_memories = ingest_conversation(conv_data, retriever, user_id)
-    top_k_values = [int(k) for k in TOP_K_LIST.split(",")]
+    # Parse TOP_K_LIST: supports "20", "50", or "5x10" (k=5, repeat 10 times)
+    top_k_configs = []
+    for entry in TOP_K_LIST.split(","):
+        entry = entry.strip()
+        if "x" in entry:
+            k_str, r_str = entry.split("x", 1)
+            top_k_configs.append((int(k_str), int(r_str)))
+        else:
+            top_k_configs.append((int(entry), 1))
 
     try:
         all_rows = []
-        for top_k in top_k_values:
-            print(f"\n## top_k={top_k}")
+        for top_k, repeat_times in top_k_configs:
+            label = f"top_k={top_k}" + (f"x{repeat_times}" if repeat_times > 1 else "")
+            print(f"\n## {label}")
             results = {}
             for use_reorder in [True, False]:
                 cp_reset()  # fresh tree for each mode
                 stats = run_multi_turn(
                     retriever, user_id, qa_pairs, model, top_k,
-                    use_reorder=use_reorder, cp_available=cp_available)
+                    use_reorder=use_reorder, cp_available=cp_available,
+                    repeat_times=repeat_times)
                 results[stats["label"]] = stats
 
             base_ttft = results["baseline"]["ttft"]
 
+            k_label = f"{top_k}x{repeat_times}" if repeat_times > 1 else str(top_k)
             for name in ["baseline", "reorder"]:
                 s = results[name]
                 delta = (base_ttft - s["ttft"]) / base_ttft * 100 if base_ttft else 0
                 all_rows.append({
-                    "k": top_k,
+                    "k": k_label,
                     "mode": name,
                     "ttft": f"{s['ttft']:.4f}s",
                     "ttft_delta": f"{delta:+.1f}%" if name != "baseline" else "-",

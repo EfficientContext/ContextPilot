@@ -5,6 +5,20 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5.post2] - 2026-03-05
+
+### Added
+- Auto-sync CI workflow: ContextPilot `docs/` changes now trigger automatic sync to the documentation site via `repository_dispatch`
+- Docker getting-started guide (`docs/getting_started/docker.md`)
+- Mac + llama.cpp guide for Apple Silicon (`docs/guides/mac_llama_cpp.md`)
+- Supported Primitives reference page (`docs/reference/primitives.md`)
+
+### Changed
+- Updated installation docs with macOS and llama.cpp instructions
+- Documentation link and typo fixes across multiple guides
+- Replaced llama.cpp eviction patch with native C++ hook
+- Replaced SGLang/vLLM source patches with zero-patch runtime monkey-patching (`.pth` hooks)
+
 ## [0.3.5] - 2026-02-25
 
 ### Added

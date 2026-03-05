@@ -226,7 +226,7 @@ def run_multi_turn(retriever, user_id, qa_pairs, model, top_k,
         # Build prompt and measure TTFT
         prompt = build_prompt(qa["question"], context_str, importance_ranking)
         out = run_ttft(prompt, model, MAX_GEN, request_id=req_id)
-        gt = str(qa["answer"])
+        gt = str(qa.get("answer", qa.get("answers", qa.get("gold_answer", ""))))
 
         if idx > 0:
             ttfts.append(out["ttft"])

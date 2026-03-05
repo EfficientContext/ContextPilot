@@ -1,0 +1,20 @@
+name: Notify docs site on doc changes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+
+jobs:
+  notify:
+    name: Trigger docs site sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send repository_dispatch to docs site
+        run: |
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.DOCS_SYNC_TOKEN }}" \
+            https://api.github.com/repos/EfficientContext/contextpilot-docs/dispatches \
+            -d '{"event_type": "docs-updated"}'

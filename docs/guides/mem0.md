@@ -69,7 +69,7 @@ Aggregate across all 10 LoCoMo conversations, Qwen2.5-7B-Instruct on 2xA6000 (SG
 | 5x10 | baseline | 0.1051s | - | 0.418 |
 | 5x10 | reorder | 0.0548s | **+47.8%** | 0.414 |
 
-> **Note**: k=20 uses short mem0 memories (~30 tokens each), so prefix caching savings are small. k=100 and 5x10 (k=5, repeated 10x) have longer contexts where ContextPilot's prefix sharing delivers significant TTFT reduction. The 5x10 configuration simulates realistic long-context RAG where fewer, longer documents are retrieved.
+> **Note**: k=20 uses short mem0 memories (~30 tokens each), so prefix caching savings are small. k=100 and 5x10 (k=5, repeated 10x) have longer contexts where ContextPilot's prefix sharing delivers significant TTFT reduction. The 5x10 configuration simulates realistic long-context memory search where fewer, longer results are retrieved.
 
 ## General usage
 

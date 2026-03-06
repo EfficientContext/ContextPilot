@@ -114,15 +114,18 @@ def client(mock_session):
     original_session = http_mod._aiohttp_session
     original_url = http_mod._infer_api_url
     original_intercept_index = http_mod._intercept_index
+    original_state = http_mod._intercept_state
     http_mod._aiohttp_session = mock_session
     http_mod._infer_api_url = "http://mock-backend:30000"
     http_mod._intercept_index = None  # reset so each test starts fresh
+    http_mod._intercept_state = http_mod._InterceptConvState()
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
         http_mod._aiohttp_session = original_session
         http_mod._infer_api_url = original_url
         http_mod._intercept_index = original_intercept_index
+        http_mod._intercept_state = original_state
 
 
 # ============================================================================
@@ -131,9 +134,15 @@ def client(mock_session):
 
 
 def _warmup(client, path, body):
-    """Send a request to initialise the intercept index (first request = no reorder)."""
+    """Prime the intercept index so subsequent calls use build_incremental.
+
+    After priming, resets conversation state so the actual test request
+    sees a clean slate (but the clustering index remains primed).
+    """
     resp = client.post(path, json=body)
     assert resp.status_code == 200
+    # Keep _intercept_index primed, but reset conversation tracking.
+    http_mod._intercept_state = http_mod._InterceptConvState()
     return resp
 
 
@@ -695,3 +704,225 @@ class TestInterceptRidInjection:
         assert resp.status_code == 200
         forwarded = mock_session._last_json
         assert "rid" not in forwarded
+
+
+# ============================================================================
+# Conversation-aware intercept (skip old, dedup new)
+# ============================================================================
+
+
+# Distinct document sets for multi-turn dedup testing.
+_DOC_CACHE = "Redis cache invalidation strategy with TTL and LRU eviction"
+_DOC_DEPLOY = "Kubernetes deployment rolling update blue green canary strategy"
+
+
+class TestConversationAwareIntercept:
+    """Tests for multi-turn skip / dedup / reorder behaviour."""
+
+    def _make_body(self, system, tool_results=None):
+        """Build an OpenAI chat body with optional tool result messages."""
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "Hello"},
+        ]
+        if tool_results:
+            for i, content in enumerate(tool_results):
+                messages.append(
+                    {"role": "assistant", "content": None,
+                     "tool_calls": [{"id": f"tc{i}", "type": "function",
+                                     "function": {"name": "search", "arguments": "{}"}}]}
+                )
+                messages.append(
+                    {"role": "tool", "tool_call_id": f"tc{i}", "content": content}
+                )
+                messages.append({"role": "user", "content": f"Follow-up {i}"})
+        return {"model": "gpt-4", "messages": messages}
+
+    def test_old_tool_result_skipped_on_second_turn(self, client, mock_session):
+        """Same tool result in a second request is skipped (already processed)."""
+        tool_content = (
+            f"<documents>\n"
+            f"<document>{_AUTH_DOC}</document>\n"
+            f"<document>{_DB_DOC}</document>\n"
+            f"<document>{_OAUTH_DOC}</document>\n"
+            f"</documents>"
+        )
+        system = "You are a helpful assistant."
+        # Turn 1: process tool result (also primes index).
+        body1 = self._make_body(system, [tool_content])
+        resp1 = client.post("/v1/chat/completions", json=body1)
+        assert resp1.status_code == 200
+        meta1 = _cp_meta(resp1)
+        assert meta1.get("intercepted") is True
+        assert meta1.get("tool_results_skipped", 0) == 0
+
+        # Turn 2: same body again — tool result should be skipped.
+        resp2 = client.post("/v1/chat/completions", json=body1)
+        assert resp2.status_code == 200
+        meta2 = _cp_meta(resp2)
+        # Everything was skipped, so no intercept header at all (or skipped count).
+        if meta2:
+            assert meta2.get("tool_results_skipped", 0) >= 1
+        else:
+            # No header means nothing was reordered/deduped — correct.
+            pass
+
+    def test_new_tool_result_processed_old_skipped(self, client, mock_session):
+        """Second turn with a NEW tool result: old one skipped, new one processed."""
+        system = "You are a helpful assistant."
+        tool1 = (
+            f"<documents>\n"
+            f"<document>{_AUTH_DOC}</document>\n"
+            f"<document>{_DB_DOC}</document>\n"
+            f"<document>{_OAUTH_DOC}</document>\n"
+            f"</documents>"
+        )
+        # New tool result with 3 distinct docs for reliable clustering.
+        tool2 = (
+            f"<documents>\n"
+            f"<document>{_DOC_CACHE}</document>\n"
+            f"<document>{_DOC_DEPLOY}</document>\n"
+            f"<document>API rate limiting throttling circuit breaker backpressure</document>\n"
+            f"</documents>"
+        )
+        # Turn 1: one tool result.
+        body1 = self._make_body(system, [tool1])
+        resp1 = client.post("/v1/chat/completions", json=body1)
+        assert resp1.status_code == 200
+
+        # Turn 2: old tool result + new one.
+        body2 = self._make_body(system, [tool1, tool2])
+        resp2 = client.post("/v1/chat/completions", json=body2)
+        assert resp2.status_code == 200
+        meta2 = _cp_meta(resp2)
+        # Old tool result skipped.
+        assert meta2.get("tool_results_skipped", 0) == 1
+
+    def test_cross_tool_result_dedup(self, client, mock_session):
+        """Documents seen in a previous tool result get deduped in new ones."""
+        system = "You are a helpful assistant."
+        tool1 = (
+            f"<documents>\n"
+            f"<document>{_AUTH_DOC}</document>\n"
+            f"<document>{_DB_DOC}</document>\n"
+            f"<document>{_OAUTH_DOC}</document>\n"
+            f"</documents>"
+        )
+        # Second search returns 2 OLD docs + 2 NEW docs.
+        tool2 = (
+            f"<documents>\n"
+            f"<document>{_AUTH_DOC}</document>\n"
+            f"<document>{_OAUTH_DOC}</document>\n"
+            f"<document>{_DOC_CACHE}</document>\n"
+            f"<document>{_DOC_DEPLOY}</document>\n"
+            f"</documents>"
+        )
+        # Turn 1
+        body1 = self._make_body(system, [tool1])
+        resp1 = client.post("/v1/chat/completions", json=body1)
+        assert resp1.status_code == 200
+
+        # Turn 2 with overlapping docs
+        body2 = self._make_body(system, [tool1, tool2])
+        resp2 = client.post("/v1/chat/completions", json=body2)
+        assert resp2.status_code == 200
+        meta2 = _cp_meta(resp2)
+        assert meta2.get("intercepted") is True
+        assert meta2.get("documents_deduplicated", 0) == 2  # AUTH + OAUTH deduped
+
+    def test_system_prompt_processed_once(self, client, mock_session):
+        """System prompt docs are only processed on the first turn."""
+        system = (
+            f"<documents>\n"
+            f"<document>{_AUTH_DOC}</document>\n"
+            f"<document>{_DB_DOC}</document>\n"
+            f"<document>{_OAUTH_DOC}</document>\n"
+            f"</documents>"
+        )
+        body = self._make_body(system)
+        # Turn 1: system gets reordered.
+        resp1 = client.post("/v1/chat/completions", json=body)
+        assert resp1.status_code == 200
+        meta1 = _cp_meta(resp1)
+        assert meta1.get("intercepted") is True
+        assert meta1["sources"]["system"] == 1
+
+        # Turn 2: system NOT re-processed.
+        resp2 = client.post("/v1/chat/completions", json=body)
+        assert resp2.status_code == 200
+        meta2 = _cp_meta(resp2)
+        # No reordering or dedup happened.
+        assert meta2 == {} or meta2.get("sources", {}).get("system", 0) == 0
+
+    def test_new_session_resets_state(self, client, mock_session):
+        """A shorter messages array (new session) resets all intercept state."""
+        system = "You are a helpful assistant."
+        tool_content = (
+            f"<documents>\n"
+            f"<document>{_AUTH_DOC}</document>\n"
+            f"<document>{_DB_DOC}</document>\n"
+            f"<document>{_OAUTH_DOC}</document>\n"
+            f"</documents>"
+        )
+        # Session 1: long conversation with tool result.
+        body_long = self._make_body(system, [tool_content])
+        resp1 = client.post("/v1/chat/completions", json=body_long)
+        assert resp1.status_code == 200
+        assert _cp_meta(resp1).get("intercepted") is True
+
+        # Session 2: new conversation (fewer messages) with same tool result.
+        # The shorter messages array triggers a state reset.
+        body_short = self._make_body(system, [tool_content])
+        # body_short has the same structure, but message count <= body_long's
+        # because _make_body always starts fresh. However body_short has the
+        # same count as body_long (same number of tool results). To simulate
+        # a truly new session, send a shorter request first.
+        body_new = {"model": "gpt-4", "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "Fresh session"},
+        ]}
+        client.post("/v1/chat/completions", json=body_new)  # triggers reset
+
+        # Now send the same tool content — should be processed, not skipped.
+        resp2 = client.post("/v1/chat/completions", json=body_long)
+        assert resp2.status_code == 200
+        meta2 = _cp_meta(resp2)
+        assert meta2.get("intercepted") is True
+        assert meta2.get("tool_results_skipped", 0) == 0
+
+    def test_json_tool_result_dedup(self, client, mock_session):
+        """JSON results format also gets cross-turn dedup.
+
+        Note: dedup compares the full serialised JSON document string, so
+        entries must be byte-identical to be considered duplicates.
+        """
+        import json as _json
+        system = "You are a helper."
+        # Shared entry — identical dict so serialised form matches.
+        auth_entry = {"path": "auth.md", "snippet": _AUTH_DOC, "score": 0.9}
+        results1 = [
+            auth_entry,
+            {"path": "db.md", "snippet": _DB_DOC, "score": 0.8},
+            {"path": "oauth.md", "snippet": _OAUTH_DOC, "score": 0.7},
+        ]
+        results2 = [
+            auth_entry,  # exact duplicate
+            {"path": "cache.md", "snippet": _DOC_CACHE, "score": 0.85},
+            {"path": "deploy.md", "snippet": _DOC_DEPLOY, "score": 0.75},
+        ]
+        tool1 = _json.dumps({"results": results1}, indent=2)
+        tool2 = _json.dumps({"results": results2}, indent=2)
+
+        # Turn 1
+        body1 = self._make_body(system, [tool1])
+        resp1 = client.post("/v1/chat/completions", json=body1)
+        assert resp1.status_code == 200
+
+        # Turn 2: old tool + new tool with overlapping auth entry.
+        body2 = self._make_body(system, [tool1, tool2])
+        resp2 = client.post("/v1/chat/completions", json=body2)
+        assert resp2.status_code == 200
+        meta2 = _cp_meta(resp2)
+        assert meta2.get("intercepted") is True
+        assert meta2.get("documents_deduplicated", 0) == 1  # auth entry deduped
+        assert meta2.get("tool_results_skipped", 0) == 1  # tool1 skipped

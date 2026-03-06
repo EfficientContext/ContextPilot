@@ -17,6 +17,7 @@ Environment variables (alternative to CLI args):
 
 import argparse
 import copy
+import hashlib
 import json
 import logging
 import time
@@ -29,7 +30,7 @@ from contextlib import asynccontextmanager
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
     from pydantic import BaseModel, Field
     import uvicorn
     import aiohttp
@@ -87,6 +88,30 @@ _next_str_id: int = 0
 # (no reorder); subsequent requests use build_incremental to search
 # the existing tree and reorder documents for prefix sharing.
 _intercept_index: Optional[ContextPilot] = None
+
+# ── Conversation-aware intercept state ────────────────────────────────────
+# Tracks which tool results have already been processed, enabling
+# skip-old / dedup-new / reorder-new behaviour.  Single-conversation
+# model (one user at a time).  Resets when the system prompt changes.
+
+from dataclasses import dataclass, field as dc_field
+
+
+@dataclass
+class _InterceptConvState:
+    """Global intercept state for the current conversation."""
+    # Hashes of tool_result content strings already reordered.
+    processed_hashes: set = dc_field(default_factory=set)
+    # Hashes of individual document strings seen across all tool results.
+    seen_doc_hashes: set = dc_field(default_factory=set)
+    # Whether the system prompt has been processed (reordered) already.
+    system_processed: bool = False
+    # Number of messages in the last request.  Messages only grow in a
+    # multi-turn conversation; if the count drops, it's a new session.
+    last_message_count: int = 0
+
+
+_intercept_state = _InterceptConvState()
 
 # Request ID normalization (engine -> ContextPilot canonical IDs)
 _ENGINE_REQ_ID_PREFIX = re.compile(r"^(cmpl-|chatcmpl-|batch-)")
@@ -711,10 +736,14 @@ async def reset_index():
     
     After reset, you must call /reorder again before other operations.
     """
-    global _index, _str_to_id, _id_to_str, _next_str_id
+    global _index, _str_to_id, _id_to_str, _next_str_id, _intercept_index, _intercept_state
 
     # Reset conversation tracker
     reset_conversation_tracker()
+
+    # Reset intercept conversation state
+    _intercept_state = _InterceptConvState()
+    _intercept_index = None
 
     # Reset string-to-ID mapping
     _str_to_id = {}
@@ -988,6 +1017,52 @@ async def proxy_completions(request: Request):
 # HTTP Intercept Proxy Endpoints
 # ============================================================================
 
+
+# ── Conversation-aware helpers ─────────────────────────────────────────────
+
+
+def _hash_text(text: str) -> str:
+    """Fast 16-hex-char hash for content comparison."""
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
+    """Return the global intercept state, resetting if the conversation changed.
+
+    Detection: in a multi-turn agent conversation the messages array only
+    grows.  If the count drops, a new session/conversation started.
+    """
+    global _intercept_state
+    msg_count = len(body.get("messages") or [])
+    if msg_count < _intercept_state.last_message_count:
+        logger.debug(
+            f"Intercept: new conversation detected "
+            f"(messages {msg_count} < {_intercept_state.last_message_count})"
+        )
+        _intercept_state = _InterceptConvState()
+    _intercept_state.last_message_count = msg_count
+    return _intercept_state
+
+
+def _deduplicate_docs(
+    docs: List[str], state: _InterceptConvState
+) -> tuple:
+    """Remove documents already seen in previous tool results.
+
+    Returns (new_docs, deduped_count).  Also registers all doc hashes
+    (including duplicates) in state so future calls can dedup against them.
+    """
+    new_docs = []
+    deduped_count = 0
+    for doc in docs:
+        h = _hash_text(doc)
+        if h in state.seen_doc_hashes:
+            deduped_count += 1
+        else:
+            new_docs.append(doc)
+        state.seen_doc_hashes.add(h)
+    return new_docs, deduped_count
+
 # API format constants
 _OPENAI_CHAT = "openai_chat"
 _ANTHROPIC_MESSAGES = "anthropic_messages"
@@ -1074,6 +1149,8 @@ async def _intercept_and_forward(request: Request, api_format: str):
     headers = dict(request.headers)
     config = parse_intercept_headers(headers)
     total_reordered = 0
+    total_deduped = 0
+    tool_results_skipped = 0
     system_count = 0
     tool_result_count = 0
     reorder_details = []  # collect per-source reorder info
@@ -1082,6 +1159,9 @@ async def _intercept_and_forward(request: Request, api_format: str):
         try:
             body = copy.deepcopy(body)
 
+            # ── Conversation-aware state (single-conversation model) ──
+            state = _get_intercept_state(body)
+
             if api_format == _OPENAI_CHAT:
                 multi = extract_all_openai(body, config)
             elif api_format == _ANTHROPIC_MESSAGES:
@@ -1089,8 +1169,8 @@ async def _intercept_and_forward(request: Request, api_format: str):
             else:
                 multi = MultiExtractionResult()
 
-            # Reorder system extraction
-            if multi.system_extraction:
+            # ── System prompt: reorder only on first turn ─────────────
+            if multi.system_extraction and not state.system_processed:
                 extraction, sys_idx = multi.system_extraction
                 if len(extraction.documents) >= 2:
                     reordered_docs, orig_order, new_order = _reorder_documents(extraction.documents, config)
@@ -1124,35 +1204,87 @@ async def _intercept_and_forward(request: Request, api_format: str):
                                             break
                         total_reordered += len(extraction.documents)
                         system_count = 1
+                    state.system_processed = True
 
-            # Reorder tool result extractions
+            # ── Tool results: skip old, dedup+reorder new ─────────────
             for extraction, location in multi.tool_extractions:
-                if len(extraction.documents) >= 2:
-                    reordered_docs, orig_order, new_order = _reorder_documents(extraction.documents, config)
-                    if orig_order == new_order:
-                        continue
+                if len(extraction.documents) < 2:
+                    continue
+
+                content_hash = _hash_text(extraction.original_content)
+
+                # Already processed in a previous turn → skip entirely
+                if content_hash in state.processed_hashes:
+                    tool_results_skipped += 1
+                    logger.debug(
+                        f"Intercept: skipping already-processed tool_result "
+                        f"at msg[{location.msg_index}]"
+                    )
+                    continue
+
+                # New tool result → dedup docs against history, then reorder
+                state.processed_hashes.add(content_hash)
+                new_docs, deduped = _deduplicate_docs(
+                    extraction.documents, state
+                )
+                total_deduped += deduped
+
+                if len(new_docs) < 2:
+                    # After dedup, not enough docs to reorder — reconstruct
+                    # with just the new docs (or skip if empty).
+                    if new_docs and deduped > 0:
+                        # Reconstruct with only the new (non-duplicate) docs
+                        if api_format == _OPENAI_CHAT:
+                            reconstruct_openai_tool_result(
+                                body, extraction, new_docs, location)
+                        elif api_format == _ANTHROPIC_MESSAGES:
+                            reconstruct_anthropic_tool_result(
+                                body, extraction, new_docs, location)
+                        total_reordered += len(new_docs)
+                        tool_result_count += 1
+                        reorder_details.append({
+                            "source": f"tool_result[{location.msg_index}]",
+                            "count": len(new_docs),
+                            "deduped": deduped,
+                            "original_order": list(range(len(new_docs))),
+                            "reordered_order": list(range(len(new_docs))),
+                        })
+                    continue
+
+                # Reorder the unique new docs
+                reordered_docs, orig_order, new_order = _reorder_documents(
+                    new_docs, config
+                )
+                # Always reconstruct (even if order unchanged) when dedup
+                # removed docs — the content is shorter than original.
+                if orig_order != new_order or deduped > 0:
                     reorder_details.append({
                         "source": f"tool_result[{location.msg_index}]",
-                        "count": len(extraction.documents),
+                        "count": len(new_docs),
+                        "deduped": deduped,
                         "original_order": orig_order,
                         "reordered_order": new_order,
                     })
                     if api_format == _OPENAI_CHAT:
-                        reconstruct_openai_tool_result(body, extraction, reordered_docs, location)
+                        reconstruct_openai_tool_result(
+                            body, extraction, reordered_docs, location)
                     elif api_format == _ANTHROPIC_MESSAGES:
-                        reconstruct_anthropic_tool_result(body, extraction, reordered_docs, location)
-                    total_reordered += len(extraction.documents)
+                        reconstruct_anthropic_tool_result(
+                            body, extraction, reordered_docs, location)
+                    total_reordered += len(new_docs)
                     tool_result_count += 1
 
-            if total_reordered > 0:
+            if total_reordered > 0 or total_deduped > 0 or tool_results_skipped > 0:
                 logger.info(
-                    f"Intercept ({api_format}): reordered {total_reordered} documents "
-                    f"from {system_count} system + {tool_result_count} tool_results"
+                    f"Intercept ({api_format}): reordered {total_reordered} docs, "
+                    f"deduped {total_deduped} docs, skipped {tool_results_skipped} "
+                    f"old tool_results"
                 )
 
         except Exception as e:
             logger.warning(f"Intercept extraction/reorder failed, forwarding original: {e}")
             total_reordered = 0
+            total_deduped = 0
 
     # In stateful mode, inject ContextPilot request_id as `rid` so SGLang
     # uses the same ID for cache tracking (enables eviction sync).
@@ -1188,11 +1320,14 @@ async def _intercept_and_forward(request: Request, api_format: str):
     # Build ContextPilot metadata as a response header (not in body,
     # which would break strict API response parsers like OpenClaw's SDK).
     cp_response_headers = {}
-    if total_reordered > 0:
+    if total_reordered > 0 or total_deduped > 0 or tool_results_skipped > 0:
         cp_response_headers["X-ContextPilot-Result"] = json.dumps({
             "intercepted": True,
-            "documents_reordered": True,
+            "documents_reordered": total_reordered > 0,
             "total_documents": total_reordered,
+            "documents_deduplicated": total_deduped,
+            "tool_results_skipped": tool_results_skipped,
+            "message_count": state.last_message_count,
             "sources": {
                 "system": system_count,
                 "tool_results": tool_result_count,

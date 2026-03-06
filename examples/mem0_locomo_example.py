@@ -347,6 +347,12 @@ if __name__ == "__main__":
     grand_rows = []  # aggregate across all conversations
 
     for ci in conv_indices:
+        # Flush SGLang's radix cache between conversations to avoid pressure buildup
+        try:
+            requests.post(f"{INFERENCE_URL}/flush_cache", timeout=5)
+        except Exception:
+            pass
+
         conv_data = all_convs[ci]
         qa_pairs = conv_data["qa"][:MAX_QA]
         conv = conv_data["conversation"]

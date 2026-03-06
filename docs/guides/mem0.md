@@ -54,7 +54,7 @@ python examples/mem0_locomo_example.py
 | `LOCOMO_MAX_QA` | `150` | Max QA pairs to evaluate |
 | `LOCOMO_MAX_TOKENS` | `32` | Max generation tokens |
 | `LOCOMO_NUM_TURNS` | `150` | Multi-turn conversation length |
-| `LOCOMO_TOP_K_LIST` | `20,5x10` | Top-k values to benchmark. Supports `NxM` for repeat mode (k=N repeated M times) |
+| `LOCOMO_TOP_K_LIST` | `20,5x10` | Top-k values to benchmark. Use `N` for standard top-k (e.g. `20`), or `NxM` to retrieve top-N and repeat each M times to simulate long context (e.g. `5x10` retrieves 5 memories, repeats 10x → 50 total context blocks) |
 
 ## Results
 

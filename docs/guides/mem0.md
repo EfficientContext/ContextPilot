@@ -54,18 +54,20 @@ python examples/mem0_locomo_example.py
 | `LOCOMO_MAX_QA` | `150` | Max QA pairs to evaluate |
 | `LOCOMO_MAX_TOKENS` | `32` | Max generation tokens |
 | `LOCOMO_NUM_TURNS` | `150` | Multi-turn conversation length |
-| `LOCOMO_TOP_K_LIST` | `20,100` | Comma-separated top-k values to benchmark |
+| `LOCOMO_TOP_K_LIST` | `20,5x10` | Top-k values to benchmark. Supports `NxM` for repeat mode (k=N repeated M times) |
 
 ## Results
 
-LoCoMo conv 0, 102 memories, 150 turns:
+Aggregate across all 10 LoCoMo conversations, Qwen2.5-7B-Instruct on 2xA6000 (SGLang, tp=2):
 
-| k | mode | ttft | judge |
-|---|---|---|---|
-| 20 | baseline | 0.0377s | 0.440 |
-| 20 | reorder | 0.0315s | 0.460 |
-| 100 | baseline | 0.1012s | 0.437 |
-| 100 | reorder | 0.0554s | 0.420 |
+| k | mode | ttft | ttft delta | judge |
+|---|---|---|---|---|
+| 20 | baseline | 0.0566s | - | 0.428 |
+| 20 | reorder | 0.0539s | +4.8% | 0.431 |
+| 5x10 | baseline | 0.1051s | - | 0.418 |
+| 5x10 | reorder | 0.0548s | **+47.8%** | 0.414 |
+
+> **Note**: k=20 uses short mem0 memories (~30 tokens each), so prefix caching savings are small. The 5x10 configuration (k=5, repeated 10x) simulates realistic long-context RAG where fewer, longer documents are retrieved — this is where ContextPilot's prefix sharing delivers the most benefit.
 
 ## General usage
 

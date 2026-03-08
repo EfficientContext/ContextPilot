@@ -282,10 +282,13 @@ class TestJsonResultsExtraction:
         assert result is not None
         assert result.mode == "json_results"
         assert len(result.documents) == 3
-        # Each document is a JSON-serialized result item
-        for doc in result.documents:
-            parsed = json.loads(doc)
-            assert "snippet" in parsed
+        # Documents are path identifiers (used for clustering)
+        assert result.documents[0] == "MEMORY.md"
+        assert result.documents[1] == "notes.md"
+        assert result.documents[2] == "config.md"
+        # Full objects stored in json_items
+        assert result.json_items is not None
+        assert result.json_items[0]["path"] == "MEMORY.md"
 
     def test_web_search_results(self):
         import json
@@ -302,6 +305,9 @@ class TestJsonResultsExtraction:
         assert result is not None
         assert result.mode == "json_results"
         assert len(result.documents) == 2
+        # Documents are URL identifiers (used for clustering)
+        assert result.documents[0] == "https://a.com"
+        assert result.documents[1] == "https://b.com"
 
     def test_explicit_mode(self):
         import json
@@ -347,13 +353,15 @@ class TestJsonResultsExtraction:
         config = InterceptConfig()
         result = extract_documents(text, config)
         assert result is not None
-        # Reorder: reverse
+        # Documents are path identifiers
+        assert result.documents == ["a.md", "b.md", "c.md"]
+        # Reorder: reverse the content strings
         reordered = list(reversed(result.documents))
         rebuilt = reconstruct_content(result, reordered)
         rebuilt_obj = json.loads(rebuilt)
         # Top-level keys preserved
         assert rebuilt_obj["citations"] == "on"
-        # Results reordered
+        # Full result objects reordered by content mapping
         assert rebuilt_obj["results"][0]["path"] == "c.md"
         assert rebuilt_obj["results"][1]["path"] == "b.md"
         assert rebuilt_obj["results"][2]["path"] == "a.md"

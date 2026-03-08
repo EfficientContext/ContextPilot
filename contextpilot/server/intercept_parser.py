@@ -8,6 +8,7 @@ the request body with reordered documents.
 No server dependencies — independently testable.
 """
 
+import hashlib
 import json
 import re
 import copy
@@ -28,6 +29,10 @@ _NUMBERED_RE = re.compile(r"\[(\d+)\]\s*")
 
 # Separator patterns for auto-detection
 _SEPARATOR_PATTERNS = ["---", "==="]
+
+# Minimum content length to track a single-doc tool_result for dedup.
+# Skips tiny results like "ok", error messages, short status outputs.
+_SINGLE_DOC_MIN_CHARS = 200
 
 
 @dataclass
@@ -58,6 +63,8 @@ class ExtractionResult:
     separator_char: str = ""
     # Original content for fallback
     original_content: str = ""
+    # JSON-results-specific: full result objects (documents = content strings)
+    json_items: Optional[List[Any]] = None
 
 
 @dataclass
@@ -69,18 +76,33 @@ class ToolResultLocation:
 
 
 @dataclass
+class SingleDocExtraction:
+    """A tool_result containing a single document (e.g., file read, single API response).
+
+    Not reorderable (only 1 item), but trackable for cross-turn deduplication.
+    The content_hash enables efficient comparison without storing full content.
+    """
+    content: str
+    content_hash: str  # SHA-256 of stripped content
+    tool_call_id: str = ""  # tool_call_id (OpenAI) or tool_use_id (Anthropic)
+
+
+@dataclass
 class MultiExtractionResult:
     """Aggregates extractions from system prompt and tool_result messages."""
     system_extraction: Optional[Tuple["ExtractionResult", int]] = None
     tool_extractions: List[Tuple["ExtractionResult", ToolResultLocation]] = field(default_factory=list)
+    single_doc_extractions: List[Tuple["SingleDocExtraction", ToolResultLocation]] = field(default_factory=list)
 
     @property
     def has_extractions(self) -> bool:
-        return self.system_extraction is not None or len(self.tool_extractions) > 0
+        return (self.system_extraction is not None
+                or len(self.tool_extractions) > 0
+                or len(self.single_doc_extractions) > 0)
 
     @property
     def total_documents(self) -> int:
-        total = 0
+        total = len(self.single_doc_extractions)
         if self.system_extraction:
             total += len(self.system_extraction[0].documents)
         for ext, _ in self.tool_extractions:
@@ -305,6 +327,19 @@ def _reconstruct_markdown_headers(
     return "\n\n".join(parts)
 
 
+# Keys that carry a URL / path identifier suitable for clustering.
+_JSON_ID_KEYS = ("url", "path", "file", "filename", "uri", "href")
+
+
+def _extract_json_id(item: dict) -> Optional[str]:
+    """Extract a URL or path identifier from a JSON result item for clustering."""
+    for key in _JSON_ID_KEYS:
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
 def _extract_json_results(
     text: str, config: InterceptConfig
 ) -> Optional[ExtractionResult]:
@@ -312,8 +347,9 @@ def _extract_json_results(
 
     OpenClaw tools (memory search, web search, web fetch) return
     ``JSON.stringify(payload, null, 2)`` where *payload* contains a
-    ``results`` list.  Each element of that list is treated as one
-    document (serialised back to a compact JSON string).
+    ``results`` list.  The content field (description/snippet/content/text)
+    of each item is used for clustering; the full objects are stored in
+    ``json_items`` so reconstruction can reorder them intact.
     """
     stripped = text.strip()
     if not stripped.startswith("{"):
@@ -327,13 +363,31 @@ def _extract_json_results(
     results = obj.get("results")
     if not isinstance(results, list) or len(results) < 2:
         return None
-    documents = [json.dumps(item, ensure_ascii=False) for item in results]
+
+    # Use url/path as document identifier for clustering — short, stable,
+    # and same-site results share shingles → cluster together naturally.
+    # Falls back to full serialised object when no id key is found.
+    documents = []
+    for item in results:
+        if isinstance(item, dict):
+            doc_id = _extract_json_id(item)
+            if doc_id is not None:
+                documents.append(doc_id)
+            else:
+                documents.append(json.dumps(item, ensure_ascii=False))
+        else:
+            documents.append(json.dumps(item, ensure_ascii=False))
+
+    if len(documents) < 2:
+        return None
+
     return ExtractionResult(
         documents=documents,
         prefix="",
         suffix="",
         mode="json_results",
         original_content=text,
+        json_items=results,
     )
 
 
@@ -429,9 +483,30 @@ def _reconstruct_numbered(
 def _reconstruct_json_results(
     extraction: ExtractionResult, reordered_docs: List[str]
 ) -> str:
-    """Reconstruct a JSON tool result with reordered ``results`` array."""
+    """Reconstruct a JSON tool result with reordered ``results`` array.
+
+    When ``json_items`` is set (content-key extraction), maps reordered
+    content strings back to their full result objects via index lookup.
+    Falls back to parsing reordered_docs as JSON for backward compat.
+    """
     obj = json.loads(extraction.original_content)
-    obj["results"] = [json.loads(doc) for doc in reordered_docs]
+    if extraction.json_items is not None:
+        # Build content → original-index mapping
+        orig_docs = extraction.documents
+        doc_to_indices: dict = {}
+        for i, doc in enumerate(orig_docs):
+            doc_to_indices.setdefault(doc, []).append(i)
+        used: set = set()
+        reordered_items = []
+        for doc in reordered_docs:
+            for idx in doc_to_indices.get(doc, []):
+                if idx not in used:
+                    reordered_items.append(extraction.json_items[idx])
+                    used.add(idx)
+                    break
+        obj["results"] = reordered_items
+    else:
+        obj["results"] = [json.loads(doc) for doc in reordered_docs]
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 
@@ -670,6 +745,8 @@ def extract_all_openai(
             result.system_extraction = sys_result
     if config.scope in ("tool_results", "all"):
         result.tool_extractions = extract_from_openai_tool_results(body, config)
+        result.single_doc_extractions = extract_single_docs_from_openai_tool_results(
+            body, config)
     return result
 
 
@@ -685,4 +762,281 @@ def extract_all_anthropic(
             result.system_extraction = (sys_extraction, -1)
     if config.scope in ("tool_results", "all"):
         result.tool_extractions = extract_from_anthropic_tool_results(body, config)
+        result.single_doc_extractions = extract_single_docs_from_anthropic_tool_results(
+            body, config)
     return result
+
+
+# ── Single-document extraction (for cross-turn dedup) ─────────────────────
+
+
+def _make_single_doc(content: str, tool_call_id: str = "") -> SingleDocExtraction:
+    """Create a SingleDocExtraction with content hash."""
+    stripped = content.strip()
+    content_hash = hashlib.sha256(stripped.encode()).hexdigest()
+    return SingleDocExtraction(
+        content=stripped,
+        content_hash=content_hash,
+        tool_call_id=tool_call_id,
+    )
+
+
+def extract_single_docs_from_openai_tool_results(
+    body: Dict[str, Any], config: InterceptConfig
+) -> List[Tuple[SingleDocExtraction, ToolResultLocation]]:
+    """Extract single-document tool results for dedup tracking (OpenAI format).
+
+    Only captures tool_results where multi-doc extraction failed — these are
+    individual file reads, single API responses, etc. that contain substantial
+    content worth deduplicating across turns.
+    """
+    messages = body.get("messages")
+    if not messages or not isinstance(messages, list):
+        return []
+
+    results = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") not in ("tool", "toolResult"):
+            continue
+        tool_call_id = msg.get("tool_call_id", "")
+        content = msg.get("content", "")
+
+        if isinstance(content, str):
+            # Skip if multi-doc extraction would succeed
+            extraction = extract_documents(content, config)
+            if extraction and len(extraction.documents) >= 2:
+                continue
+            if len(content.strip()) >= _SINGLE_DOC_MIN_CHARS:
+                loc = ToolResultLocation(msg_index=i)
+                results.append((_make_single_doc(content, tool_call_id), loc))
+        elif isinstance(content, list):
+            for j, block in enumerate(content):
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    continue
+                text = block.get("text", "")
+                extraction = extract_documents(text, config)
+                if extraction and len(extraction.documents) >= 2:
+                    continue
+                if len(text.strip()) >= _SINGLE_DOC_MIN_CHARS:
+                    loc = ToolResultLocation(msg_index=i, block_index=j)
+                    results.append((_make_single_doc(text, tool_call_id), loc))
+    return results
+
+
+def extract_single_docs_from_anthropic_tool_results(
+    body: Dict[str, Any], config: InterceptConfig
+) -> List[Tuple[SingleDocExtraction, ToolResultLocation]]:
+    """Extract single-document tool results for dedup tracking (Anthropic format).
+
+    Anthropic tool results appear as user messages with type=="tool_result" blocks.
+    """
+    messages = body.get("messages")
+    if not messages or not isinstance(messages, list):
+        return []
+
+    results = []
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for j, block in enumerate(content):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") not in ("tool_result", "toolResult"):
+                continue
+            tool_use_id = block.get("tool_use_id", "")
+            tr_content = block.get("content", "")
+
+            if isinstance(tr_content, str):
+                extraction = extract_documents(tr_content, config)
+                if extraction and len(extraction.documents) >= 2:
+                    continue
+                if len(tr_content.strip()) >= _SINGLE_DOC_MIN_CHARS:
+                    loc = ToolResultLocation(msg_index=i, block_index=j)
+                    results.append((_make_single_doc(tr_content, tool_use_id), loc))
+            elif isinstance(tr_content, list):
+                for k, inner in enumerate(tr_content):
+                    if not isinstance(inner, dict) or inner.get("type") != "text":
+                        continue
+                    text = inner.get("text", "")
+                    extraction = extract_documents(text, config)
+                    if extraction and len(extraction.documents) >= 2:
+                        continue
+                    if len(text.strip()) >= _SINGLE_DOC_MIN_CHARS:
+                        loc = ToolResultLocation(msg_index=i, block_index=j, inner_block_index=k)
+                        results.append((_make_single_doc(text, tool_use_id), loc))
+    return results
+
+
+# ── Single-document hint replacement ──────────────────────────────────────
+
+
+def replace_single_doc_openai(
+    body: Dict[str, Any], location: ToolResultLocation, hint: str,
+) -> None:
+    """Replace a single-doc OpenAI tool result content with a dedup hint in-place."""
+    msg = body["messages"][location.msg_index]
+    if location.block_index == -1:
+        msg["content"] = hint
+    else:
+        msg["content"][location.block_index]["text"] = hint
+
+
+def replace_single_doc_anthropic(
+    body: Dict[str, Any], location: ToolResultLocation, hint: str,
+) -> None:
+    """Replace a single-doc Anthropic tool_result content with a dedup hint in-place."""
+    msg = body["messages"][location.msg_index]
+    block = msg["content"][location.block_index]
+    if location.inner_block_index == -1:
+        block["content"] = hint
+    else:
+        block["content"][location.inner_block_index]["text"] = hint
+
+
+# ── Format handler abstraction ─────────────────────────────────────────────
+# Strategy pattern: encapsulates all format-specific operations so the
+# intercept logic in http_server.py can be completely format-agnostic.
+
+
+from abc import ABC, abstractmethod
+
+
+class FormatHandler(ABC):
+    """Abstract handler for API format-specific operations.
+
+    Implement one per LLM API format (OpenAI Chat, Anthropic Messages, etc.).
+    The intercept pipeline calls these methods instead of branching on format.
+    """
+
+    @abstractmethod
+    def extract_all(self, body: Dict[str, Any],
+                    config: InterceptConfig) -> MultiExtractionResult: ...
+
+    @abstractmethod
+    def reconstruct_system(self, body: Dict[str, Any],
+                           extraction: ExtractionResult,
+                           docs: List[str], sys_idx: int) -> None: ...
+
+    @abstractmethod
+    def reconstruct_tool_result(self, body: Dict[str, Any],
+                                extraction: ExtractionResult,
+                                docs: List[str],
+                                location: ToolResultLocation) -> None: ...
+
+    @abstractmethod
+    def replace_single_doc(self, body: Dict[str, Any],
+                           location: ToolResultLocation,
+                           hint: str) -> None: ...
+
+    @abstractmethod
+    def tool_call_present(self, body: Dict[str, Any],
+                          tool_call_id: str) -> bool: ...
+
+    @abstractmethod
+    def target_path(self) -> str: ...
+
+    @abstractmethod
+    def cache_system(self, body: Dict[str, Any]) -> Any: ...
+
+    @abstractmethod
+    def restore_system(self, body: Dict[str, Any], cached: Any) -> None: ...
+
+
+class OpenAIChatHandler(FormatHandler):
+    """Handler for OpenAI Chat Completions format."""
+
+    def extract_all(self, body, config):
+        return extract_all_openai(body, config)
+
+    def reconstruct_system(self, body, extraction, docs, sys_idx):
+        new_content = reconstruct_content(extraction, docs)
+        msg = body["messages"][sys_idx]
+        if isinstance(msg.get("content"), str):
+            msg["content"] = new_content
+        elif isinstance(msg.get("content"), list):
+            for block in msg["content"]:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    if extract_documents(block.get("text", ""), InterceptConfig()):
+                        block["text"] = new_content
+                        break
+
+    def reconstruct_tool_result(self, body, extraction, docs, location):
+        reconstruct_openai_tool_result(body, extraction, docs, location)
+
+    def replace_single_doc(self, body, location, hint):
+        replace_single_doc_openai(body, location, hint)
+
+    def tool_call_present(self, body, tool_call_id):
+        for msg in (body.get("messages") or []):
+            if msg.get("role") in ("tool", "toolResult"):
+                if msg.get("tool_call_id") == tool_call_id:
+                    return True
+        return False
+
+    def target_path(self):
+        return "/v1/chat/completions"
+
+    def cache_system(self, body):
+        return None  # System prompt is inside messages array
+
+    def restore_system(self, body, cached):
+        pass  # No-op: cached with messages
+
+
+class AnthropicMessagesHandler(FormatHandler):
+    """Handler for Anthropic Messages API format."""
+
+    def extract_all(self, body, config):
+        return extract_all_anthropic(body, config)
+
+    def reconstruct_system(self, body, extraction, docs, sys_idx):
+        new_content = reconstruct_content(extraction, docs)
+        if isinstance(body.get("system"), str):
+            body["system"] = new_content
+        elif isinstance(body.get("system"), list):
+            for block in body["system"]:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    if extract_documents(block.get("text", ""), InterceptConfig()):
+                        block["text"] = new_content
+                        break
+
+    def reconstruct_tool_result(self, body, extraction, docs, location):
+        reconstruct_anthropic_tool_result(body, extraction, docs, location)
+
+    def replace_single_doc(self, body, location, hint):
+        replace_single_doc_anthropic(body, location, hint)
+
+    def tool_call_present(self, body, tool_call_id):
+        for msg in (body.get("messages") or []):
+            if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                for block in msg["content"]:
+                    if (isinstance(block, dict)
+                            and block.get("type") in ("tool_result", "toolResult")
+                            and block.get("tool_use_id") == tool_call_id):
+                        return True
+        return False
+
+    def target_path(self):
+        return "/v1/messages"
+
+    def cache_system(self, body):
+        return copy.deepcopy(body.get("system"))
+
+    def restore_system(self, body, cached):
+        if cached is not None:
+            body["system"] = copy.deepcopy(cached)
+
+
+# Handler registry — add new formats here.
+_FORMAT_HANDLERS: Dict[str, FormatHandler] = {
+    "openai_chat": OpenAIChatHandler(),
+    "anthropic_messages": AnthropicMessagesHandler(),
+}
+
+
+def get_format_handler(api_format: str) -> FormatHandler:
+    """Return the handler for the given API format, defaulting to OpenAI."""
+    return _FORMAT_HANDLERS.get(api_format, _FORMAT_HANDLERS["openai_chat"])

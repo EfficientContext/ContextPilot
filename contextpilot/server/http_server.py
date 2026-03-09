@@ -370,6 +370,34 @@ async def health():
     }
 
 
+@app.get("/metrics/ttft")
+async def metrics_ttft(last: int = 0):
+    """Return TTFT history for benchmarking.
+
+    Query params:
+        last: return only last N entries (0 = all).
+    """
+    history = list(_ttft_history)
+    if last > 0:
+        history = history[-last:]
+    avg = sum(history) / len(history) if history else 0
+    return {
+        "ttft_ms": history,
+        "count": len(history),
+        "avg_ms": round(avg, 2),
+        "total_chars_saved": _ttft_chars_saved_total,
+    }
+
+
+@app.post("/metrics/ttft/reset")
+async def metrics_ttft_reset():
+    """Reset TTFT history (call before a benchmark run)."""
+    global _ttft_chars_saved_total
+    _ttft_history.clear()
+    _ttft_chars_saved_total = 0
+    return {"status": "ok"}
+
+
 @app.post("/reorder")
 async def reorder(request: ReorderRequest):
     """
@@ -1050,16 +1078,25 @@ def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
     """Return the global intercept state, resetting if the conversation changed.
 
     Detection: in a multi-turn agent conversation the messages array only
-    grows.  If the count drops, a new session/conversation started.
+    grows.  If the count drops, either a new session started or the host
+    compacted old messages.  Either way, reset all state: the old KV cache
+    entries are gone (compaction rewrites content), so cached_messages,
+    seen_doc_hashes, and reorder state are all invalid.
     """
     global _intercept_state
     msg_count = len(body.get("messages") or [])
     if msg_count < _intercept_state.last_message_count:
-        logger.debug(
-            f"Intercept: new conversation detected "
-            f"(messages {msg_count} < {_intercept_state.last_message_count})"
+        logger.info(
+            f"Intercept: message count dropped "
+            f"({msg_count} < {_intercept_state.last_message_count}), "
+            f"resetting all state (compaction or new session)"
         )
         _intercept_state = _InterceptConvState()
+        # Skip reorder for the first post-compaction tool result:
+        # prefix cache is fully invalidated, nothing to align with.
+        # Go straight to dedup mode so docs are registered for future turns.
+        _intercept_state.first_tool_result_done = True
+        _intercept_state.system_processed = True
     _intercept_state.last_message_count = msg_count
     return _intercept_state
 

@@ -131,6 +131,22 @@ xcode-select --install    # one-time: provides clang++ to compile the native hoo
 
 More [detailed installation instructions](https://efficientcontext.github.io/contextpilot-docs/getting_started/installation) are available in the docs.
 
+---
+
+### LMCache (Optional KV Cache CPU Offloading)
+
+[LMCache](https://github.com/LMCache/LMCache) offloads evicted KV cache to CPU/disk so prefixes can be restored without recomputation. ContextPilot works with LMCache out of the box — just install it and add one flag:
+
+```bash
+pip install lmcache
+vllm serve Qwen/Qwen3-4B --enable-prefix-caching \
+    --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+```
+
+Docker images are also available — see the [Quick Start](https://efficientcontext.github.io/contextpilot-docs/getting_started/quickstart) and [Docker guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/docker) for details.
+
+---
+
 Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/docker).
 
 ## Getting Started

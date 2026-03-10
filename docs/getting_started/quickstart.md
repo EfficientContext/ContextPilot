@@ -175,6 +175,19 @@ python -m vllm.entrypoints.openai.api_server \
     --enable-prefix-caching
 ```
 
+**vLLM + LMCache (optional KV cache CPU offloading):**
+
+[LMCache](https://github.com/LMCache/LMCache) offloads evicted KV cache to CPU/disk so prefixes can be restored without recomputation. Just install it and add the `--kv-transfer-config` flag — ContextPilot works with LMCache out of the box.
+
+```bash
+pip install lmcache
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen3-4B \
+    --port 30000 \
+    --enable-prefix-caching \
+    --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+```
+
 > **Note:** For eviction sync, prefix with `CONTEXTPILOT_INDEX_URL=http://localhost:8765`. This lets the inference engine notify ContextPilot when KV cache entries are evicted.
 
 ## Step 2: Start ContextPilot

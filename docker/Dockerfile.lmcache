@@ -1,0 +1,17 @@
+ARG LMCACHE_VERSION=latest
+FROM lmcache/vllm-openai:${LMCACHE_VERSION}
+
+COPY . /opt/contextpilot
+WORKDIR /opt/contextpilot
+
+RUN pip install --no-cache-dir . && \
+    python3 -m contextpilot.install_hook
+
+ENV CONTEXTPILOT_INDEX_URL=http://localhost:8765
+EXPOSE 8000 8765
+
+COPY docker/entrypoint-vllm.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["Qwen/Qwen2.5-7B-Instruct", "--enable-prefix-caching", "--kv-transfer-config", "{\"kv_connector\":\"LMCacheConnectorV1\",\"kv_role\":\"kv_both\"}"]

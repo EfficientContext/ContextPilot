@@ -40,8 +40,9 @@ Single container with both the engine and ContextPilot server.
 ### Build
 
 ```bash
-docker build -t contextpilot-sglang -f docker/Dockerfile.sglang .
-docker build -t contextpilot-vllm   -f docker/Dockerfile.vllm .
+docker build -t contextpilot-sglang  -f docker/Dockerfile.sglang .
+docker build -t contextpilot-vllm    -f docker/Dockerfile.vllm .
+docker build -t contextpilot-lmcache -f docker/Dockerfile.lmcache .
 ```
 
 Pin a specific engine version:
@@ -74,6 +75,40 @@ docker run --gpus all --ipc=host \
 ```
 
 Everything after the image name is passed to the engine. Defaults are `Qwen/Qwen3.5-2B` for both images.
+
+**vLLM + LMCache (KV cache CPU offloading):**
+
+[LMCache](https://github.com/LMCache/LMCache) offloads KV cache to CPU/disk so evicted prefixes can be restored without recomputation. ContextPilot works with LMCache out of the box — the `BlockPool` hook is unaffected.
+
+```bash
+docker build -t contextpilot-lmcache -f docker/Dockerfile.lmcache .
+```
+
+Pin a specific LMCache version:
+
+```bash
+docker build -t contextpilot-lmcache -f docker/Dockerfile.lmcache --build-arg LMCACHE_VERSION=latest .
+```
+
+Run:
+
+```bash
+docker run --gpus all --ipc=host \
+  -p 8000:8000 -p 8765:8765 \
+  -e HUGGING_FACE_HUB_TOKEN=$HF_TOKEN \
+  contextpilot-lmcache
+```
+
+Override the model or LMCache config:
+
+```bash
+docker run --gpus all --ipc=host \
+  -p 8000:8000 -p 8765:8765 \
+  -e HUGGING_FACE_HUB_TOKEN=$HF_TOKEN \
+  contextpilot-lmcache \
+  Qwen/Qwen3-4B --enable-prefix-caching \
+  --kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+```
 
 ## GPU Selection
 

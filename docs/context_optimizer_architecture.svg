@@ -1,290 +1,241 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 1420" font-family="Helvetica, Arial, sans-serif" font-size="12">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 700" font-family="Helvetica, Arial, sans-serif" font-size="12">
   <defs>
     <marker id="a" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
       <polygon points="0 0,7 2.5,0 5" fill="#555"/>
     </marker>
   </defs>
 
-  <rect width="900" height="1420" fill="#fff"/>
+  <rect width="1500" height="700" fill="#fff"/>
 
   <!-- Title -->
-  <text x="450" y="30" text-anchor="middle" font-size="18" font-weight="bold" fill="#222">Context Optimizer Architecture</text>
-  <text x="450" y="48" text-anchor="middle" font-size="11" fill="#888">Analogous to SQL Query Optimizer</text>
+  <text x="750" y="25" text-anchor="middle" font-size="18" font-weight="bold" fill="#222">Context Optimizer Architecture</text>
+  <text x="750" y="43" text-anchor="middle" font-size="11" fill="#888">Analogous to SQL Query Optimizer</text>
 
   <!-- ═══ User App ═══ -->
-  <rect x="300" y="68" width="300" height="40" rx="3" fill="#f5f5f5" stroke="#aaa"/>
-  <text x="450" y="93" text-anchor="middle" font-weight="bold" fill="#333">User Application</text>
+  <rect x="30" y="155" width="85" height="48" rx="3" fill="#f5f5f5" stroke="#aaa"/>
+  <text x="72" y="176" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">User</text>
+  <text x="72" y="189" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">Application</text>
 
-  <line x1="450" y1="108" x2="450" y2="138" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="115" y1="179" x2="138" y2="179" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
   <!-- ═══ Integration Layer ═══ -->
-  <rect x="40" y="138" width="820" height="90" rx="3" fill="none" stroke="#4A90D9" stroke-width="2"/>
-  <text x="55" y="157" font-weight="bold" fill="#4A90D9" font-size="11">INTEGRATION LAYER</text>
-  <text x="845" y="157" text-anchor="end" fill="#999" font-size="10">pick one — Phase 2</text>
+  <rect x="140" y="58" width="155" height="260" rx="3" fill="none" stroke="#4A90D9" stroke-width="2"/>
+  <text x="217" y="75" text-anchor="middle" font-weight="bold" fill="#4A90D9" font-size="10">INTEGRATION</text>
 
-  <rect x="55"  y="168" width="185" height="48" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="147" y="187" text-anchor="middle" font-weight="bold" font-size="11" fill="#333">L0: HTTP Proxy</text>
-  <text x="147" y="201" text-anchor="middle" font-size="10" fill="#666">cp serve --backend ...</text>
+  <rect x="152" y="85" width="131" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
+  <text x="217" y="101" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L0: HTTP Proxy</text>
+  <text x="217" y="113" text-anchor="middle" font-size="8" fill="#666">cp serve</text>
 
-  <rect x="255" y="168" width="185" height="48" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="347" y="187" text-anchor="middle" font-weight="bold" font-size="11" fill="#333">L1: Client Wrapper</text>
-  <text x="347" y="201" text-anchor="middle" font-size="10" fill="#666">cp.openai.Client()</text>
+  <rect x="152" y="125" width="131" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
+  <text x="217" y="141" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L1: Client Wrapper</text>
+  <text x="217" y="153" text-anchor="middle" font-size="8" fill="#666">cp.openai.Client()</text>
 
-  <rect x="455" y="168" width="185" height="48" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="547" y="187" text-anchor="middle" font-weight="bold" font-size="11" fill="#333">L2: SDK Direct</text>
-  <text x="547" y="201" text-anchor="middle" font-size="10" fill="#666">cp.optimize(msgs)</text>
+  <rect x="152" y="165" width="131" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
+  <text x="217" y="181" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L2: SDK Direct</text>
+  <text x="217" y="193" text-anchor="middle" font-size="8" fill="#666">cp.optimize(msgs)</text>
 
-  <rect x="655" y="168" width="185" height="48" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="747" y="187" text-anchor="middle" font-weight="bold" font-size="11" fill="#333">L3: Engine Hook</text>
-  <text x="747" y="201" text-anchor="middle" font-size="10" fill="#666">sglang / vllm auto</text>
+  <rect x="152" y="205" width="131" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
+  <text x="217" y="221" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L3: Engine Hook</text>
+  <text x="217" y="233" text-anchor="middle" font-size="8" fill="#666">sglang / vllm</text>
 
-  <line x1="450" y1="228" x2="450" y2="258" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="217" y="260" text-anchor="middle" font-size="8" fill="#4A90D9">Phase 2</text>
 
-  <!-- ═══ _compat.py Bridge ═══ -->
-  <rect x="40" y="237" width="820" height="18" rx="2" fill="#FEF2F2" stroke="#EF4444" stroke-dasharray="4 2"/>
-  <text x="450" y="250" text-anchor="middle" font-size="9" fill="#DC2626">_compat.py — old import paths forwarded here (Phase 0)</text>
+  <!-- _compat.py bridge -->
+  <rect x="140" y="320" width="155" height="14" rx="2" fill="#FEF2F2" stroke="#EF4444" stroke-dasharray="4 2"/>
+  <text x="217" y="330" text-anchor="middle" font-size="7" fill="#DC2626">_compat.py (Phase 0)</text>
+
+  <line x1="295" y1="179" x2="318" y2="179" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
   <!-- ═══ Optimizer Core ═══ -->
-  <rect x="40" y="258" width="820" height="530" rx="3" fill="none" stroke="#7B61FF" stroke-width="2"/>
-  <text x="55" y="277" font-weight="bold" fill="#7B61FF" font-size="11">CONTEXT OPTIMIZER CORE</text>
-  <text x="845" y="277" text-anchor="end" fill="#999" font-size="10">optimizer/ — Phase 1</text>
+  <rect x="320" y="58" width="690" height="276" rx="3" fill="none" stroke="#7B61FF" stroke-width="2"/>
+  <text x="335" y="75" font-weight="bold" fill="#7B61FF" font-size="10">CONTEXT OPTIMIZER CORE</text>
+  <text x="995" y="75" text-anchor="end" fill="#999" font-size="9">optimizer/ — Phase 1</text>
 
   <!-- Pipeline: 4 boxes -->
-  <rect x="55"  y="292" width="180" height="60" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="145" y="313" text-anchor="middle" font-weight="bold" fill="#333">1. PARSER</text>
-  <text x="145" y="327" text-anchor="middle" font-size="10" fill="#666">Prompt → BlockTree</text>
-  <text x="145" y="341" text-anchor="middle" font-size="10" fill="#999">&lt;5ms</text>
+  <rect x="335" y="85" width="150" height="44" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
+  <text x="410" y="103" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">1. PARSER</text>
+  <text x="410" y="118" text-anchor="middle" font-size="8" fill="#666">Prompt → BlockTree &lt;5ms</text>
 
-  <line x1="235" y1="322" x2="255" y2="322" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="485" y1="107" x2="500" y2="107" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <rect x="260" y="292" width="180" height="60" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="350" y="313" text-anchor="middle" font-weight="bold" fill="#333">2. ANALYZER</text>
-  <text x="350" y="327" text-anchor="middle" font-size="10" fill="#666">Usage stats lookup</text>
-  <text x="350" y="341" text-anchor="middle" font-size="10" fill="#999">&lt;1ms</text>
+  <rect x="505" y="85" width="150" height="44" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
+  <text x="580" y="103" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">2. ANALYZER</text>
+  <text x="580" y="118" text-anchor="middle" font-size="8" fill="#666">Usage stats &lt;1ms</text>
 
-  <line x1="440" y1="322" x2="460" y2="322" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="655" y1="107" x2="670" y2="107" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <rect x="465" y="292" width="180" height="60" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="555" y="313" text-anchor="middle" font-weight="bold" fill="#333">3. PLANNER</text>
-  <text x="555" y="327" text-anchor="middle" font-size="10" fill="#666">Select rules → Plan</text>
-  <text x="555" y="341" text-anchor="middle" font-size="10" fill="#999">&lt;2ms</text>
+  <rect x="675" y="85" width="150" height="44" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
+  <text x="750" y="103" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">3. PLANNER</text>
+  <text x="750" y="118" text-anchor="middle" font-size="8" fill="#666">Select rules &lt;2ms</text>
 
-  <line x1="645" y1="322" x2="665" y2="322" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="825" y1="107" x2="840" y2="107" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <rect x="670" y="292" width="180" height="60" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="760" y="313" text-anchor="middle" font-weight="bold" fill="#333">4. EXECUTOR</text>
-  <text x="760" y="327" text-anchor="middle" font-size="10" fill="#666">Apply → Optimized</text>
-  <text x="760" y="341" text-anchor="middle" font-size="10" fill="#999">&lt;5ms</text>
+  <rect x="845" y="85" width="150" height="44" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
+  <text x="920" y="103" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">4. EXECUTOR</text>
+  <text x="920" y="118" text-anchor="middle" font-size="8" fill="#666">Apply plan &lt;5ms</text>
 
-  <!-- Dashed lines down from pipeline to supporting -->
-  <line x1="145" y1="352" x2="145" y2="385" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
-  <line x1="350" y1="352" x2="350" y2="385" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
-  <line x1="660" y1="352" x2="660" y2="385" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
+  <!-- Dashed lines to supporting -->
+  <line x1="410" y1="129" x2="410" y2="145" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
+  <line x1="580" y1="129" x2="580" y2="145" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
+  <line x1="830" y1="129" x2="830" y2="145" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
 
   <!-- Supporting: Catalog -->
-  <rect x="55" y="385" width="230" height="130" rx="2" fill="#FFFBEB" stroke="#D97706"/>
-  <text x="170" y="404" text-anchor="middle" font-weight="bold" fill="#92400E">CATALOG</text>
-  <line x1="65" y1="412" x2="275" y2="412" stroke="#FCD34D" stroke-width="0.5"/>
-  <text x="70" y="428" font-size="10" fill="#555">Skill Registry</text>
-  <text x="70" y="442" font-size="10" fill="#888">  scan dirs, keyword index</text>
-  <text x="70" y="458" font-size="10" fill="#555">Usage Statistics</text>
-  <text x="70" y="472" font-size="10" fill="#888">  freq, recency, co-occurrence</text>
-  <text x="70" y="488" font-size="10" fill="#555">Block Registry</text>
-  <text x="70" y="502" font-size="10" fill="#888">  hash, section decomposition</text>
+  <rect x="335" y="145" width="200" height="95" rx="2" fill="#FFFBEB" stroke="#D97706"/>
+  <text x="435" y="162" text-anchor="middle" font-weight="bold" fill="#92400E" font-size="10">CATALOG</text>
+  <line x1="343" y1="168" x2="527" y2="168" stroke="#FCD34D" stroke-width="0.5"/>
+  <text x="343" y="182" font-size="9" fill="#555">Skill Registry + keyword index</text>
+  <text x="343" y="196" font-size="9" fill="#555">Usage Stats (freq, recency)</text>
+  <text x="343" y="210" font-size="9" fill="#555">Block Registry + co-occurrence</text>
+  <text x="343" y="228" font-size="9" fill="#888">catalog.py</text>
 
   <!-- Supporting: Cost Model -->
-  <rect x="300" y="385" width="230" height="130" rx="2" fill="#FFFBEB" stroke="#D97706"/>
-  <text x="415" y="404" text-anchor="middle" font-weight="bold" fill="#92400E">COST MODEL</text>
-  <line x1="310" y1="412" x2="520" y2="412" stroke="#FCD34D" stroke-width="0.5"/>
-  <text x="315" y="428" font-size="10" fill="#555">Token Estimation</text>
-  <text x="315" y="442" font-size="10" fill="#888">  chars/4 heuristic</text>
-  <text x="315" y="458" font-size="10" fill="#555">Cache Benefit</text>
-  <text x="315" y="472" font-size="10" fill="#888">  prefix_shared_tokens</text>
-  <text x="315" y="488" font-size="10" fill="#555">Risk Assessment</text>
-  <text x="315" y="502" font-size="10" fill="#888">  prefetch_miss_rate</text>
+  <rect x="545" y="145" width="200" height="95" rx="2" fill="#FFFBEB" stroke="#D97706"/>
+  <text x="645" y="162" text-anchor="middle" font-weight="bold" fill="#92400E" font-size="10">COST MODEL</text>
+  <line x1="553" y1="168" x2="737" y2="168" stroke="#FCD34D" stroke-width="0.5"/>
+  <text x="553" y="182" font-size="9" fill="#555">Token estimation (chars/4)</text>
+  <text x="553" y="196" font-size="9" fill="#555">Cache benefit (prefix shared)</text>
+  <text x="553" y="210" font-size="9" fill="#555">Risk assessment (miss rate)</text>
+  <text x="553" y="228" font-size="9" fill="#888">cost_model.py</text>
 
   <!-- Supporting: Rewrite Rules -->
-  <rect x="545" y="385" width="305" height="130" rx="2" fill="#FFFBEB" stroke="#D97706"/>
-  <text x="697" y="404" text-anchor="middle" font-weight="bold" fill="#92400E">REWRITE RULES (Pluggable)</text>
-  <line x1="555" y1="412" x2="840" y2="412" stroke="#FCD34D" stroke-width="0.5"/>
+  <rect x="755" y="145" width="240" height="95" rx="2" fill="#FFFBEB" stroke="#D97706"/>
+  <text x="875" y="162" text-anchor="middle" font-weight="bold" fill="#92400E" font-size="10">REWRITE RULES</text>
+  <line x1="763" y1="168" x2="987" y2="168" stroke="#FCD34D" stroke-width="0.5"/>
 
-  <!-- Rule grid: 2x3 -->
-  <rect x="555" y="420" width="90" height="36" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="600" y="443" text-anchor="middle" font-size="10" font-weight="bold" fill="#5B21B6">Reorder</text>
+  <!-- Rule grid 2x3 -->
+  <rect x="763" y="175" width="70" height="24" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
+  <text x="798" y="191" text-anchor="middle" font-size="8" font-weight="bold" fill="#5B21B6">Reorder</text>
 
-  <rect x="652" y="420" width="90" height="36" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="697" y="443" text-anchor="middle" font-size="10" font-weight="bold" fill="#5B21B6">Dedup</text>
+  <rect x="839" y="175" width="70" height="24" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
+  <text x="874" y="191" text-anchor="middle" font-size="8" font-weight="bold" fill="#5B21B6">Dedup</text>
 
-  <rect x="749" y="420" width="90" height="36" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="794" y="439" text-anchor="middle" font-size="10" font-weight="bold" fill="#C2410C">Prefetch</text>
-  <text x="794" y="451" text-anchor="middle" font-size="8" fill="#EA580C">Phase 3</text>
+  <rect x="915" y="175" width="70" height="24" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="950" y="191" text-anchor="middle" font-size="8" font-weight="bold" fill="#C2410C">Prefetch</text>
 
-  <rect x="555" y="464" width="90" height="36" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="600" y="483" text-anchor="middle" font-size="10" font-weight="bold" fill="#C2410C">Prune</text>
-  <text x="600" y="495" text-anchor="middle" font-size="8" fill="#EA580C">Phase 3</text>
+  <rect x="763" y="205" width="70" height="24" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="798" y="221" text-anchor="middle" font-size="8" font-weight="bold" fill="#C2410C">Prune</text>
 
-  <rect x="652" y="464" width="90" height="36" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="697" y="483" text-anchor="middle" font-size="10" font-weight="bold" fill="#C2410C">Merge</text>
-  <text x="697" y="495" text-anchor="middle" font-size="8" fill="#EA580C">Phase 3</text>
+  <rect x="839" y="205" width="70" height="24" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="874" y="221" text-anchor="middle" font-size="8" font-weight="bold" fill="#C2410C">Merge</text>
 
-  <rect x="749" y="464" width="90" height="36" rx="2" fill="#f8f8f8" stroke="#ccc" stroke-dasharray="4 2"/>
-  <text x="794" y="487" text-anchor="middle" font-size="10" fill="#999">Custom</text>
+  <rect x="915" y="205" width="70" height="24" rx="2" fill="#f8f8f8" stroke="#ccc" stroke-dasharray="4 2"/>
+  <text x="950" y="221" text-anchor="middle" font-size="8" fill="#999">Custom</text>
 
   <!-- EXPLAIN bar -->
-  <rect x="55" y="535" width="795" height="45" rx="2" fill="#1E1B4B" stroke="#1E1B4B"/>
-  <text x="70" y="555" font-family="monospace" font-size="11" fill="#C4B5FD">cp.explain(messages)</text>
-  <text x="70" y="570" font-family="monospace" font-size="10" fill="#A5B4FC">Input: 47,832 tok → Output: 31,206 tok → Saving: 34.8%</text>
-  <text x="750" y="555" font-size="9" fill="#818CF8" text-anchor="end">= SQL EXPLAIN</text>
+  <rect x="335" y="252" width="660" height="30" rx="2" fill="#1E1B4B"/>
+  <text x="345" y="271" font-family="monospace" font-size="9" fill="#C4B5FD">cp.explain(messages) → 47,832 tok → 31,206 tok  Saving: 34.8%</text>
+  <text x="980" y="271" text-anchor="end" font-size="8" fill="#818CF8">= SQL EXPLAIN</text>
 
-  <!-- Context Block Parser detail -->
-  <rect x="55" y="600" width="795" height="178" rx="2" fill="#f9f9f9" stroke="#aaa" stroke-dasharray="5 3"/>
-  <text x="70" y="618" font-weight="bold" fill="#333" font-size="11">CONTEXT BLOCK PARSER (Detail)</text>
+  <!-- EXPLAIN connects right to EXPLAIN output below, but for now just the bar -->
 
-  <!-- Block types -->
-  <rect x="70" y="630" width="110" height="40" rx="2" fill="#E0E7FF" stroke="#6366F1"/>
-  <text x="125" y="655" text-anchor="middle" font-size="10" font-weight="bold" fill="#4338CA">skill</text>
-
-  <rect x="190" y="630" width="110" height="40" rx="2" fill="#DBEAFE" stroke="#3B82F6"/>
-  <text x="245" y="655" text-anchor="middle" font-size="10" font-weight="bold" fill="#1D4ED8">memory</text>
-
-  <rect x="310" y="630" width="110" height="40" rx="2" fill="#D1FAE5" stroke="#10B981"/>
-  <text x="365" y="655" text-anchor="middle" font-size="10" font-weight="bold" fill="#065F46">searched</text>
-
-  <rect x="430" y="630" width="110" height="40" rx="2" fill="#FEF3C7" stroke="#F59E0B"/>
-  <text x="485" y="655" text-anchor="middle" font-size="10" font-weight="bold" fill="#92400E">file_based</text>
-
-  <!-- Decomposition tree example -->
-  <text x="580" y="645" font-size="10" fill="#555">Decomposition tree:</text>
-  <text x="580" y="660" font-family="monospace" font-size="9" fill="#666">skill:whisper</text>
-  <text x="600" y="673" font-family="monospace" font-size="9" fill="#888">├ §Overview  f=12</text>
-  <text x="600" y="686" font-family="monospace" font-size="9" fill="#888">├ §Usage     f=15</text>
-  <text x="600" y="699" font-family="monospace" font-size="9" fill="#888">└ §Advanced  f=0</text>
-
-  <!-- Usage tracking -->
-  <text x="70" y="690" font-size="10" fill="#555">Each block tracks:</text>
-  <text x="70" y="704" font-family="monospace" font-size="9" fill="#666">block_id | type | frequency | last_used | co_occurrence</text>
-  <text x="70" y="717" font-size="10" fill="#555">Detection: regex + tag matching, zero LLM calls, O(n) scan</text>
-
-  <!-- Markmap export -->
-  <text x="70" y="735" font-family="monospace" font-size="9" fill="#7B61FF">→ export: to_markmap() for markmap.js.org/repl</text>
-  <text x="70" y="750" font-family="monospace" font-size="9" fill="#7B61FF">→ export: to_json() for usage dashboard</text>
-  <text x="70" y="765" font-family="monospace" font-size="9" fill="#7B61FF">→ persist: ~/.contextpilot/block_usage.json</text>
-
-  <!-- End optimizer core -->
-
-  <line x1="450" y1="788" x2="450" y2="818" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- Arrow Optimizer → Engine -->
+  <line x1="1010" y1="179" x2="1033" y2="179" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
   <!-- ═══ Execution Engine ═══ -->
-  <rect x="40" y="818" width="820" height="130" rx="3" fill="none" stroke="#22C55E" stroke-width="2"/>
-  <text x="55" y="837" font-weight="bold" fill="#15803D" font-size="11">EXECUTION ENGINE</text>
-  <text x="845" y="837" text-anchor="end" fill="#999" font-size="10">engine/ — Phase 0 reorg</text>
+  <rect x="1035" y="58" width="220" height="276" rx="3" fill="none" stroke="#22C55E" stroke-width="2"/>
+  <text x="1145" y="75" text-anchor="middle" font-weight="bold" fill="#15803D" font-size="10">EXECUTION ENGINE</text>
 
-  <rect x="55" y="848" width="185" height="85" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="147" y="868" text-anchor="middle" font-weight="bold" fill="#333">Cache Index</text>
-  <text x="147" y="882" text-anchor="middle" font-size="10" fill="#666">Hierarchical clustering</text>
-  <text x="147" y="896" text-anchor="middle" font-size="10" fill="#666">Prefix tree, live search</text>
-  <text x="147" y="910" text-anchor="middle" font-size="10" fill="#666">Incremental insert</text>
-  <text x="147" y="924" text-anchor="middle" font-size="9" fill="#999">cache_index.py, tree.py</text>
+  <rect x="1048" y="85" width="194" height="48" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
+  <text x="1145" y="103" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">Cache Index</text>
+  <text x="1145" y="118" text-anchor="middle" font-size="8" fill="#666">Clustering + prefix tree</text>
+  <text x="1145" y="128" text-anchor="middle" font-size="7" fill="#999">cache_index.py, tree.py</text>
 
-  <rect x="255" y="848" width="185" height="85" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="347" y="868" text-anchor="middle" font-weight="bold" fill="#333">Scheduler</text>
-  <text x="347" y="882" text-anchor="middle" font-size="10" fill="#666">Intra + Inter ordering</text>
-  <text x="347" y="896" text-anchor="middle" font-size="10" fill="#666">Search-path grouping</text>
-  <text x="347" y="910" text-anchor="middle" font-size="10" fill="#666">Batch execution order</text>
-  <text x="347" y="924" text-anchor="middle" font-size="9" fill="#999">scheduler.py</text>
+  <rect x="1048" y="140" width="194" height="48" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
+  <text x="1145" y="158" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">Scheduler</text>
+  <text x="1145" y="173" text-anchor="middle" font-size="8" fill="#666">Intra + Inter ordering</text>
+  <text x="1145" y="183" text-anchor="middle" font-size="7" fill="#999">scheduler.py</text>
 
-  <rect x="455" y="848" width="185" height="85" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="547" y="868" text-anchor="middle" font-weight="bold" fill="#333">Eviction Manager</text>
-  <text x="547" y="882" text-anchor="middle" font-size="10" fill="#666">LRU + callback-driven</text>
-  <text x="547" y="896" text-anchor="middle" font-size="10" fill="#666">SGLang/vLLM sync</text>
-  <text x="547" y="910" text-anchor="middle" font-size="10" fill="#666">Auto tree pruning</text>
-  <text x="547" y="924" text-anchor="middle" font-size="9" fill="#999">eviction.py, metadata.py</text>
+  <rect x="1048" y="195" width="194" height="48" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
+  <text x="1145" y="213" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">Eviction Manager</text>
+  <text x="1145" y="228" text-anchor="middle" font-size="8" fill="#666">LRU + SGLang/vLLM sync</text>
+  <text x="1145" y="238" text-anchor="middle" font-size="7" fill="#999">eviction.py</text>
 
-  <rect x="655" y="848" width="195" height="85" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="752" y="868" text-anchor="middle" font-weight="bold" fill="#333">Pipeline (RAG)</text>
-  <text x="752" y="882" text-anchor="middle" font-size="10" fill="#666">RAG pipeline, multi-turn</text>
-  <text x="752" y="896" text-anchor="middle" font-size="10" fill="#666">Internally uses optimizer</text>
-  <text x="752" y="910" text-anchor="middle" font-size="10" fill="#666">(kept, refactored later)</text>
-  <text x="752" y="924" text-anchor="middle" font-size="9" fill="#999">pipeline/</text>
+  <rect x="1048" y="250" width="194" height="48" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
+  <text x="1145" y="268" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">Pipeline (RAG)</text>
+  <text x="1145" y="283" text-anchor="middle" font-size="8" fill="#666">Kept, uses optimizer</text>
+  <text x="1145" y="293" text-anchor="middle" font-size="7" fill="#999">pipeline/</text>
 
-  <line x1="450" y1="948" x2="450" y2="978" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="1145" y="325" text-anchor="middle" font-size="8" fill="#22C55E">engine/ — Phase 0</text>
+
+  <!-- Arrow Engine → LLM -->
+  <line x1="1255" y1="179" x2="1278" y2="179" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
   <!-- ═══ LLM Backend ═══ -->
-  <rect x="150" y="978" width="600" height="40" rx="3" fill="#f5f5f5" stroke="#aaa"/>
-  <text x="450" y="997" text-anchor="middle" font-weight="bold" fill="#333">LLM Backend</text>
-  <text x="450" y="1011" text-anchor="middle" font-size="10" fill="#888">OpenAI / Anthropic / SGLang / vLLM / llama.cpp</text>
+  <rect x="1280" y="138" width="175" height="80" rx="3" fill="#f5f5f5" stroke="#aaa"/>
+  <text x="1367" y="170" text-anchor="middle" font-weight="bold" fill="#333" font-size="11">LLM Backend</text>
+  <text x="1367" y="186" text-anchor="middle" font-size="8" fill="#888">OpenAI / Anthropic</text>
+  <text x="1367" y="198" text-anchor="middle" font-size="8" fill="#888">SGLang / vLLM / llama.cpp</text>
+
+  <!-- ═══ Context Block Parser Detail (below main band) ═══ -->
+  <rect x="320" y="340" width="690" height="70" rx="2" fill="#f9f9f9" stroke="#aaa" stroke-dasharray="5 3"/>
+  <text x="335" y="357" font-weight="bold" fill="#333" font-size="10">CONTEXT BLOCK PARSER (Detail)</text>
+
+  <rect x="335" y="365" width="80" height="28" rx="2" fill="#E0E7FF" stroke="#6366F1"/>
+  <text x="375" y="383" text-anchor="middle" font-size="8" font-weight="bold" fill="#4338CA">skill</text>
+
+  <rect x="423" y="365" width="80" height="28" rx="2" fill="#DBEAFE" stroke="#3B82F6"/>
+  <text x="463" y="383" text-anchor="middle" font-size="8" font-weight="bold" fill="#1D4ED8">memory</text>
+
+  <rect x="511" y="365" width="80" height="28" rx="2" fill="#D1FAE5" stroke="#10B981"/>
+  <text x="551" y="383" text-anchor="middle" font-size="8" font-weight="bold" fill="#065F46">searched</text>
+
+  <rect x="599" y="365" width="80" height="28" rx="2" fill="#FEF3C7" stroke="#F59E0B"/>
+  <text x="639" y="383" text-anchor="middle" font-size="8" font-weight="bold" fill="#92400E">file_based</text>
+
+  <text x="700" y="357" font-size="9" fill="#555">Section decomposition: skill:whisper → §Overview f=12, §Usage f=15, §Advanced f=0</text>
+  <text x="700" y="400" font-size="9" fill="#888">Regex + tag matching, zero LLM calls, persist to ~/.contextpilot/block_usage.json</text>
 
   <!-- ═══ Refactoring Timeline ═══ -->
-  <rect x="40" y="1045" width="820" height="135" rx="3" fill="none" stroke="#ddd"/>
-  <text x="55" y="1065" font-size="12" font-weight="bold" fill="#333">Refactoring Timeline</text>
+  <rect x="30" y="430" width="1425" height="90" rx="3" fill="none" stroke="#ddd"/>
+  <text x="45" y="450" font-size="11" font-weight="bold" fill="#333">Refactoring Timeline</text>
+  <text x="45" y="465" font-size="9" fill="#15803D">Design: DONE (docs/ + Notion)</text>
 
-  <!-- Phase 0 -->
-  <rect x="55" y="1078" width="150" height="42" rx="2" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5"/>
-  <text x="130" y="1095" text-anchor="middle" font-weight="bold" font-size="10" fill="#1E40AF">Phase 0</text>
-  <text x="130" y="1110" text-anchor="middle" font-size="9" fill="#3B82F6">File reorg</text>
-  <text x="130" y="1165" text-anchor="middle" font-size="8" fill="#3B82F6">NEXT</text>
+  <!-- Phase boxes in a row -->
+  <rect x="45" y="475" width="260" height="32" rx="2" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5"/>
+  <text x="175" y="495" text-anchor="middle" font-weight="bold" font-size="10" fill="#1E40AF">Phase 0: File Reorganization — NEXT</text>
 
-  <line x1="205" y1="1099" x2="215" y2="1099" stroke="#aaa" stroke-width="1.5"/>
+  <line x1="305" y1="491" x2="315" y2="491" stroke="#aaa" stroke-width="1"/>
 
-  <!-- Phase 1 -->
-  <rect x="215" y="1078" width="150" height="42" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="290" y="1095" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 1</text>
-  <text x="290" y="1110" text-anchor="middle" font-size="9" fill="#EA580C">Optimizer Core</text>
-  <text x="290" y="1165" text-anchor="middle" font-size="8" fill="#aaa">PENDING</text>
+  <rect x="315" y="475" width="260" height="32" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="445" y="495" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 1: Optimizer Core</text>
 
-  <line x1="365" y1="1099" x2="375" y2="1099" stroke="#aaa" stroke-width="1.5"/>
+  <line x1="575" y1="491" x2="585" y2="491" stroke="#aaa" stroke-width="1"/>
 
-  <!-- Phase 2 -->
-  <rect x="375" y="1078" width="150" height="42" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="450" y="1095" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 2</text>
-  <text x="450" y="1110" text-anchor="middle" font-size="9" fill="#EA580C">Client Wrappers</text>
-  <text x="450" y="1165" text-anchor="middle" font-size="8" fill="#aaa">PENDING</text>
+  <rect x="585" y="475" width="260" height="32" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="715" y="495" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 2: Client Wrappers</text>
 
-  <line x1="525" y1="1099" x2="535" y2="1099" stroke="#aaa" stroke-width="1.5"/>
+  <line x1="845" y1="491" x2="855" y2="491" stroke="#aaa" stroke-width="1"/>
 
-  <!-- Phase 3 -->
-  <rect x="535" y="1078" width="150" height="42" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="610" y="1095" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 3</text>
-  <text x="610" y="1110" text-anchor="middle" font-size="9" fill="#EA580C">Advanced Rules</text>
-  <text x="610" y="1165" text-anchor="middle" font-size="8" fill="#aaa">PENDING</text>
+  <rect x="855" y="475" width="260" height="32" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="985" y="495" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 3: Advanced Rules</text>
 
-  <line x1="685" y1="1099" x2="695" y2="1099" stroke="#aaa" stroke-width="1.5"/>
+  <line x1="1115" y1="491" x2="1125" y2="491" stroke="#aaa" stroke-width="1"/>
 
-  <!-- Phase 4 -->
-  <rect x="695" y="1078" width="150" height="42" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="770" y="1095" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 4</text>
-  <text x="770" y="1110" text-anchor="middle" font-size="9" fill="#EA580C">Proxy Refactor</text>
-  <text x="770" y="1165" text-anchor="middle" font-size="8" fill="#aaa">PENDING</text>
-
-  <!-- Design done checkmark -->
-  <text x="55" y="1145" font-size="9" fill="#15803D">Design: DONE</text>
-  <text x="55" y="1160" font-size="9" fill="#15803D">docs/ + Notion page created</text>
+  <rect x="1125" y="475" width="315" height="32" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="1282" y="495" text-anchor="middle" font-weight="bold" font-size="10" fill="#C2410C">Phase 4: Proxy Refactor</text>
 
   <!-- ═══ Package Structure ═══ -->
-  <rect x="40" y="1195" width="820" height="180" rx="3" fill="none" stroke="#ddd"/>
-  <text x="55" y="1215" font-size="12" font-weight="bold" fill="#333">Package Structure (Target)</text>
+  <rect x="30" y="535" width="1425" height="130" rx="3" fill="none" stroke="#ddd"/>
+  <text x="45" y="555" font-size="11" font-weight="bold" fill="#333">Package Structure (Target)</text>
 
-  <text x="55"  y="1235" font-family="monospace" font-size="9" fill="#333">contextpilot/</text>
-  <text x="55"  y="1248" font-family="monospace" font-size="9" fill="#7B61FF">├── optimizer/           NEW: core.py, parser.py, planner.py, catalog.py, cost_model.py</text>
-  <text x="55"  y="1261" font-family="monospace" font-size="9" fill="#7B61FF">│   └── rules/           NEW: base.py, reorder.py, dedup.py, prefetch.py, prune.py, merge.py</text>
-  <text x="55"  y="1274" font-family="monospace" font-size="9" fill="#22C55E">├── engine/              MOVED: cache_index.py, tree.py, distance.py, scheduler.py, ...</text>
-  <text x="55"  y="1287" font-family="monospace" font-size="9" fill="#4A90D9">├── proxy/               MOVED: server.py, interceptor.py</text>
-  <text x="55"  y="1300" font-family="monospace" font-size="9" fill="#4A90D9">├── integrations/        MOVED: openai_client.py, anthropic_client.py, retrievers/, hooks/</text>
-  <text x="55"  y="1313" font-family="monospace" font-size="9" fill="#888">├── pipeline/            KEPT: rag_pipeline.py, components.py</text>
-  <text x="55"  y="1326" font-family="monospace" font-size="9" fill="#888">├── utils/               KEPT: eval_metrics.py, prompt_generator.py, tools.py</text>
-  <text x="55"  y="1339" font-family="monospace" font-size="9" fill="#DC2626">├── _compat.py           NEW: old import paths → new locations</text>
-  <text x="55"  y="1352" font-family="monospace" font-size="9" fill="#333">└── __init__.py          UPDATED: cp.optimize(), cp.explain(), cp.openai, cp.anthropic</text>
+  <text x="45"  y="575" font-family="monospace" font-size="9" fill="#333">contextpilot/</text>
+  <text x="45"  y="588" font-family="monospace" font-size="9" fill="#7B61FF">  optimizer/           NEW: core.py, parser.py, planner.py, catalog.py, cost_model.py, rules/{base,reorder,dedup,prefetch,prune,merge}.py</text>
+  <text x="45"  y="601" font-family="monospace" font-size="9" fill="#22C55E">  engine/              MOVED: cache_index.py, tree.py, distance.py, scheduler.py, live_index.py, eviction.py, metadata.py</text>
+  <text x="45"  y="614" font-family="monospace" font-size="9" fill="#4A90D9">  proxy/               MOVED: server.py, interceptor.py, http_client.py</text>
+  <text x="45"  y="627" font-family="monospace" font-size="9" fill="#4A90D9">  integrations/        MOVED+NEW: openai_client.py, anthropic_client.py, retrievers/{bm25,faiss,mem0,pageindex}.py, hooks/{sglang,vllm,llamacpp}.py</text>
+  <text x="45"  y="640" font-family="monospace" font-size="9" fill="#888">  pipeline/, utils/    KEPT     |  _compat.py  NEW: old imports forwarded  |  __init__.py  UPDATED: cp.optimize(), cp.openai</text>
 
-  <!-- Legend -->
-  <rect x="40" y="1385" width="820" height="30" rx="3" fill="none" stroke="#eee"/>
-  <rect x="55" y="1393" width="14" height="10" rx="1" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="75" y="1403" font-size="9" fill="#666">Existing (wrap)</text>
-  <rect x="165" y="1393" width="14" height="10" rx="1" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="185" y="1403" font-size="9" fill="#666">New</text>
-  <rect x="230" y="1393" width="14" height="10" rx="1" fill="#f8f8f8" stroke="#ccc" stroke-dasharray="3 2"/>
-  <text x="250" y="1403" font-size="9" fill="#666">Pluggable</text>
-  <rect x="320" y="1393" width="14" height="10" rx="1" fill="#DBEAFE" stroke="#3B82F6"/>
-  <text x="340" y="1403" font-size="9" fill="#666">Next step</text>
-  <rect x="410" y="1393" width="14" height="10" rx="1" fill="#FEF2F2" stroke="#EF4444" stroke-dasharray="3 2"/>
-  <text x="430" y="1403" font-size="9" fill="#666">Compat bridge</text>
+  <!-- ═══ Legend ═══ -->
+  <rect x="30" y="675" width="1425" height="22" rx="3" fill="none" stroke="#eee"/>
+  <rect x="45" y="680" width="12" height="10" rx="1" fill="#F3F0FF" stroke="#7B61FF"/>
+  <text x="62" y="690" font-size="8" fill="#666">Existing (wrap)</text>
+  <rect x="145" y="680" width="12" height="10" rx="1" fill="#FFF7ED" stroke="#EA580C"/>
+  <text x="162" y="690" font-size="8" fill="#666">New</text>
+  <rect x="200" y="680" width="12" height="10" rx="1" fill="#f8f8f8" stroke="#ccc" stroke-dasharray="3 2"/>
+  <text x="217" y="690" font-size="8" fill="#666">Pluggable</text>
+  <rect x="275" y="680" width="12" height="10" rx="1" fill="#DBEAFE" stroke="#3B82F6"/>
+  <text x="292" y="690" font-size="8" fill="#666">Next step</text>
+  <rect x="345" y="680" width="12" height="10" rx="1" fill="#FEF2F2" stroke="#EF4444" stroke-dasharray="3 2"/>
+  <text x="362" y="690" font-size="8" fill="#666">Compat bridge</text>
+  <text x="1440" y="690" text-anchor="end" font-size="8" fill="#999">Total overhead &lt;15ms, zero LLM calls</text>
 </svg>

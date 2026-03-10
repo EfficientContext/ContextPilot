@@ -1,235 +1,169 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 760" font-family="Helvetica, Arial, sans-serif" font-size="12">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 720" font-family="Helvetica, Arial, sans-serif" font-size="12">
   <defs>
     <marker id="a" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
       <polygon points="0 0,7 2.5,0 5" fill="#555"/>
     </marker>
+    <marker id="b" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0 0,7 2.5,0 5" fill="#7B61FF"/>
+    </marker>
   </defs>
 
-  <rect width="950" height="760" fill="#fff"/>
+  <rect width="880" height="720" fill="#fff"/>
 
   <!-- Title -->
-  <text x="475" y="26" text-anchor="middle" font-size="16" font-weight="bold" fill="#222">Context Optimizer 架构</text>
-  <text x="475" y="43" text-anchor="middle" font-size="11" fill="#888">类比 SQL Query Optimizer · 总额外延迟 &lt;15ms · 零 LLM 调用</text>
+  <text x="440" y="24" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">Context Optimizer — End-to-End Flow</text>
+  <text x="440" y="40" text-anchor="middle" font-size="10" fill="#888">Like a SQL Query Optimizer: messages in → optimized messages out. &lt;15ms total, zero LLM calls.</text>
 
-  <!-- ═══ 横向主流程 ═══ -->
+  <!-- ═══ INPUT ═══ -->
+  <rect x="30" y="56" width="320" height="38" rx="3" fill="#f5f5f5" stroke="#aaa"/>
+  <text x="40" y="72" font-weight="bold" fill="#333" font-size="11">INPUT</text>
+  <text x="100" y="72" font-size="10" fill="#555">messages[] — 47,832 tokens, 12 blocks</text>
+  <text x="100" y="86" font-size="9" fill="#888">User sends prompt to LLM (OpenAI, Anthropic, ...)</text>
 
-  <!-- ── 用户应用 ── -->
-  <rect x="20" y="175" width="68" height="42" rx="3" fill="#f5f5f5" stroke="#aaa"/>
-  <text x="54" y="193" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">用户</text>
-  <text x="54" y="205" text-anchor="middle" font-size="10" font-weight="bold" fill="#333">应用</text>
+  <!-- Arrow down -->
+  <line x1="190" y1="94" x2="190" y2="112" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <line x1="88" y1="196" x2="107" y2="196" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- ═══ STEP 1: PARSE ═══ -->
+  <rect x="30" y="114" width="320" height="58" rx="3" fill="#F3F0FF" stroke="#7B61FF" stroke-width="2"/>
+  <text x="40" y="133" font-weight="bold" fill="#7B61FF" font-size="12">1. PARSE</text>
+  <text x="120" y="133" font-size="10" fill="#333">Split prompt into typed blocks</text>
+  <text x="40" y="149" font-size="9" fill="#555">Regex + tag matching. Detect block boundaries.</text>
+  <text x="40" y="162" font-size="9" fill="#999">&lt;5ms · parser.py</text>
 
-  <!-- ── 接入层 ── -->
-  <rect x="109" y="58" width="110" height="272" rx="3" fill="none" stroke="#4A90D9" stroke-width="2"/>
-  <text x="164" y="75" text-anchor="middle" font-weight="bold" fill="#4A90D9" font-size="10">接入层</text>
+  <!-- Parse output → right side -->
+  <line x1="350" y1="143" x2="400" y2="143" stroke="#7B61FF" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#b)"/>
 
-  <rect x="118" y="85" width="92" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="164" y="106" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L0: 代理</text>
+  <rect x="402" y="112" width="448" height="62" rx="2" fill="#f9f9f9" stroke="#ddd"/>
+  <text x="412" y="128" font-weight="bold" fill="#333" font-size="10">Output: BlockTree</text>
+  <rect x="412" y="135" width="58" height="18" rx="2" fill="#E0E7FF" stroke="#6366F1"/>
+  <text x="441" y="148" text-anchor="middle" font-size="8" font-weight="bold" fill="#4338CA">skill</text>
+  <rect x="476" y="135" width="58" height="18" rx="2" fill="#DBEAFE" stroke="#3B82F6"/>
+  <text x="505" y="148" text-anchor="middle" font-size="8" font-weight="bold" fill="#1D4ED8">memory</text>
+  <rect x="540" y="135" width="58" height="18" rx="2" fill="#D1FAE5" stroke="#10B981"/>
+  <text x="569" y="148" text-anchor="middle" font-size="8" font-weight="bold" fill="#065F46">search</text>
+  <rect x="604" y="135" width="58" height="18" rx="2" fill="#FEF3C7" stroke="#F59E0B"/>
+  <text x="633" y="148" text-anchor="middle" font-size="8" font-weight="bold" fill="#92400E">file</text>
+  <text x="412" y="168" font-size="8" fill="#888">Each skill block further split by §headings into sections</text>
 
-  <rect x="118" y="125" width="92" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="164" y="146" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L1: 包装器</text>
+  <!-- Arrow down -->
+  <line x1="190" y1="172" x2="190" y2="190" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <rect x="118" y="165" width="92" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="164" y="186" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L2: SDK</text>
+  <!-- ═══ STEP 2: ANALYZE ═══ -->
+  <rect x="30" y="192" width="320" height="58" rx="3" fill="#F3F0FF" stroke="#7B61FF" stroke-width="2"/>
+  <text x="40" y="211" font-weight="bold" fill="#7B61FF" font-size="12">2. ANALYZE</text>
+  <text x="130" y="211" font-size="10" fill="#333">Look up stats for each block</text>
+  <text x="40" y="227" font-size="9" fill="#555">Query Catalog for frequency, recency, cache state.</text>
+  <text x="40" y="240" font-size="9" fill="#999">&lt;1ms · catalog.py</text>
 
-  <rect x="118" y="205" width="92" height="34" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
-  <text x="164" y="226" text-anchor="middle" font-size="9" font-weight="bold" fill="#333">L3: Hook</text>
+  <!-- Catalog feeds into Analyze -->
+  <line x1="350" y1="221" x2="400" y2="221" stroke="#D97706" stroke-width="1" stroke-dasharray="4 3"/>
 
-  <text x="164" y="260" text-anchor="middle" font-size="8" fill="#4A90D9">零改动 ~ 一行代码</text>
-  <text x="164" y="273" text-anchor="middle" font-size="8" fill="#4A90D9">用户选一种接入</text>
+  <rect x="402" y="190" width="448" height="62" rx="2" fill="#FFFBEB" stroke="#D97706"/>
+  <text x="412" y="206" font-weight="bold" fill="#92400E" font-size="10">CATALOG (usage stats + skill registry)</text>
+  <text x="412" y="221" font-size="9" fill="#555">skill:whisper → freq=12, last=2min, hot</text>
+  <text x="412" y="234" font-size="9" fill="#555">skill:whisper/§Advanced → freq=0, never used</text>
+  <text x="412" y="247" font-size="9" fill="#555">search:web → freq=1, cold  |  file:audio.py → freq=4</text>
 
-  <!-- _compat.py -->
-  <rect x="109" y="332" width="110" height="14" rx="2" fill="#FEF2F2" stroke="#EF4444" stroke-dasharray="4 2"/>
-  <text x="164" y="342" text-anchor="middle" font-size="7" fill="#DC2626">_compat.py 旧 import 兼容</text>
+  <!-- Arrow down -->
+  <line x1="190" y1="250" x2="190" y2="268" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <line x1="219" y1="196" x2="238" y2="196" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- ═══ STEP 3: PLAN (biggest section — shows each rule) ═══ -->
+  <rect x="30" y="270" width="320" height="58" rx="3" fill="#F3F0FF" stroke="#7B61FF" stroke-width="2"/>
+  <text x="40" y="289" font-weight="bold" fill="#7B61FF" font-size="12">3. PLAN</text>
+  <text x="110" y="289" font-size="10" fill="#333">Evaluate rules, pick best combo</text>
+  <text x="40" y="305" font-size="9" fill="#555">Cost Model estimates benefit of each rule.</text>
+  <text x="40" y="318" font-size="9" fill="#999">&lt;2ms · planner.py + cost_model.py</text>
 
-  <!-- ── 优化器核心 ── -->
-  <rect x="240" y="58" width="445" height="300" rx="3" fill="none" stroke="#7B61FF" stroke-width="2"/>
-  <text x="255" y="75" font-weight="bold" fill="#7B61FF" font-size="10">优化器核心 (optimizer/)</text>
+  <!-- Rules evaluation → right side -->
+  <line x1="350" y1="299" x2="400" y2="299" stroke="#D97706" stroke-width="1" stroke-dasharray="4 3"/>
 
-  <!-- Pipeline 四步 -->
-  <rect x="253" y="85" width="100" height="50" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="303" y="100" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">1. 解析</text>
-  <text x="303" y="114" text-anchor="middle" font-size="8" fill="#555">把 prompt 拆成</text>
-  <text x="303" y="125" text-anchor="middle" font-size="8" fill="#555">typed blocks</text>
+  <rect x="402" y="268" width="448" height="175" rx="2" fill="#FFFBEB" stroke="#D97706"/>
+  <text x="412" y="284" font-weight="bold" fill="#92400E" font-size="10">RULES evaluated (each is a plugin):</text>
 
-  <line x1="353" y1="110" x2="365" y2="110" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- REORDER -->
+  <rect x="412" y="292" width="10" height="10" rx="1" fill="#22C55E"/>
+  <text x="428" y="301" font-size="10" font-weight="bold" fill="#333">REORDER</text>
+  <text x="500" y="301" font-size="9" fill="#555">Re-sort blocks so similar ones are adjacent</text>
+  <text x="500" y="313" font-size="9" fill="#888">→ share 6,400 tok in LLM prefix cache</text>
 
-  <rect x="368" y="85" width="100" height="50" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="418" y="100" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">2. 分析</text>
-  <text x="418" y="114" text-anchor="middle" font-size="8" fill="#555">查每个 block 的</text>
-  <text x="418" y="125" text-anchor="middle" font-size="8" fill="#555">使用频率和缓存</text>
+  <!-- DEDUP -->
+  <rect x="412" y="322" width="10" height="10" rx="1" fill="#22C55E"/>
+  <text x="428" y="331" font-size="10" font-weight="bold" fill="#333">DEDUP</text>
+  <text x="478" y="331" font-size="9" fill="#555">Remove content already sent in previous turns</text>
+  <text x="478" y="343" font-size="9" fill="#888">→ remove search:web (sent in Turn 2), save 6,100 tok</text>
 
-  <line x1="468" y1="110" x2="480" y2="110" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- PREFETCH -->
+  <rect x="412" y="352" width="10" height="10" rx="1" fill="#E5E7EB"/>
+  <text x="428" y="361" font-size="10" font-weight="bold" fill="#333">PREFETCH</text>
+  <text x="502" y="361" font-size="9" fill="#555">Predict needed skills and inject them</text>
+  <text x="502" y="373" font-size="9" fill="#888">→ skip (skill:whisper already present). Would inject if missing.</text>
 
-  <rect x="483" y="85" width="100" height="50" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="533" y="100" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">3. 规划</text>
-  <text x="533" y="114" text-anchor="middle" font-size="8" fill="#555">选哪些优化规则</text>
-  <text x="533" y="125" text-anchor="middle" font-size="8" fill="#555">生成执行计划</text>
+  <!-- PRUNE -->
+  <rect x="412" y="382" width="10" height="10" rx="1" fill="#22C55E"/>
+  <text x="428" y="391" font-size="10" font-weight="bold" fill="#333">PRUNE</text>
+  <text x="480" y="391" font-size="9" fill="#555">Trim unused sections to fit token budget</text>
+  <text x="480" y="403" font-size="9" fill="#888">→ remove §Advanced (freq=0), save 1,200 tok</text>
 
-  <line x1="583" y1="110" x2="595" y2="110" stroke="#7B61FF" stroke-width="1.5" marker-end="url(#a)"/>
+  <!-- MERGE -->
+  <rect x="412" y="412" width="10" height="10" rx="1" fill="#E5E7EB"/>
+  <text x="428" y="421" font-size="10" font-weight="bold" fill="#333">MERGE</text>
+  <text x="482" y="421" font-size="9" fill="#555">Combine co-occurring blocks for better caching</text>
+  <text x="482" y="433" font-size="9" fill="#888">→ skip (no co-occurring pair detected)</text>
 
-  <rect x="598" y="85" width="78" height="50" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="637" y="100" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">4. 执行</text>
-  <text x="637" y="114" text-anchor="middle" font-size="8" fill="#555">应用规则</text>
-  <text x="637" y="125" text-anchor="middle" font-size="8" fill="#555">输出新 msgs</text>
+  <!-- Legend for green/gray squares -->
+  <rect x="700" y="284" width="8" height="8" rx="1" fill="#22C55E"/>
+  <text x="712" y="292" font-size="8" fill="#666">applied</text>
+  <rect x="755" y="284" width="8" height="8" rx="1" fill="#E5E7EB"/>
+  <text x="767" y="292" font-size="8" fill="#666">skipped</text>
 
-  <!-- 虚线连到下方支撑组件 -->
-  <line x1="303" y1="135" x2="303" y2="150" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
-  <line x1="418" y1="135" x2="418" y2="150" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
-  <line x1="580" y1="135" x2="580" y2="150" stroke="#bbb" stroke-width="1" stroke-dasharray="4 3"/>
+  <!-- Arrow down -->
+  <line x1="190" y1="328" x2="190" y2="455" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <!-- 支撑：目录 Catalog -->
-  <rect x="253" y="150" width="142" height="100" rx="2" fill="#FFFBEB" stroke="#D97706"/>
-  <text x="324" y="167" text-anchor="middle" font-weight="bold" fill="#92400E" font-size="10">目录 Catalog</text>
-  <line x1="260" y1="173" x2="388" y2="173" stroke="#FCD34D" stroke-width="0.5"/>
-  <text x="260" y="187" font-size="9" fill="#555">存什么：</text>
-  <text x="260" y="200" font-size="9" fill="#888">· 注册的 skill 文件</text>
-  <text x="260" y="213" font-size="9" fill="#888">· block 使用频率/最近时间</text>
-  <text x="260" y="226" font-size="9" fill="#888">· block 间共现关系</text>
-  <text x="260" y="243" font-size="8" fill="#aaa">catalog.py</text>
+  <!-- ═══ STEP 4: EXECUTE ═══ -->
+  <rect x="30" y="457" width="320" height="58" rx="3" fill="#F3F0FF" stroke="#7B61FF" stroke-width="2"/>
+  <text x="40" y="476" font-weight="bold" fill="#7B61FF" font-size="12">4. EXECUTE</text>
+  <text x="130" y="476" font-size="10" fill="#333">Apply the plan to messages</text>
+  <text x="40" y="492" font-size="9" fill="#555">Reorder blocks, remove dedup'd, trim pruned sections.</text>
+  <text x="40" y="505" font-size="9" fill="#999">&lt;5ms · executor.py</text>
 
-  <!-- 支撑：代价模型 -->
-  <rect x="403" y="150" width="142" height="100" rx="2" fill="#FFFBEB" stroke="#D97706"/>
-  <text x="474" y="167" text-anchor="middle" font-weight="bold" fill="#92400E" font-size="10">代价模型</text>
-  <line x1="410" y1="173" x2="538" y2="173" stroke="#FCD34D" stroke-width="0.5"/>
-  <text x="410" y="187" font-size="9" fill="#555">算什么：</text>
-  <text x="410" y="200" font-size="9" fill="#888">· block 占多少 token</text>
-  <text x="410" y="213" font-size="9" fill="#888">· reorder 能省多少 cache</text>
-  <text x="410" y="226" font-size="9" fill="#888">· prefetch 猜错的代价</text>
-  <text x="410" y="243" font-size="8" fill="#aaa">cost_model.py</text>
+  <!-- Execute details → right side -->
+  <line x1="350" y1="486" x2="400" y2="486" stroke="#7B61FF" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#b)"/>
 
-  <!-- 支撑：优化规则 -->
-  <rect x="553" y="150" width="123" height="100" rx="2" fill="#FFFBEB" stroke="#D97706"/>
-  <text x="614" y="167" text-anchor="middle" font-weight="bold" fill="#92400E" font-size="10">优化规则</text>
-  <line x1="560" y1="173" x2="669" y2="173" stroke="#FCD34D" stroke-width="0.5"/>
-  <text x="560" y="187" font-size="9" fill="#555">做什么：</text>
+  <rect x="402" y="457" width="448" height="58" rx="2" fill="#f9f9f9" stroke="#ddd"/>
+  <text x="412" y="473" font-weight="bold" fill="#333" font-size="10">Actions taken:</text>
+  <text x="412" y="488" font-size="9" fill="#555">1. Reorder: skill:whisper moved to top (prefix sharing)</text>
+  <text x="412" y="501" font-size="9" fill="#555">2. Remove: search:web block (dedup)  3. Trim: §Advanced section (prune)</text>
 
-  <rect x="560" y="194" width="50" height="18" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="585" y="207" text-anchor="middle" font-size="7" font-weight="bold" fill="#5B21B6">重排序</text>
+  <!-- Arrow down -->
+  <line x1="190" y1="515" x2="190" y2="533" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <rect x="614" y="194" width="55" height="18" rx="2" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="641" y="207" text-anchor="middle" font-size="7" font-weight="bold" fill="#5B21B6">去重复</text>
+  <!-- ═══ OUTPUT ═══ -->
+  <rect x="30" y="535" width="320" height="38" rx="3" fill="#F0FDF4" stroke="#22C55E" stroke-width="2"/>
+  <text x="40" y="551" font-weight="bold" fill="#15803D" font-size="11">OUTPUT</text>
+  <text x="110" y="551" font-size="10" fill="#333">optimized messages[] — 31,206 tokens</text>
+  <text x="110" y="565" font-size="10" fill="#15803D" font-weight="bold">Saved 16,626 tokens (34.8%)</text>
 
-  <rect x="560" y="216" width="50" height="18" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="585" y="229" text-anchor="middle" font-size="7" font-weight="bold" fill="#C2410C">预取</text>
+  <!-- Arrow down -->
+  <line x1="190" y1="573" x2="190" y2="591" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
-  <rect x="614" y="216" width="55" height="18" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="641" y="229" text-anchor="middle" font-size="7" font-weight="bold" fill="#C2410C">裁剪</text>
+  <!-- ═══ LLM ═══ -->
+  <rect x="30" y="593" width="320" height="32" rx="3" fill="#f5f5f5" stroke="#aaa"/>
+  <text x="40" y="613" font-weight="bold" fill="#333" font-size="11">LLM</text>
+  <text x="75" y="613" font-size="10" fill="#888">OpenAI / Anthropic / SGLang / vLLM / llama.cpp</text>
 
-  <text x="614" y="248" text-anchor="middle" font-size="7" fill="#888">合并, 自定义...</text>
+  <!-- ═══ How to use (integration) ═══ -->
+  <rect x="402" y="535" width="448" height="90" rx="2" fill="#EBF3FB" stroke="#4A90D9"/>
+  <text x="412" y="551" font-weight="bold" fill="#4A90D9" font-size="10">Integration (pick one):</text>
+  <text x="412" y="567" font-family="monospace" font-size="9" fill="#333">L0  $ contextpilot serve --port 8765      # zero code change</text>
+  <text x="412" y="581" font-family="monospace" font-size="9" fill="#333">L1  client = cp.openai.Client()           # 1-line change</text>
+  <text x="412" y="595" font-family="monospace" font-size="9" fill="#333">L2  optimized = cp.optimize(messages)      # explicit call</text>
+  <text x="412" y="609" font-family="monospace" font-size="9" fill="#333">L3  optimizer = cp.ContextOptimizer(...)   # full control</text>
 
-  <!-- EXPLAIN 条 -->
-  <rect x="253" y="260" width="424" height="28" rx="2" fill="#1E1B4B"/>
-  <text x="263" y="278" font-family="monospace" font-size="9" fill="#C4B5FD">cp.explain() → 看优化计划，不执行 (= SQL EXPLAIN)</text>
+  <!-- ═══ EXPLAIN callout ═══ -->
+  <rect x="30" y="640" width="820" height="30" rx="2" fill="#1E1B4B"/>
+  <text x="40" y="659" font-family="monospace" font-size="10" fill="#C4B5FD">cp.explain(messages)</text>
+  <text x="220" y="659" font-size="10" fill="#A5B4FC">Show this entire plan without executing — like SQL EXPLAIN</text>
 
-  <!-- Block Parser 简要 -->
-  <rect x="253" y="296" width="424" height="52" rx="2" fill="#f9f9f9" stroke="#aaa" stroke-dasharray="5 3"/>
-  <text x="263" y="312" font-weight="bold" fill="#333" font-size="9">解析器识别 4 种 block 类型：</text>
-
-  <rect x="263" y="320" width="55" height="18" rx="2" fill="#E0E7FF" stroke="#6366F1"/>
-  <text x="290" y="333" text-anchor="middle" font-size="8" font-weight="bold" fill="#4338CA">skill</text>
-
-  <rect x="324" y="320" width="55" height="18" rx="2" fill="#DBEAFE" stroke="#3B82F6"/>
-  <text x="351" y="333" text-anchor="middle" font-size="8" font-weight="bold" fill="#1D4ED8">memory</text>
-
-  <rect x="385" y="320" width="55" height="18" rx="2" fill="#D1FAE5" stroke="#10B981"/>
-  <text x="412" y="333" text-anchor="middle" font-size="8" font-weight="bold" fill="#065F46">search</text>
-
-  <rect x="446" y="320" width="55" height="18" rx="2" fill="#FEF3C7" stroke="#F59E0B"/>
-  <text x="473" y="333" text-anchor="middle" font-size="8" font-weight="bold" fill="#92400E">file</text>
-
-  <text x="510" y="333" font-size="8" fill="#888">每个 block 再按 heading 拆 section</text>
-
-  <!-- 箭头 优化器→引擎 -->
-  <line x1="685" y1="196" x2="704" y2="196" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
-
-  <!-- ── 执行引擎 ── -->
-  <rect x="706" y="58" width="138" height="272" rx="3" fill="none" stroke="#22C55E" stroke-width="2"/>
-  <text x="775" y="75" text-anchor="middle" font-weight="bold" fill="#15803D" font-size="10">执行引擎</text>
-
-  <rect x="716" y="85" width="118" height="46" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="775" y="102" text-anchor="middle" font-weight="bold" fill="#333" font-size="9">缓存索引</text>
-  <text x="775" y="117" text-anchor="middle" font-size="8" fill="#666">层次聚类 + 前缀树</text>
-  <text x="775" y="127" text-anchor="middle" font-size="7" fill="#999">cache_index.py</text>
-
-  <rect x="716" y="138" width="118" height="46" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="775" y="155" text-anchor="middle" font-weight="bold" fill="#333" font-size="9">调度器</text>
-  <text x="775" y="170" text-anchor="middle" font-size="8" fill="#666">块内 + 块间排序</text>
-  <text x="775" y="180" text-anchor="middle" font-size="7" fill="#999">scheduler.py</text>
-
-  <rect x="716" y="191" width="118" height="46" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="775" y="208" text-anchor="middle" font-weight="bold" fill="#333" font-size="9">淘汰管理</text>
-  <text x="775" y="223" text-anchor="middle" font-size="8" fill="#666">LRU + 引擎同步</text>
-  <text x="775" y="233" text-anchor="middle" font-size="7" fill="#999">eviction.py</text>
-
-  <rect x="716" y="244" width="118" height="42" rx="2" fill="#F0FDF4" stroke="#22C55E"/>
-  <text x="775" y="261" text-anchor="middle" font-weight="bold" fill="#333" font-size="9">RAG 管线</text>
-  <text x="775" y="276" text-anchor="middle" font-size="8" fill="#666">保留，内部用优化器</text>
-
-  <text x="775" y="315" text-anchor="middle" font-size="8" fill="#22C55E">engine/ — Phase 0 搬文件</text>
-
-  <!-- 箭头 引擎→LLM -->
-  <line x1="844" y1="196" x2="863" y2="196" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
-
-  <!-- ── LLM ── -->
-  <rect x="865" y="155" width="70" height="82" rx="3" fill="#f5f5f5" stroke="#aaa"/>
-  <text x="900" y="180" text-anchor="middle" font-weight="bold" fill="#333" font-size="10">LLM</text>
-  <text x="900" y="196" text-anchor="middle" font-size="7" fill="#888">OpenAI</text>
-  <text x="900" y="207" text-anchor="middle" font-size="7" fill="#888">Anthropic</text>
-  <text x="900" y="218" text-anchor="middle" font-size="7" fill="#888">SGLang</text>
-  <text x="900" y="229" text-anchor="middle" font-size="7" fill="#888">vLLM</text>
-
-  <!-- ═══ 数据流说明 ═══ -->
-  <rect x="20" y="370" width="910" height="48" rx="3" fill="none" stroke="#ddd"/>
-  <text x="35" y="389" font-size="11" font-weight="bold" fill="#333">数据流</text>
-  <text x="35" y="407" font-family="monospace" font-size="10" fill="#555">messages[] → 解析成 blocks → 查统计 → 选规则 → 执行优化 → 优化后的 messages[] → 发给 LLM</text>
-
-  <!-- ═══ 时间线 ═══ -->
-  <rect x="20" y="430" width="910" height="80" rx="3" fill="none" stroke="#ddd"/>
-  <text x="35" y="450" font-size="11" font-weight="bold" fill="#333">重构阶段</text>
-  <text x="35" y="465" font-size="9" fill="#15803D">设计: 完成</text>
-
-  <rect x="35" y="475" width="165" height="24" rx="2" fill="#DBEAFE" stroke="#3B82F6" stroke-width="1.5"/>
-  <text x="117" y="491" text-anchor="middle" font-weight="bold" font-size="9" fill="#1E40AF">Phase 0: 搬文件 — 下一步</text>
-
-  <rect x="208" y="475" width="165" height="24" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="290" y="491" text-anchor="middle" font-weight="bold" font-size="9" fill="#C2410C">Phase 1: 优化器核心</text>
-
-  <rect x="381" y="475" width="145" height="24" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="453" y="491" text-anchor="middle" font-weight="bold" font-size="9" fill="#C2410C">Phase 2: 包装器</text>
-
-  <rect x="534" y="475" width="145" height="24" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="606" y="491" text-anchor="middle" font-weight="bold" font-size="9" fill="#C2410C">Phase 3: 高级规则</text>
-
-  <rect x="687" y="475" width="230" height="24" rx="2" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="802" y="491" text-anchor="middle" font-weight="bold" font-size="9" fill="#C2410C">Phase 4: 重构代理服务</text>
-
-  <!-- ═══ 目录结构 ═══ -->
-  <rect x="20" y="522" width="910" height="135" rx="3" fill="none" stroke="#ddd"/>
-  <text x="35" y="542" font-size="11" font-weight="bold" fill="#333">目标目录结构</text>
-
-  <text x="35" y="562" font-family="monospace" font-size="10" fill="#333">contextpilot/</text>
-  <text x="35" y="577" font-family="monospace" font-size="10" fill="#7B61FF">  optimizer/        新增: 核心类、解析器、规划器、目录、代价模型、优化规则</text>
-  <text x="35" y="592" font-family="monospace" font-size="10" fill="#22C55E">  engine/           搬入: 缓存索引、树结构、距离计算、调度器、淘汰管理</text>
-  <text x="35" y="607" font-family="monospace" font-size="10" fill="#4A90D9">  proxy/            搬入: HTTP 代理服务器、请求拦截器</text>
-  <text x="35" y="622" font-family="monospace" font-size="10" fill="#4A90D9">  integrations/     搬入+新增: OpenAI/Anthropic 包装器, retrievers, hooks</text>
-  <text x="35" y="637" font-family="monospace" font-size="10" fill="#888">  pipeline/, utils/ 保留  |  _compat.py 旧路径兼容  |  __init__.py 公共 API</text>
-
-  <!-- ═══ 图例 ═══ -->
-  <rect x="20" y="668" width="910" height="24" rx="3" fill="none" stroke="#eee"/>
-  <rect x="35" y="674" width="12" height="12" rx="1" fill="#F3F0FF" stroke="#7B61FF"/>
-  <text x="52" y="685" font-size="9" fill="#666">已有(包装)</text>
-  <rect x="115" y="674" width="12" height="12" rx="1" fill="#FFF7ED" stroke="#EA580C"/>
-  <text x="132" y="685" font-size="9" fill="#666">新增</text>
-  <rect x="165" y="674" width="12" height="12" rx="1" fill="#DBEAFE" stroke="#3B82F6"/>
-  <text x="182" y="685" font-size="9" fill="#666">下一步</text>
-  <rect x="220" y="674" width="12" height="12" rx="1" fill="#FEF2F2" stroke="#EF4444" stroke-dasharray="3 2"/>
-  <text x="237" y="685" font-size="9" fill="#666">兼容桥</text>
-
-  <!-- 性能 -->
-  <text x="475" y="720" text-anchor="middle" font-size="10" fill="#555">性能预算: 解析(&lt;5ms) + 分析(&lt;1ms) + 规划(&lt;2ms) + 执行(&lt;5ms) = 总计 &lt;15ms</text>
-  <text x="475" y="740" text-anchor="middle" font-size="10" fill="#999">全程零 LLM 调用，纯规则引擎</text>
+  <!-- Performance -->
+  <text x="440" y="695" text-anchor="middle" font-size="9" fill="#999">Parse(&lt;5ms) + Analyze(&lt;1ms) + Plan(&lt;2ms) + Execute(&lt;5ms) = &lt;15ms total overhead. All regex, zero LLM calls.</text>
 </svg>

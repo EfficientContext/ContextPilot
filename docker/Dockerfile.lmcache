@@ -4,7 +4,7 @@ FROM lmcache/vllm-openai:${LMCACHE_VERSION}
 COPY . /opt/contextpilot
 WORKDIR /opt/contextpilot
 
-RUN /opt/venv/bin/pip install --no-cache-dir . && \
+RUN /opt/venv/bin/python3 -m pip install --no-cache-dir . && \
     /opt/venv/bin/python3 -m contextpilot.install_hook
 
 ENV CONTEXTPILOT_INDEX_URL=http://localhost:8765

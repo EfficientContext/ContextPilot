@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 920" font-family="Helvetica, Arial, sans-serif" font-size="12">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 935" font-family="Helvetica, Arial, sans-serif" font-size="12">
   <defs>
     <marker id="a" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
       <polygon points="0 0,7 2.5,0 5" fill="#555"/>
@@ -11,7 +11,7 @@
     </marker>
   </defs>
 
-  <rect width="880" height="920" fill="#fff"/>
+  <rect width="880" height="935" fill="#fff"/>
 
   <!-- Title -->
   <text x="440" y="24" text-anchor="middle" font-size="15" font-weight="bold" fill="#222">Context Optimizer + KV Engine — End-to-End Flow</text>
@@ -88,17 +88,17 @@
   <rect x="402" y="266" width="448" height="182" rx="2" fill="#FFFBEB" stroke="#D97706"/>
   <text x="412" y="282" font-weight="bold" fill="#92400E" font-size="10">RULES evaluated (each is a plugin):</text>
 
-  <!-- REORDER — applied -->
+  <!-- REORDER — applied (cross-session prefix sharing) -->
   <rect x="412" y="290" width="10" height="10" rx="1" fill="#22C55E"/>
   <text x="428" y="299" font-size="10" font-weight="bold" fill="#333">REORDER</text>
-  <text x="500" y="299" font-size="9" fill="#555">Sort blocks so common prefix is maximized</text>
-  <text x="500" y="311" font-size="9" fill="#22C55E">→ move skill:whisper to top, share 6,400 tok KV prefix</text>
+  <text x="500" y="299" font-size="9" fill="#555">Cross session: canonical order → max prefix sharing</text>
+  <text x="500" y="311" font-size="9" fill="#22C55E">→ move skill:whisper to top, share 6,400 tok KV across sessions</text>
 
-  <!-- DEDUP — applied -->
+  <!-- DEDUP — applied (same-session multi-turn) -->
   <rect x="412" y="320" width="10" height="10" rx="1" fill="#22C55E"/>
   <text x="428" y="329" font-size="10" font-weight="bold" fill="#333">DEDUP</text>
-  <text x="478" y="329" font-size="9" fill="#555">Remove content already sent in previous turns</text>
-  <text x="478" y="341" font-size="9" fill="#22C55E">→ remove search:web (sent in Turn 2), save 6,100 tok</text>
+  <text x="478" y="329" font-size="9" fill="#555">Same session: only send delta tokens, drop old blocks</text>
+  <text x="478" y="341" font-size="9" fill="#22C55E">→ Turn 2 only sends [a1, q2], skip [sys, doc1, q1] (already in KV)</text>
 
   <!-- PREFETCH — applied -->
   <rect x="412" y="350" width="10" height="10" rx="1" fill="#22C55E"/>
@@ -158,7 +158,7 @@
   <line x1="190" y1="570" x2="190" y2="590" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
 
   <!-- ═══════════════ SERVER SIDE ═══════════════ -->
-  <text x="30" y="600" font-size="9" font-weight="bold" fill="#D97706" letter-spacing="2">SERVER SIDE — KV CACHE ENGINE (SGLANG RADIX TREE)</text>
+  <text x="30" y="600" font-size="9" font-weight="bold" fill="#D97706" letter-spacing="2">SERVER SIDE — KV CACHE ENGINE (SGLANG RADIX TREE) — CROSS SESSION REUSE</text>
   <line x1="30" y1="604" x2="850" y2="604" stroke="#D97706" stroke-width="0.5" stroke-dasharray="3 2"/>
 
   <!-- ═══ STEP 5: KV INSERT ═══ -->
@@ -206,10 +206,10 @@
 
   <!-- Auto-batch → right side -->
   <rect x="420" y="698" width="430" height="62" rx="2" fill="#f9f9f9" stroke="#D97706"/>
-  <text x="430" y="714" font-weight="bold" fill="#92400E" font-size="10">Auto-Batch by Shared Prefix:</text>
-  <text x="430" y="730" font-size="9" fill="#555">Req1: reuse=h_a + "Q1?"  ──┐</text>
-  <text x="430" y="742" font-size="9" fill="#555">Req2: reuse=h_a + "Q2?"  ──┤ same prefix → batched</text>
-  <text x="430" y="754" font-size="9" fill="#555">Req3: reuse=h_b + "Q3?"  ──┘ shares sys → partial batch</text>
+  <text x="430" y="714" font-weight="bold" fill="#92400E" font-size="10">Auto-Batch by Shared Prefix (cross-session):</text>
+  <text x="430" y="730" font-size="9" fill="#555">Session A: reuse=h_a + "Q1?"  ──┐</text>
+  <text x="430" y="742" font-size="9" fill="#555">Session B: reuse=h_a + "Q2?"  ──┤ same prefix → batched</text>
+  <text x="430" y="754" font-size="9" fill="#555">Session C: reuse=h_b + "Q3?"  ──┘ shares sys → partial batch</text>
 
   <!-- Arrow down -->
   <line x1="190" y1="760" x2="190" y2="776" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
@@ -228,7 +228,11 @@
   <text x="40" y="849" font-family="monospace" font-size="10" fill="#C4B5FD">cp.explain(messages)</text>
   <text x="220" y="849" font-size="10" fill="#A5B4FC">Show this entire plan without executing — like SQL EXPLAIN</text>
 
+  <!-- ═══ Design constraint ═══ -->
+  <rect x="30" y="868" width="820" height="22" rx="2" fill="#FEF2F2" stroke="#EF4444"/>
+  <text x="440" y="883" text-anchor="middle" font-size="9" font-weight="bold" fill="#DC2626">No accuracy impact: prefix-based reuse only. No RoPE re-encoding. No block-level KV composition. Bit-identical output.</text>
+
   <!-- ═══ Latency footer ═══ -->
-  <text x="440" y="885" text-anchor="middle" font-size="9" fill="#999">Client: Parse(&lt;5ms) + Analyze(&lt;1ms) + Plan(&lt;2ms) + Execute(&lt;5ms) = &lt;15ms total. All regex, zero LLM calls.</text>
-  <text x="440" y="900" text-anchor="middle" font-size="9" fill="#999">Server: KV.insert = 1 prefill pass (amortized). KV.reuse = 0 extra cost (radix tree lookup &lt;0.1ms).</text>
+  <text x="440" y="907" text-anchor="middle" font-size="9" fill="#999">Client: Parse(&lt;5ms) + Analyze(&lt;1ms) + Plan(&lt;2ms) + Execute(&lt;5ms) = &lt;15ms total. All regex, zero LLM calls.</text>
+  <text x="440" y="920" text-anchor="middle" font-size="9" fill="#999">Server: KV.insert = 1 prefill pass (amortized). KV.reuse = 0 extra cost (radix tree lookup &lt;0.1ms).</text>
 </svg>

@@ -3,7 +3,7 @@
 ## TL;DR
 
 把 ContextPilot 重构为 **Context Optimizer** — 类比 SQL Query Optimizer。
-用户只管写 prompt，Optimizer 透明地处理一切（reorder, dedup, prefetch, prune）。
+用户只管写 prompt，Optimizer 透明地处理一切（Dedup, Add, Repartition, Reorder）。
 
 **用户代码变化**：
 
@@ -45,19 +45,19 @@ messages = cp.optimize(messages)
  └────────┬────────────┘           └──────────────┬───────────────┘
           │                                       ▼
           ▼                        ┌──────────────────────────────┐
- ┌─────────────────────┐           │       Rewrite Rules           │
- │   Rewrite Rules      │           │  • Reorder  (prefix sharing)  │
- │  • predicate pushdown│           │  • Dedup    (cross-turn)      │
- │  • subquery unnest   │           │  • Prefetch (branch predict)  │
- │  • view merging      │           │  • Prune    (token budget)    │
- │  • constant folding  │           │  • Merge    (skill combine)   │
- └────────┬────────────┘           └──────────────┬───────────────┘
+  ┌─────────────────────┐           │       4 Primitives (AI-free)   │
+  │   Rewrite Rules      │           │  • Dedup       (Distinct δ)   │
+  │  • predicate pushdown│           │  • Add         (Union ∪)      │
+  │  • subquery unnest   │           │  • Repartition (Exchange ∥)   │
+  │  • view merging      │           │  • Reorder     (Sort τ, LAST) │
+  │  • constant folding  │           │                                │
+  └────────┬────────────┘           └──────────────┬───────────────┘
           │                                       ▼
           ▼                        ┌──────────────────────────────┐
  ┌─────────────────────┐           │       Cost Model              │
  │     Cost Model       │           │  token_cost(block)            │
  │  row estimates       │           │  cache_benefit(reorder)       │
- │  I/O cost            │           │  prefetch_risk(miss_rate)     │
+ │  I/O cost            │           │  latency_benefit(parallel)     │
  └────────┬────────────┘           └──────────────┬───────────────┘
           │                                       ▼
           ▼                        ┌──────────────────────────────┐
@@ -77,7 +77,7 @@ messages = cp.optimize(messages)
    → cost estimates                  → token savings / cache hit rate
 
  CREATE INDEX                       co.register_skill(path)
-   → 建索引加速查询                  → 注册 skill 加速 prefetch
+   → 建索引加速查询                  → 注册 skill 加速 predictive add
 
  ANALYZE table                      co.analyze()
    → 更新统计信息                    → 更新 block usage 统计
@@ -120,14 +120,14 @@ messages = cp.optimize(messages)
           ║  ┌──────────┐  ┌────────────┐  ┌───────────┐              ║
           ║  │ CATALOG   │  │ COST MODEL │  │  REWRITE  │              ║
           ║  │           │  │            │  │  RULES    │              ║
-          ║  │• skills   │  │• token_cost│  │           │              ║
-          ║  │• memory   │  │• cache_hit │  │• reorder  │              ║
-          ║  │• usage    │  │• prefetch_ │  │• dedup    │              ║
-          ║  │  stats    │  │  risk      │  │• prefetch │              ║
-          ║  │• block    │  │• latency   │  │• prune    │              ║
-          ║  │  registry │  │            │  │• merge    │              ║
-          ║  └──────────┘  └────────────┘  └───────────┘              ║
-          ║                                     │                      ║
+           ║  │• skills   │  │• token_cost│  │           │              ║
+           ║  │• memory   │  │• cache_hit │  │• dedup    │              ║
+           ║  │• usage    │  │• latency   │  │• add      │              ║
+           ║  │  stats    │  │  benefit   │  │• repartit.│              ║
+           ║  │• block    │  │            │  │• reorder  │              ║
+           ║  │  registry │  │            │  │  (LAST)   │              ║
+           ║  └──────────┘  └────────────┘  └───────────┘              ║
+           ║                                     │                      ║
           ║                    ┌─────────────────┘                      ║
           ║                    ▼                                        ║
           ║              ┌───────────┐                                  ║
@@ -182,7 +182,7 @@ client = cp.openai.Client(api_key="sk-...")
 # 就这样，所有 chat.completions.create 自动优化
 response = client.chat.completions.create(
     model="gpt-4",
-    messages=messages  # ← Optimizer 自动 reorder/dedup/prefetch
+    messages=messages  # ← Optimizer 自动 dedup/add/reorder
 )
 ```
 
@@ -211,7 +211,7 @@ response = openai_client.chat.completions.create(
 import contextpilot as cp
 
 optimizer = cp.ContextOptimizer(
-    rules=["reorder", "dedup", "prefetch", "prune"],
+    rules=["dedup", "add", "repartition", "reorder"],
     token_budget=128_000,
     skill_dirs=["~/.config/opencode/skills/"],
 )
@@ -226,15 +226,15 @@ print(plan)
 # ║ Output: 31,206 tokens (9 blocks)             ║
 # ║ Saving: 16,626 tokens (34.8%)                ║
 # ╠══════════════════════════════════════════════╣
-# ║ Rules applied:                                ║
-# ║  1. REORDER  → 3 blocks reordered            ║
-# ║     cache_hit: 12,400 tokens shared           ║
-# ║  2. DEDUP    → 2 blocks removed (seen T1,T2) ║
+# ║ Primitives applied:                           ║
+# ║  1. DEDUP       → 2 blocks removed           ║
 # ║     saved: 8,200 tokens                       ║
-# ║  3. PREFETCH → skill:whisper injected         ║
-# ║     confidence: 0.87, cost: 1,200 tokens      ║
-# ║  4. PRUNE    → 1 section trimmed              ║
-# ║     §Advanced (freq=0, last_used=never)       ║
+# ║  2. ADD         → skill:whisper injected      ║
+# ║     reason: cache warm, cost: 1,200 tokens    ║
+# ║  3. REPARTITION → 2 parallel batches created  ║
+# ║     latency_benefit: 40% reduction            ║
+# ║  4. REORDER     → 3 blocks reordered (LAST)   ║
+# ║     cache_hit: 12,400 tokens shared           ║
 # ╠══════════════════════════════════════════════╣
 # ║ Block breakdown:                              ║
 # ║  skill:whisper     8,400t  freq=12 ★★★★☆     ║
@@ -318,85 +318,39 @@ contextpilot/                           contextpilot/
                                         ├── optimizer/rules/       (NEW)
                                         │   ├── __init__.py
                                         │   ├── base.py            (Rule ABC)
-                                        │   ├── reorder.py         (prefix sharing)
-                                        │   ├── dedup.py           (cross-turn)
-                                        │   ├── prefetch.py        (branch prediction)
-                                        │   ├── prune.py           (token budget)
-                                        │   └── merge.py           (skill combine)
+                                        │   ├── reorder.py         (prefix sharing - LAST)
+                                        │   ├── dedup.py           (cross-turn deletion)
+                                        │   ├── add.py             (cache-warm insertion)
+                                        │   └── repartition.py     (parallel topology)
                                         │
-                                        └── optimizer/
-                                            ├── parser.py          (NEW: block parser)
-                                            ├── catalog.py         (NEW: usage + registry)
-                                            ├── cost_model.py      (NEW: token costing)
-                                            └── planner.py         (NEW: plan generation)
-```
-
-### Package Layout (Final)
-
-```
-contextpilot/
-│
-├── __init__.py                 # Public API surface
-│   # import contextpilot as cp
-│   # cp.optimize(messages)
-│   # cp.explain(messages)
-│   # cp.openai.Client(...)
-│   # cp.ContextOptimizer(...)
-│
-├── optimizer/                  # ★ Core: The "Query Optimizer"
-│   ├── __init__.py
-│   ├── core.py                 # ContextOptimizer 主类
-│   ├── parser.py               # Prompt → ContextBlockTree
-│   ├── planner.py              # Rule selection + plan generation
-│   ├── cost_model.py           # Token cost estimation
-│   ├── catalog.py              # Block registry + usage stats
-│   │
-│   └── rules/                  # Rewrite rules (pluggable)
-│       ├── __init__.py
-│       ├── base.py             # OptimizationRule ABC
-│       ├── reorder.py          # Prefix-sharing reorder
-│       ├── dedup.py            # Cross-turn deduplication
-│       ├── prefetch.py         # Predictive skill prefetch
-│       ├── prune.py            # Token budget pruning
-│       └── merge.py            # Block merging
-│
-├── engine/                     # ★ Execution Engine (from current context_index/)
-│   ├── __init__.py
-│   ├── cache_index.py          # Hierarchical clustering + tree (ContextIndex)
-│   ├── tree.py                 # ClusterNode, NodeManager
-│   ├── distance.py             # Distance computation (CPU/GPU)
-│   ├── scheduler.py            # Intra + Inter context scheduling
-│   ├── live_index.py           # Live cache state management
-│   ├── eviction.py             # Eviction logic
-│   └── metadata.py             # Node metadata
-│
-├── proxy/                      # ★ HTTP Proxy mode
-│   ├── __init__.py
-│   ├── server.py               # FastAPI server
-│   └── interceptor.py          # Request intercept + format handlers
-│
-├── integrations/               # ★ 即插即用 wrappers
-│   ├── __init__.py
-│   ├── openai_client.py        # cp.openai.Client (drop-in replacement)
-│   ├── anthropic_client.py     # cp.anthropic.Client
-│   ├── retrievers/             # BM25, FAISS, Mem0, PageIndex
-│   │   ├── __init__.py
-│   │   ├── bm25.py
-│   │   ├── faiss.py
-│   │   ├── mem0.py
-│   │   └── pageindex.py
-│   └── hooks/                  # Inference engine hooks
-│       ├── __init__.py
-│       ├── sglang.py
-│       ├── vllm.py
-│       └── llamacpp.py
-│
-├── pipeline/                   # RAG pipeline (保留, 内部用 optimizer)
-│   ├── __init__.py
-│   ├── rag_pipeline.py
-│   └── components.py
-│
-└── _compat.py                  # 旧 API 兼容层
+                                        ├── engine/                     # ★ Execution Engine
+                                        │   ├── __init__.py
+                                        │   ├── cache_index.py          # Hierarchical clustering
+                                        │   ├── tree.py                 # ClusterNode, NodeManager
+                                        │   ├── distance.py             # Distance (CPU/GPU)
+                                        │   ├── scheduler.py            # Intra + Inter scheduling
+                                        │   ├── live_index.py           # Live cache state
+                                        │   ├── eviction.py             # Eviction logic
+                                        │   └── metadata.py             # Node metadata
+                                        │
+                                        ├── proxy/                      # ★ HTTP Proxy mode
+                                        │   ├── __init__.py
+                                        │   ├── server.py               # FastAPI server
+                                        │   └── interceptor.py          # Request intercept
+                                        │
+                                        ├── integrations/               # ★ 即插即用 wrappers
+                                        │   ├── __init__.py
+                                        │   ├── openai_client.py        # cp.openai.Client
+                                        │   ├── anthropic_client.py     # cp.anthropic.Client
+                                        │   ├── retrievers/             # BM25, FAISS, Mem0
+                                        │   │   └── ...
+                                        │   └── hooks/                  # sglang, vllm, llama
+                                        │       └── ...
+                                        │
+                                        ├── pipeline/                   # RAG pipeline (保留)
+                                        │   └── ...
+                                        │
+                                        └── _compat.py                  # 旧 API 兼容层
 ```
 
 ---
@@ -416,7 +370,7 @@ class ContextOptimizer:
     
     def __init__(
         self,
-        rules: List[str] = None,       # ["reorder","dedup","prefetch","prune"]
+        rules: List[str] = None,       # ["dedup","add","repartition","reorder"]
         token_budget: int = None,       # max context tokens (None = no limit)
         skill_dirs: List[str] = None,   # skill directories to scan
         persist_path: str = None,       # usage stats persistence
@@ -432,9 +386,15 @@ class ContextOptimizer:
     
     def optimize(self, messages: List[Dict]) -> List[Dict]:
         """Optimize messages. Drop-in: pass messages in, get optimized messages out."""
-        block_tree = self._parser.parse(messages)
+        # 1. External (Parallel)
+        # BlockTree = self._prefetcher.predict() + self._parser.parse(messages)
+# Optimizer doesn't use prefetch as a rule.
+        block_tree = self._parser.parse(messages) 
         self._catalog.record(block_tree)
+        
+        # 2. Optimizer Core (4 Primitives)
         plan = self._planner.plan(block_tree, self._catalog, self._cost_model)
+        # Sequence: {Dedup || Add} -> Repartition -> Reorder (LAST)
         return self._execute(plan, messages)
     
     def explain(self, messages: List[Dict]) -> OptimizationPlan:
@@ -494,30 +454,25 @@ class OptimizationRule(ABC):
 
 # Concrete rules:
 
-class ReorderRule(OptimizationRule):
-    """Reorder documents within blocks for prefix sharing."""
-    name = "reorder"
-    # Wraps current: ContextIndex.fit_transform + InterContextScheduler
-
 class DedupRule(OptimizationRule):
-    """Remove documents seen in previous conversation turns."""
+    """Remove documents seen in previous conversation turns (Deletion)."""
     name = "dedup"
-    # Wraps current: ConversationTracker + _deduplicate_docs
+    # Operation: Distinct (δ) on BlockTree
 
-class PrefetchRule(OptimizationRule):
-    """Predict and inject likely-needed skills."""
-    name = "prefetch"
-    # NEW: SkillPrefetcher from context_blocks design
+class AddRule(OptimizationRule):
+    """Insert new blocks based on KV cache state (Insertion)."""
+    name = "add"
+    # Operation: Union (∪) on BlockTree (Cache warming)
 
-class PruneRule(OptimizationRule):
-    """Trim low-value sections to fit token budget."""
-    name = "prune"
-    # NEW: removes unused skill sections, old search results
+class RepartitionRule(OptimizationRule):
+    """Auto-discover independent chunks, split into parallel batches (Topology)."""
+    name = "repartition"
+    # Operation: Exchange (∥) on BlockTree (Latency optimization)
 
-class MergeRule(OptimizationRule):
-    """Combine frequently co-occurring blocks for cache sharing."""
-    name = "merge"
-    # NEW: merges skill blocks based on co-occurrence stats
+class ReorderRule(OptimizationRule):
+    """Permute block order to maximize prefix hits (Permutation). MUST BE LAST."""
+    name = "reorder"
+    # Operation: Sort (τ) on final block set
 ```
 
 ### 5.3 OptimizationPlan (EXPLAIN output)
@@ -559,7 +514,7 @@ class PlanStep:
     target_blocks: List[str]     # which blocks affected
     tokens_before: int
     tokens_after: int
-    confidence: float            # for prefetch
+    latency_benefit: float       # for repartition
     reason: str                  # human-readable explanation
 ```
 
@@ -625,48 +580,42 @@ messages = [
 ]
       │
       ▼
- ┌─ 1. PARSE (< 5ms) ─────────────────────────────────┐
- │  ContextBlockTree:                                   │
+ ┌─ 1. PARSE / PREFETCH (< 5ms) ──────────────────────┐
+ │  (Parallel)                                          │
+ │  ContextBlockTree (Append-only):                     │
  │    ├── skill:whisper (8400 tokens)                   │
- │    │   ├── §Overview                                 │
- │    │   ├── §Installation                             │
- │    │   ├── §Usage                                    │
- │    │   └── §Advanced                                 │
  │    ├── file:/audio/test.wav (2400 tokens)            │
  │    └── user_query (12 tokens)                        │
  └──────────────────────────────────────────────────────┘
       │
       ▼
  ┌─ 2. ANALYZE (< 1ms) ───────────────────────────────┐
- │  Catalog lookup:                                     │
+ │  Catalog lookup (AI-free):                           │
  │    skill:whisper     → freq=12, last=2min, hot ★★★★ │
- │    skill:whisper/§Advanced → freq=0, cold            │
  │    file:/audio/test.wav → freq=1, new                │
  └──────────────────────────────────────────────────────┘
       │
       ▼
- ┌─ 3. PLAN (< 2ms) ──────────────────────────────────┐
+ ┌─ 3. OPTIMIZE (4 Primitives, < 8ms total) ──────────┐
  │  Rules evaluated:                                    │
- │    ✅ reorder  → 2 blocks can share prefix           │
- │    ✅ prune    → §Advanced (freq=0) removable        │
- │    ⬜ dedup    → no previous turn (skip)             │
- │    ⬜ prefetch → skill already present (skip)        │
+ │    ✅ dedup        → 1 block removed (Distinct)      │
+ │    ✅ add          → pre-warm related memory (Union) │
+ │    ✅ repartition  → 2 parallel batches (Exchange)   │
+ │    ✅ reorder      → permute for prefix (Sort, LAST) │
  │                                                      │
- │  Plan: [reorder, prune]                              │
- │  Token savings: 1,200 (§Advanced section)            │
- │  Cache benefit: 6,400 tokens (prefix sharing)        │
+ │  Plan: [dedup || add] -> repartition -> reorder      │
+ │  Total Latency Budget: < 15ms                        │
  └──────────────────────────────────────────────────────┘
       │
       ▼
  ┌─ 4. EXECUTE (< 5ms) ───────────────────────────────┐
- │  Apply reorder: rearrange doc order in system msg    │
- │  Apply prune: remove §Advanced from skill content    │
- │  Reconstruct messages with optimized content         │
+ │  Apply plan to BlockTree                             │
+ │  Reconstruct messages for LLM backend                │
  └──────────────────────────────────────────────────────┘
       │
       ▼
  optimized_messages  → send to LLM
- (9,612 tokens, was 10,812)
+ (optimized KV layout)
 ```
 
 ---
@@ -690,17 +639,18 @@ messages = [
 ### Phase 1: Optimizer Core (新增，不改旧代码)
 
 ```
-目标: ContextOptimizer 类 + 基础 rules
+目标: ContextOptimizer 类 + 4 基础 primitives
+特点: AI-free, < 15ms latency budget
 
-1. optimizer/parser.py — ContextBlockParser (from design_context_blocks.md)
-2. optimizer/catalog.py — Catalog + BlockUsageStore
-3. optimizer/cost_model.py — CostModel
-4. optimizer/rules/reorder.py — 包装现有 ContextIndex + Scheduler
-5. optimizer/rules/dedup.py — 包装现有 ConversationTracker
-6. optimizer/core.py — ContextOptimizer 主类
-7. optimizer/planner.py — 规则选择 + plan 生成
-8. 新 __init__.py — cp.optimize() API
-9. tests/test_optimizer.py
+1. optimizer/parser.py — ContextBlockParser (outside)
+2. optimizer/prefetch.py — Predictive logic (outside, parallel with parser)
+3. optimizer/catalog.py — Catalog + BlockUsageStore
+4. optimizer/rules/dedup.py — Deletion filter
+5. optimizer/rules/add.py — Cache-warm insertion
+6. optimizer/rules/repartition.py — Topology optimization
+7. optimizer/rules/reorder.py — Prefix sorting (LAST)
+8. optimizer/core.py — ContextOptimizer 主类
+9. optimizer/planner.py — 规则串行计划 (Phase 1,2,3)
 ```
 
 ### Phase 2: Client Wrappers (即插即用)
@@ -714,17 +664,15 @@ messages = [
 4. tests/test_wrappers.py
 ```
 
-### Phase 3: Advanced Rules (新功能)
+### Phase 3: BlockTree & Prefetch (新功能)
 
 ```
-目标: prefetch, prune, merge rules
+目标: append-only BlockTree, predictive prefetch
 
-1. optimizer/rules/prefetch.py — SkillPrefetcher
-2. optimizer/rules/prune.py — Token budget pruning
-3. optimizer/rules/merge.py — Block merging
-4. optimizer/catalog.py — SkillRegistry 扩展
-5. explain() 输出完善
-6. tests/test_rules.py
+1. engine/tree.py — BlockTree (INSERT + READ only)
+2. optimizer/prefetch.py — SkillPrefetcher 完善
+3. integrations/hooks — vLLM/SGLang prefix cache reuse
+4. explain() 输出完善 (primitive analogies)
 ```
 
 ### Phase 4: Proxy 重构
@@ -775,8 +723,9 @@ import contextpilot as cp; cp.optimize(docs, query)
  Integration         自己写 pipeline         零代码 proxy 或
                      配 server               一行 client wrapper
 
- Optimization        只有 reorder +          reorder + dedup +
-                     basic dedup              prefetch + prune + merge
+优化效果             只有 reorder +          reorder + dedup +
+                      basic dedup              add + repartition
+
 
  Observability       基本日志               EXPLAIN：完整优化计划
                                              markmap 可视化

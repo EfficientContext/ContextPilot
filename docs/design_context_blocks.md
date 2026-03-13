@@ -30,24 +30,21 @@ prompt
 ## 2. Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Intercept Proxy                          │
-│                                                              │
-│  Request ──→ [ContextBlockParser] ──→ [UsageTracker] ──→ Forward │
-│                     │                       │                │
-│                     ▼                       ▼                │
-│           ContextBlockTree          BlockUsageStore          │
-│           (markmap-style)           (lightweight JSON)       │
-│                     │                       │                │
-│                     └───────┬───────────────┘                │
-│                             ▼                                │
-│                    [SkillPrefetcher]                          │
-│                    (branch prediction)                        │
-│                             │                                │
-│                             ▼                                │
-│                    Prefetched context                         │
-│                    injected into next request                 │
-└─────────────────────────────────────────────────────────────┘
+User Input
+    │
+ ┌──┴──┐  parallel
+Parser  Prefetch       ← BOTH outside Optimizer
+ └──┬──┘
+    ▼
+ BlockTree             ← append-only: INSERT + READ only, no DELETE
+    │
+ ┌─ Optimizer ─────────────────┐
+ │  Phase 1: {Dedup ∥ Add}     │  Dedup=READ, Add=INSERT
+ │  Phase 2:  Repartition      │  READ
+ │  Phase 3:  Reorder (LAST)   │  READ
+ └─────────────────────────────┘
+    │
+ Optimized Output
 ```
 
 ### 数据流
@@ -55,16 +52,17 @@ prompt
 ```
 Turn N request
   │
-  ├─ 1. Parse: prompt → ContextBlockTree（O(n) string scan，无 LLM）
+  ├─ 1. Parse: prompt → BlockTree（O(n) string scan，无 LLM）
   │     识别 skill_content tags, memory blocks, tool_results, file reads
   │
-  ├─ 2. Track: 更新 block-level usage stats（O(1) dict update）
+  ├─ 2. Prefetch: (parallel with Parse) 根据 usage history 预测 skills（O(k) lookup）
+  │     高频 + 近期使用 → 结果写入 BlockTree (append-only)
+  │
+  ├─ 3. Track: 更新 block-level usage stats（O(1) dict update）
   │     last_used_time, frequency, section-level granularity
   │
-  ├─ 3. Predict: 根据 usage history prefetch skills（O(k) lookup）
-  │     高频 + 近期使用 → 自动注入，无需 LLM 选择
-  │
-  ├─ 4. Reorder: 现有 ContextPilot clustering pipeline（不变）
+  ├─ 4. Optimizer: {Dedup ∥ Add} → Repartition → Reorder（< 15ms total）
+  │     Dedup 过滤输出（不删树），Add 插入 cache-warm 块，Reorder 优化 prefix hits
   │
   └─ 5. Forward: 优化后的 request → LLM backend
 ```
@@ -249,7 +247,9 @@ class BlockUsageStore:
 
 **位置**: `contextpilot/server/skill_prefetcher.py` (新文件)
 
-**职责**: 根据使用统计预测下一次 request 需要哪些 skills，提前 fetch 并注入。
+**职责**: 根据使用统计预测下一次 request 需要哪些 skills，提前 fetch 并注入到 BlockTree。
+
+> **Note**: SkillPrefetcher 运行在 Optimizer 外部，与 Parser 并行执行。它不是 Optimizer 的 primitive，而是 speculative 的外部组件。
 
 #### 核心思路
 
@@ -471,23 +471,26 @@ class SkillFilter:
 async def _intercept_and_forward(request: Request, api_format: str):
     body = await request.json()
     
-    # ===== 新增：Context Block Parsing =====
-    block_tree = parse_context_blocks(body, api_format)
+    # 1. Parse & Prefetch (Parallel)
+    # Parser: prompt -> BlockTree (append-only)
+    # Prefetch: usage history -> prediction -> insert to BlockTree
+    block_tree = await gather(
+        parse_context_blocks(body, api_format),
+        prefetcher.predict_and_insert(user_query=...)
+    )
     
-    # ===== 新增：Usage Tracking =====
+    # 2. Track usage stats
     usage_store.record_usage(block_tree.flat_blocks())
     
-    # ===== 新增：Skill Prefetch（仅在无 skill 时触发）=====
-    if not block_tree.has_type(BlockType.SKILL):
-        predictions = prefetcher.predict(block_tree, user_query=...)
-        filtered = skill_filter.apply_filter(predictions)
-        if filtered:
-            body = inject_prefetched_skills(body, filtered, api_format)
+    # 3. Optimizer: {Dedup || Add} -> Repartition -> Reorder
+    # - Dedup: 过滤输出，不改树
+    # - Add: 根据 KV cache 状态插入
+    # - Repartition: 拓扑变更
+    # - Reorder: 最终排序
+    optimized_body = optimizer.run(body, block_tree)
     
-    # ===== 现有：Document Extraction & Reorder =====
-    handler = get_format_handler(api_format)
-    multi_result = handler.extract_all(body, config)
-    # ... 现有 reorder/dedup 逻辑不变 ...
+    # 4. Forward optimized request
+    return await forward(optimized_body)
 ```
 
 ### 4.2 新增 HTTP API Endpoints
@@ -562,7 +565,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
 | Task | 文件 | 估时 |
 |------|------|------|
-| `ContextBlock` / `ContextBlockTree` 数据模型 | `context_block_parser.py` | 0.5d |
+| `ContextBlock` / `BlockTree` 数据模型 (Append-only) | `context_block_parser.py` | 0.5d |
 | Parser: skill/memory/searched/file_based 识别 | `context_block_parser.py` | 1d |
 | Skill section 分解（markdown heading split） | `context_block_parser.py` | 0.5d |
 | `BlockUsageStore` 统计引擎 | `block_usage.py` | 0.5d |
@@ -570,21 +573,22 @@ async def _intercept_and_forward(request: Request, api_format: str):
 | Markmap export | `context_block_parser.py` | 0.5d |
 | 单元测试 | `tests/test_context_blocks.py` | 0.5d |
 
-### Phase 2: Skill Prefetch (Branch Prediction)
+### Phase 2: Prefetch Component (External, Parallel with Parser)
 
 | Task | 文件 | 估时 |
 |------|------|------|
 | `SkillRegistry` 目录扫描与索引 | `skill_prefetcher.py` | 0.5d |
 | `SkillPrefetcher` 统计预测（Level 1） | `skill_prefetcher.py` | 0.5d |
 | 关键词匹配预测（Level 2） | `skill_prefetcher.py` | 0.5d |
-| Prefetch 注入到 request body | `http_server.py` | 0.5d |
+| Prefetch 结果并行注入 BlockTree | `http_server.py` | 0.5d |
 | 预测准确率评估与自适应 | `skill_prefetcher.py` | 0.5d |
 | 集成测试 | `tests/test_skill_prefetch.py` | 0.5d |
 
-### Phase 3: Skill Filter & User Management
+### Phase 3: Optimizer Primitives & User Management
 
 | Task | 文件 | 估时 |
 |------|------|------|
+| Optimizer Primitives (Dedup, Add, Repartition, Reorder) | `optimizer.py` | 1.5d |
 | `SkillFilterConfig` 数据模型 | `skill_filter.py` | 0.5d |
 | Filter/Merge/Pin 逻辑 | `skill_filter.py` | 0.5d |
 | HTTP API endpoints | `http_server.py` | 0.5d |
@@ -600,40 +604,55 @@ async def _intercept_and_forward(request: Request, api_format: str):
 | Context block parsing | < 5ms | 纯正则 + string scan，无 LLM |
 | Usage tracking update | < 1ms | 内存 dict update |
 | Skill prediction (Level 1) | < 5ms | 排序 + top-k 选取 |
-| Skill prediction (Level 2) | < 50ms | keyword grep，预建索引 |
-| Markmap export | < 10ms | String concatenation |
-| Filter apply | < 1ms | Set operations |
-| 持久化 (async) | 不阻塞请求 | 异步写入 JSON |
+| Optimizer: Dedup | < 2ms | Set logic, output filtering only |
+| Optimizer: Add | < 2ms | Cache state lookup & insert |
+| Optimizer: Repartition | < 3ms | Subtree grouping & split |
+| Optimizer: Reorder | < 5ms | Topology sorting, optimized for prefix hits |
+| Total Optimizer Latency | < 15ms | AI-free transformation pipeline |
 
-**总额外延迟**: < 10ms（典型路径：parsing + tracking + prediction Level 1）
+**总额外延迟**: < 15ms（典型路径：parsing/prefetch 并行 + tracking + optimizer）
 
 ---
 
 ## 7. Key Design Decisions
 
-### 7.1 为什么不用 LLM 做 block classification？
+### 7.1 为什么 Prefetch 放在 Optimizer 外部？
+- **预测 vs 确定性变换**: Prefetch 是 speculative（投机性）的，基于历史概率预测需求；Optimizer 的 4 个 primitive 是确定性的集合变换。
+- **并行化隐藏延迟**: Prefetch 与 Parser 并行运行。如果 Prefetch 放在 Optimizer 内部，则必须串行等待 Parser 完成，增加了关键路径延迟。
+- **解耦**: Optimizer 只负责对已有的 BlockTree 状态进行最优表达，而不负责产生新的推测内容。
+
+### 7.2 为什么 BlockTree 是 Append-only (无 DELETE)？
+- **保留历史上下文**: 即使某个 Block 在当前请求中被 Dedup 过滤掉，它在树中的存在对于频率统计和共现分析（co-occurrence）依然重要。
+- **简化追踪逻辑**: 只有 INSERT 和 READ 操作，避免了树节点删除导致的索引失效和引用断裂。
+- **Dedup 的语义变更**: Dedup 不再修改 BlockTree，而是作为 READ 操作，生成过滤后的输出视图。
+
+### 7.3 Add primitive 与 Prefetch 的区别？
+- **Add**: 位于 Optimizer 内部，基于 **KV cache 状态**进行确定性插入（如插入 cache-warm 的通用 context）。
+- **Prefetch**: 位于 Optimizer 外部，基于 **用户使用历史**进行预测性插入。
+
+### 7.4 为什么不用 LLM 做 block classification？
 - 每次 request 增加 1 次 LLM 调用 ≈ 100-500ms
 - Block 类型可以通过结构化特征（tags, tool names, file paths）可靠识别
 - 规则引擎 < 5ms，LLM ≈ 100x slower
 
-### 7.2 为什么 section-level 而不是 token-level 追踪？
+### 7.5 为什么 section-level 而不是 token-level 追踪？
 - Token-level 需要 LLM attention weights → 不可用（proxy 模式无法获取）
 - Section-level（markdown heading）是 skill 的自然分界
 - 粒度足够用于 prefetch 决策
 
-### 7.3 Skill merge 的语义是什么？
+### 7.6 Skill merge 的语义是什么？
 - **场景**：用户总是同时用 skill-A 和 skill-B → merge 为 skill-AB
 - **效果**：两个 skill 内容 concatenate 为一个 block → 共享 KV cache prefix
 - **追踪**：merged block 作为一个整体统计 frequency/recency
 - **可逆**：`POST /skills/unmerge` 拆回
 
-### 7.4 Prefetch 的 "miss" 怎么处理？
+### 7.7 Prefetch 的 "miss" 怎么处理？
 - Prefetch 的 skill 没被用到 → 浪费了 prefill tokens
 - 通过 `confidence_threshold` 控制误 prefetch 率
 - `evaluate_prediction` 追踪历史准确率，自适应调整 threshold
 - 最坏情况 = 多 prefill 了几千 tokens，不影响正确性
 
-### 7.5 与现有 `_intercept_state.seen_doc_hashes` 的关系？
+### 7.8 与现有 `_intercept_state.seen_doc_hashes` 的关系？
 - 现有 dedup 是 document 粒度（hash 去重）
 - Context block 是 semantic 粒度（skill/memory/searched/file）
 - 两者正交：先 block 解析，再对每个 block 内部的 docs 做 dedup

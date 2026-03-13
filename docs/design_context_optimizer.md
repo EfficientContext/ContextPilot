@@ -56,7 +56,7 @@ messages = cp.optimize(messages)
           ▼                        ┌──────────────────────────────┐
  ┌─────────────────────┐           │       Cost Model              │
  │     Cost Model       │           │  token_cost(block)            │
- │  row estimates       │           │  cache_benefit(reorder)       │
+ │  row estimates       │           │  prefix_hit(add/reorder)      │
  │  I/O cost            │           │  latency_benefit(parallel)     │
  └────────┬────────────┘           └──────────────┬───────────────┘
           │                                       ▼
@@ -229,8 +229,8 @@ print(plan)
 # ║ Primitives applied:                           ║
 # ║  1. DEDUP       → 2 blocks removed           ║
 # ║     saved: 8,200 tokens                       ║
-# ║  2. ADD         → skill:whisper injected      ║
-# ║     reason: cache warm, cost: 1,200 tokens    ║
+# ║  2. ADD         → prefix-hit block injected     ║
+# ║     annotated: cache-only, cost: 1,200 tokens  ║
 # ║  3. REPARTITION → 2 parallel batches created  ║
 # ║     latency_benefit: 40% reduction            ║
 # ║  4. REORDER     → 3 blocks reordered (LAST)   ║
@@ -320,7 +320,7 @@ contextpilot/                           contextpilot/
                                         │   ├── base.py            (Rule ABC)
                                         │   ├── reorder.py         (prefix sharing - LAST)
                                         │   ├── dedup.py           (cross-turn deletion)
-                                        │   ├── add.py             (cache-warm insertion)
+                                        │   ├── add.py             (prefix-hit selection)
                                         │   └── repartition.py     (parallel topology)
                                         │
                                         ├── engine/                     # ★ Execution Engine
@@ -386,15 +386,15 @@ class ContextOptimizer:
     
     def optimize(self, messages: List[Dict]) -> List[Dict]:
         """Optimize messages. Drop-in: pass messages in, get optimized messages out."""
-        # 1. External (Parallel)
-        # BlockTree = self._prefetcher.predict() + self._parser.parse(messages)
-# Optimizer doesn't use prefetch as a rule.
-        block_tree = self._parser.parse(messages) 
+        # 1. Parser writes to BlockTree (sole INSERT authority)
+        # Prefetch reads FROM BlockTree metadata (outside Optimizer, parallel)
+        block_tree = self._parser.parse(messages)
         self._catalog.record(block_tree)
         
-        # 2. Optimizer Core (4 Primitives)
+        # 2. Optimizer Core — ALL 4 primitives are READ-only on BlockTree
+        # {Dedup ∥ Add} → Repartition → Reorder (LAST)
+        # Add: queries BlockTree for prefix-hit blocks, annotated cache-only
         plan = self._planner.plan(block_tree, self._catalog, self._cost_model)
-        # Sequence: {Dedup || Add} -> Repartition -> Reorder (LAST)
         return self._execute(plan, messages)
     
     def explain(self, messages: List[Dict]) -> OptimizationPlan:
@@ -460,9 +460,12 @@ class DedupRule(OptimizationRule):
     # Operation: Distinct (δ) on BlockTree
 
 class AddRule(OptimizationRule):
-    """Insert new blocks based on KV cache state (Insertion)."""
+    """Query BlockTree for blocks that increase prefix hit ratio (READ).
+    Added blocks carry annotation: relevance='cache-only' — may not be
+    relevant to current query, purely for KV cache prefix reuse.
+    Annotation: <context_block relevance="cache-only">...</context_block>"""
     name = "add"
-    # Operation: Union (∪) on BlockTree (Cache warming)
+    # Operation: Union (∪) — adds to OUTPUT, reads from BlockTree
 
 class RepartitionRule(OptimizationRule):
     """Auto-discover independent chunks, split into parallel batches (Topology)."""
@@ -599,7 +602,7 @@ messages = [
  ┌─ 3. OPTIMIZE (4 Primitives, < 8ms total) ──────────┐
  │  Rules evaluated:                                    │
  │    ✅ dedup        → 1 block removed (Distinct)      │
- │    ✅ add          → pre-warm related memory (Union) │
+ │    ✅ add          → prefix-hit blocks from tree (Union, cache-only) │
  │    ✅ repartition  → 2 parallel batches (Exchange)   │
  │    ✅ reorder      → permute for prefix (Sort, LAST) │
  │                                                      │

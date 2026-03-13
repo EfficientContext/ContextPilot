@@ -39,7 +39,7 @@ Parser  Prefetch       ← BOTH outside Optimizer
  BlockTree             ← append-only: INSERT + READ only, no DELETE
     │
  ┌─ Optimizer ─────────────────┐
- │  Phase 1: {Dedup ∥ Add}     │  Dedup=READ, Add=INSERT
+ │  Phase 1: {Dedup ∥ Add}     │  ALL READ-only
  │  Phase 2:  Repartition      │  READ
  │  Phase 3:  Reorder (LAST)   │  READ
  └─────────────────────────────┘
@@ -55,14 +55,14 @@ Turn N request
   ├─ 1. Parse: prompt → BlockTree（O(n) string scan，无 LLM）
   │     识别 skill_content tags, memory blocks, tool_results, file reads
   │
-  ├─ 2. Prefetch: (parallel with Parse) 根据 usage history 预测 skills（O(k) lookup）
-  │     高频 + 近期使用 → 结果写入 BlockTree (append-only)
+  ├─ 2. Prefetch: (parallel with Parse) 从 BlockTree metadata 选 block（O(k) lookup）
+  │     读取 freq/co-occurrence → 选出值得放到输出的 block
   │
   ├─ 3. Track: 更新 block-level usage stats（O(1) dict update）
   │     last_used_time, frequency, section-level granularity
   │
-  ├─ 4. Optimizer: {Dedup ∥ Add} → Repartition → Reorder（< 15ms total）
-  │     Dedup 过滤输出（不删树），Add 插入 cache-warm 块，Reorder 优化 prefix hits
+  ├─ 4. Optimizer: {Dedup ∥ Add} → Repartition → Reorder（< 15ms, ALL READ-only）
+  │     Dedup 过滤重复，Add 从 BlockTree 查 prefix-hit block（annotated cache-only），Reorder 优化 prefix
   │
   └─ 5. Forward: 优化后的 request → LLM backend
 ```
@@ -247,9 +247,9 @@ class BlockUsageStore:
 
 **位置**: `contextpilot/server/skill_prefetcher.py` (新文件)
 
-**职责**: 根据使用统计预测下一次 request 需要哪些 skills，提前 fetch 并注入到 BlockTree。
+**职责**: 从 BlockTree 的 metadata（freq/co-occurrence）中读取统计信息，选出值得放到输出的 block。
 
-> **Note**: SkillPrefetcher 运行在 Optimizer 外部，与 Parser 并行执行。它不是 Optimizer 的 primitive，而是 speculative 的外部组件。
+> **Note**: SkillPrefetcher 运行在 Optimizer 外部，与 Parser 并行执行。它是 READ-only 的外部组件 — 从 BlockTree 读取 metadata，不写入 BlockTree。只有 Parser 有 BlockTree 的写入权限。
 
 #### 核心思路
 
@@ -472,22 +472,22 @@ async def _intercept_and_forward(request: Request, api_format: str):
     body = await request.json()
     
     # 1. Parse & Prefetch (Parallel)
-    # Parser: prompt -> BlockTree (append-only)
-    # Prefetch: usage history -> prediction -> insert to BlockTree
-    block_tree = await gather(
+    # Parser: prompt -> BlockTree (sole INSERT authority)
+    # Prefetch: READ BlockTree metadata -> select blocks for output
+    block_tree, prefetch_blocks = await gather(
         parse_context_blocks(body, api_format),
-        prefetcher.predict_and_insert(user_query=...)
+        prefetcher.select_from_tree(user_query=...)
     )
     
     # 2. Track usage stats
     usage_store.record_usage(block_tree.flat_blocks())
     
-    # 3. Optimizer: {Dedup || Add} -> Repartition -> Reorder
-    # - Dedup: 过滤输出，不改树
-    # - Add: 根据 KV cache 状态插入
-    # - Repartition: 拓扑变更
-    # - Reorder: 最终排序
-    optimized_body = optimizer.run(body, block_tree)
+    # 3. Optimizer: ALL READ-only on BlockTree
+    # - Dedup: 过滤重复 (READ)
+    # - Add: 从 BlockTree 查 prefix-hit blocks, annotated cache-only (READ)
+    # - Repartition: 拓扑变更 (READ)
+    # - Reorder: 最终排序 (READ, LAST)
+    optimized_body = optimizer.run(body, block_tree, prefetch_blocks)
     
     # 4. Forward optimized request
     return await forward(optimized_body)
@@ -623,12 +623,14 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
 ### 7.2 为什么 BlockTree 是 Append-only (无 DELETE)？
 - **保留历史上下文**: 即使某个 Block 在当前请求中被 Dedup 过滤掉，它在树中的存在对于频率统计和共现分析（co-occurrence）依然重要。
-- **简化追踪逻辑**: 只有 INSERT 和 READ 操作，避免了树节点删除导致的索引失效和引用断裂。
-- **Dedup 的语义变更**: Dedup 不再修改 BlockTree，而是作为 READ 操作，生成过滤后的输出视图。
+- **写入权限唯一**: 只有 Parser 有 INSERT 权限。所有 Optimizer primitives 和 Prefetch 都是 READ-only。
+- **简化追踪逻辑**: 避免了树节点删除导致的索引失效和引用断裂。
+- **Dedup 的语义**: Dedup 作为 READ 操作，生成过滤后的输出视图，不修改 BlockTree。
 
 ### 7.3 Add primitive 与 Prefetch 的区别？
-- **Add**: 位于 Optimizer 内部，基于 **KV cache 状态**进行确定性插入（如插入 cache-warm 的通用 context）。
-- **Prefetch**: 位于 Optimizer 外部，基于 **用户使用历史**进行预测性插入。
+- **Add**: 位于 Optimizer 内部，READ from BlockTree，查找增加 **prefix hit** 的 block 加到输出。加的 block 不一定相关，附带 `relevance="cache-only"` annotation 告知 LLM 可忽略。确定性。
+- **Prefetch**: 位于 Optimizer 外部，READ from BlockTree **metadata**（freq/co-occurrence），统计预测哪些 block 值得放到输出。Speculative。
+- **共同点**: 都是 READ-only on BlockTree → 往输出加 block。区别在于决策依据（prefix matching vs 统计）和时机。
 
 ### 7.4 为什么不用 LLM 做 block classification？
 - 每次 request 增加 1 次 LLM 调用 ≈ 100-500ms

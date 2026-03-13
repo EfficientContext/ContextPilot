@@ -38,11 +38,12 @@ Parser  Prefetch       ← BOTH outside Optimizer
     ▼
  BlockTree             ← append-only: INSERT + READ only, no DELETE
     │
- ┌─ Optimizer ─────────────────┐
- │  Phase 1: {Dedup ∥ Add}     │  ALL READ-only
- │  Phase 2:  Repartition      │  READ
- │  Phase 3:  Reorder (LAST)   │  READ
- └─────────────────────────────┘
+ ┌─ Optimizer ─────────────────────────────────────┐
+ │  Phase 1: Dedup                                 │  ALL READ-only
+ │  Phase 2: Repartition                           │
+ │  Phase 3: Add (expand set for prefix hit)       │
+ │  Phase 4: Reorder (sort expanded set, LAST)     │
+ └─────────────────────────────────────────────────┘
     │
  Optimized Output
 ```
@@ -61,8 +62,8 @@ Turn N request
   ├─ 3. Track: 更新 block-level usage stats（O(1) dict update）
   │     last_used_time, frequency, section-level granularity
   │
-  ├─ 4. Optimizer: {Dedup ∥ Add} → Repartition → Reorder（< 15ms, ALL READ-only）
-  │     Dedup 过滤重复，Add 从 BlockTree 查 prefix-hit block（annotated cache-only），Reorder 优化 prefix
+  ├─ 4. Optimizer: Dedup → Repartition → Add → Reorder（< 15ms, ALL READ-only）
+  │     Dedup 过滤重复 → Repartition 拓扑拆分 → Add 从 BlockTree 查 prefix-hit block 扩展集合（annotated cache-only）→ Reorder 排序扩展后的集合
   │
   └─ 5. Forward: 优化后的 request → LLM backend
 ```
@@ -483,10 +484,12 @@ async def _intercept_and_forward(request: Request, api_format: str):
     usage_store.record_usage(block_tree.flat_blocks())
     
     # 3. Optimizer: ALL READ-only on BlockTree
+    # Dedup → Repartition → Add → Reorder (LAST)
     # - Dedup: 过滤重复 (READ)
-    # - Add: 从 BlockTree 查 prefix-hit blocks, annotated cache-only (READ)
-    # - Repartition: 拓扑变更 (READ)
-    # - Reorder: 最终排序 (READ, LAST)
+    # - Repartition: 拓扑拆分 (READ)
+    # - Add: 从 BlockTree 查 prefix-hit blocks 扩展集合, annotated cache-only (READ)
+    #   解决: 现有 block 无论怎么排列都无法命中 prefix，但加入一个 block 就可以
+    # - Reorder: 排序扩展后的集合 (READ, LAST)
     optimized_body = optimizer.run(body, block_tree, prefetch_blocks)
     
     # 4. Forward optimized request

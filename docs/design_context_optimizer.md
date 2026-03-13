@@ -392,8 +392,8 @@ class ContextOptimizer:
         self._catalog.record(block_tree)
         
         # 2. Optimizer Core — ALL 4 primitives are READ-only on BlockTree
-        # {Dedup ∥ Add} → Repartition → Reorder (LAST)
-        # Add: queries BlockTree for prefix-hit blocks, annotated cache-only
+        # Dedup → Repartition → Add → Reorder (LAST)
+        # Add expands block set (prefix-hit), then Reorder sorts the expanded set
         plan = self._planner.plan(block_tree, self._catalog, self._cost_model)
         return self._execute(plan, messages)
     
@@ -459,21 +459,23 @@ class DedupRule(OptimizationRule):
     name = "dedup"
     # Operation: Distinct (δ) on BlockTree
 
-class AddRule(OptimizationRule):
-    """Query BlockTree for blocks that increase prefix hit ratio (READ).
-    Added blocks carry annotation: relevance='cache-only' — may not be
-    relevant to current query, purely for KV cache prefix reuse.
-    Annotation: <context_block relevance="cache-only">...</context_block>"""
-    name = "add"
-    # Operation: Union (∪) — adds to OUTPUT, reads from BlockTree
-
 class RepartitionRule(OptimizationRule):
     """Auto-discover independent chunks, split into parallel batches (Topology)."""
     name = "repartition"
     # Operation: Exchange (∥) on BlockTree (Latency optimization)
 
+class AddRule(OptimizationRule):
+    """Query BlockTree for blocks that increase prefix hit ratio (READ).
+    Solves: existing blocks can't hit a prefix no matter how reordered,
+    but adding a block makes the match possible.
+    Added blocks carry annotation: relevance='cache-only'.
+    Runs BEFORE Reorder — expands the block set, then Reorder sorts it."""
+    name = "add"
+    # Operation: Union (∪) — adds to OUTPUT, reads from BlockTree
+
 class ReorderRule(OptimizationRule):
-    """Permute block order to maximize prefix hits (Permutation). MUST BE LAST."""
+    """Permute block order to maximize prefix hits (Permutation). MUST BE LAST.
+    Runs on the expanded set (after Add), uses IntraContextOrderer."""
     name = "reorder"
     # Operation: Sort (τ) on final block set
 ```
@@ -606,7 +608,7 @@ messages = [
  │    ✅ repartition  → 2 parallel batches (Exchange)   │
  │    ✅ reorder      → permute for prefix (Sort, LAST) │
  │                                                      │
- │  Plan: [dedup || add] -> repartition -> reorder      │
+  │  Plan: dedup -> repartition -> add -> reorder          │
  │  Total Latency Budget: < 15ms                        │
  └──────────────────────────────────────────────────────┘
       │

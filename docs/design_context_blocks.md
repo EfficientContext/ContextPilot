@@ -63,7 +63,9 @@ Turn N request
   │     last_used_time, frequency, section-level granularity
   │
   ├─ 4. Optimizer: Dedup → Repartition → Add → Reorder（< 15ms, ALL READ-only）
-  │     Dedup 过滤重复 → Repartition 拓扑拆分 → Add 从 BlockTree 查 prefix-hit block 扩展集合（annotated cache-only）→ Reorder 排序扩展后的集合
+  │     每个 primitive 有 applicable() 检查，不满足条件时 skip（no-op）
+  │     Dedup 过滤重复（Turn 1 或无重复时 skip）→ Repartition 拓扑拆分（全部有依赖时 skip）
+  │     → Add 从 BlockTree 查 prefix-hit block 扩展集合（无候选时 skip）→ Reorder 排序（已最优时 skip）
   │
   └─ 5. Forward: 优化后的 request → LLM backend
 ```
@@ -485,11 +487,12 @@ async def _intercept_and_forward(request: Request, api_format: str):
     
     # 3. Optimizer: ALL READ-only on BlockTree
     # Dedup → Repartition → Add → Reorder (LAST)
-    # - Dedup: 过滤重复 (READ)
-    # - Repartition: 拓扑拆分 (READ)
-    # - Add: 从 BlockTree 查 prefix-hit blocks 扩展集合, annotated cache-only (READ)
-    #   解决: 现有 block 无论怎么排列都无法命中 prefix，但加入一个 block 就可以
-    # - Reorder: 排序扩展后的集合 (READ, LAST)
+    # 每个 primitive 有 applicable() 检查，不满足条件时 skip
+    # - Dedup: 过滤重复 (READ)  — skip if Turn 1 or no duplicates
+    # - Repartition: 拓扑拆分 (READ)  — skip if all blocks have dependencies
+    # - Add: 从 BlockTree 查 prefix-hit blocks 扩展集合 (READ)  — skip if no candidates
+    #   annotated cache-only; 解决: 现有 block 无论怎么排列都无法命中 prefix，但加入一个就可以
+    # - Reorder: 排序扩展后的集合 (READ, LAST)  — skip if already optimal
     optimized_body = optimizer.run(body, block_tree, prefetch_blocks)
     
     # 4. Forward optimized request

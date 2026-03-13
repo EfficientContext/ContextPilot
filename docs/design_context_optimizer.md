@@ -226,15 +226,15 @@ print(plan)
 # ║ Output: 31,206 tokens (9 blocks)             ║
 # ║ Saving: 16,626 tokens (34.8%)                ║
 # ╠══════════════════════════════════════════════╣
-# ║ Primitives applied:                           ║
-# ║  1. DEDUP       → 2 blocks removed           ║
-# ║     saved: 8,200 tokens                       ║
-# ║  2. ADD         → prefix-hit block injected     ║
-# ║     annotated: cache-only, cost: 1,200 tokens  ║
-# ║  3. REPARTITION → 2 parallel batches created  ║
-# ║     latency_benefit: 40% reduction            ║
-# ║  4. REORDER     → 3 blocks reordered (LAST)   ║
-# ║     cache_hit: 12,400 tokens shared           ║
+ # ║ Primitives applied:                           ║
+ # ║  1. DEDUP       → 2 blocks removed           ║
+ # ║     saved: 8,200 tokens                       ║
+ # ║  2. REPARTITION → 2 parallel batches created  ║
+ # ║     latency_benefit: 40% reduction            ║
+ # ║  3. ADD         → SKIPPED (no prefix-hit      ║
+ # ║     candidates found in BlockTree)            ║
+ # ║  4. REORDER     → 3 blocks reordered (LAST)   ║
+ # ║     cache_hit: 12,400 tokens shared           ║
 # ╠══════════════════════════════════════════════╣
 # ║ Block breakdown:                              ║
 # ║  skill:whisper     8,400t  freq=12 ★★★★☆     ║
@@ -393,7 +393,9 @@ class ContextOptimizer:
         
         # 2. Optimizer Core — ALL 4 primitives are READ-only on BlockTree
         # Dedup → Repartition → Add → Reorder (LAST)
-        # Add expands block set (prefix-hit), then Reorder sorts the expanded set
+        # Each primitive has applicable() check — may be skipped (no-op) if not beneficial
+        # e.g. no duplicates → skip Dedup; all blocks dependent → skip Repartition;
+        #      no prefix-hit candidates → skip Add; already optimal order → skip Reorder
         plan = self._planner.plan(block_tree, self._catalog, self._cost_model)
         return self._execute(plan, messages)
     
@@ -455,12 +457,14 @@ class OptimizationRule(ABC):
 # Concrete rules:
 
 class DedupRule(OptimizationRule):
-    """Remove documents seen in previous conversation turns (Deletion)."""
+    """Remove documents seen in previous conversation turns (Deletion).
+    Skip condition: Turn 1, or no content_hash collision with prior turns."""
     name = "dedup"
     # Operation: Distinct (δ) on BlockTree
 
 class RepartitionRule(OptimizationRule):
-    """Auto-discover independent chunks, split into parallel batches (Topology)."""
+    """Auto-discover independent chunks, split into parallel batches (Topology).
+    Skip condition: all blocks have dependencies (no independent subtrees found)."""
     name = "repartition"
     # Operation: Exchange (∥) on BlockTree (Latency optimization)
 
@@ -469,13 +473,15 @@ class AddRule(OptimizationRule):
     Solves: existing blocks can't hit a prefix no matter how reordered,
     but adding a block makes the match possible.
     Added blocks carry annotation: relevance='cache-only'.
-    Runs BEFORE Reorder — expands the block set, then Reorder sorts it."""
+    Runs BEFORE Reorder — expands the block set, then Reorder sorts it.
+    Skip condition: no block in BlockTree can extend a cacheable prefix."""
     name = "add"
     # Operation: Union (∪) — adds to OUTPUT, reads from BlockTree
 
 class ReorderRule(OptimizationRule):
     """Permute block order to maximize prefix hits (Permutation). MUST BE LAST.
-    Runs on the expanded set (after Add), uses IntraContextOrderer."""
+    Runs on the expanded set (after Add), uses IntraContextOrderer.
+    Skip condition: current order already maximizes prefix hit (e.g. single block)."""
     name = "reorder"
     # Operation: Sort (τ) on final block set
 ```

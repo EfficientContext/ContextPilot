@@ -9,7 +9,7 @@ try:
         warnings.filterwarnings("ignore")
         from transformers import AutoTokenizer
     HAS_TRANSFORMERS = True
-except ImportError:
+except (ImportError, OSError):
     AutoTokenizer = None
     HAS_TRANSFORMERS = False
 

@@ -45,11 +45,15 @@ from .conversation_tracker import (
     ConversationTracker,
     DeduplicationResult,
     get_conversation_tracker,
-    reset_conversation_tracker
+    reset_conversation_tracker,
 )
 from .intercept_parser import (
-    parse_intercept_headers, InterceptConfig, get_format_handler,
+    parse_intercept_headers,
+    InterceptConfig,
+    get_format_handler,
 )
+from .ttl_eviction import TTLEvictionPolicy, TTLTier, CacheMetrics
+from .cloud_adapters import get_cloud_adapter, CloudProviderAdapter
 
 
 logger = logging.getLogger(__name__)
@@ -71,7 +75,14 @@ _infer_api_url: Optional[str] = None
 _aiohttp_session: Optional[aiohttp.ClientSession] = None
 _tokenizer = None  # AutoTokenizer instance for chat template
 _model_name: Optional[str] = None  # Model name for tokenizer
-_stateless_mode: bool = False  # Stateless mode: just clustering/scheduling, no cache tracking
+_stateless_mode: bool = (
+    False  # Stateless mode: just clustering/scheduling, no cache tracking
+)
+# Cloud proxy mode: forward to cloud LLM API with prompt cache optimization
+_cloud_mode: bool = False
+_cloud_adapter: Optional[CloudProviderAdapter] = None
+_cloud_api_key: Optional[str] = None
+_ttl_policy: Optional[TTLEvictionPolicy] = None
 # Persistent string-to-ID mapping for string-input mode.
 # Same string always gets the same integer ID across /reorder calls.
 _str_to_id: Dict[str, int] = {}
@@ -94,6 +105,7 @@ from dataclasses import dataclass, field as dc_field
 @dataclass
 class _InterceptConvState:
     """Global intercept state for the current conversation."""
+
     # Cached copy of the full messages array after modification (reorder/dedup).
     # On subsequent turns, old messages are replaced with these cached versions
     # so the inference engine's prefix cache sees identical tokens.
@@ -133,6 +145,7 @@ def _log_ttft(ttft_ms: float, slimmed: int, chars_saved: int) -> None:
         f"total saved {_ttft_chars_saved_total:,} chars)"
     )
 
+
 # Request ID normalization (engine -> ContextPilot canonical IDs)
 _ENGINE_REQ_ID_PREFIX = re.compile(r"^(cmpl-|chatcmpl-|batch-)")
 _VLLM_REQ_SUFFIX = re.compile(r"^(req-[^-]+)-\d+-[0-9a-f]+$")
@@ -150,10 +163,43 @@ def _normalize_request_id(request_id: str) -> str:
 def _init_config():
     """Initialize config from environment variables."""
     global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode
+    global _cloud_mode, _cloud_adapter, _cloud_api_key, _ttl_policy
 
     # Check stateless mode first
     env_stateless = os.environ.get("CONTEXTPILOT_STATELESS_MODE", "0")
     _stateless_mode = env_stateless == "1"
+
+    # Check cloud proxy mode
+    cloud_provider = os.environ.get("CONTEXTPILOT_CLOUD_PROVIDER")
+    if cloud_provider and _cloud_adapter is None:
+        _cloud_mode = True
+        _cloud_adapter = get_cloud_adapter(cloud_provider)
+        _cloud_api_key = os.environ.get("CONTEXTPILOT_CLOUD_API_KEY", "")
+        extended = os.environ.get("CONTEXTPILOT_EXTENDED_CACHE") == "1"
+        if extended:
+            ext_seconds = _cloud_adapter.get_extended_ttl_seconds()
+            if ext_seconds is None:
+                logger.warning(
+                    f"{cloud_provider} does not support --extended-cache, ignoring"
+                )
+                ttl_seconds = _cloud_adapter.get_default_ttl_seconds()
+            else:
+                ttl_seconds = ext_seconds
+                _cloud_adapter.configured_ttl = TTLTier.LONG
+        else:
+            ttl_seconds = _cloud_adapter.get_default_ttl_seconds()
+        _ttl_policy = TTLEvictionPolicy(
+            default_ttl_seconds=ttl_seconds,
+        )
+        logger.info(
+            f"Cloud proxy mode: provider={cloud_provider}, "
+            f"index_ttl={ttl_seconds}s"
+            + (
+                " (extended)"
+                if extended and _cloud_adapter.supports_extended_cache
+                else ""
+            )
+        )
 
     if _max_tokens is None and not _stateless_mode:
         env_max_tokens = os.environ.get("CONTEXTPILOT_MAX_TOKENS")
@@ -161,7 +207,9 @@ def _init_config():
             _max_tokens = int(env_max_tokens)
 
     if _infer_api_url is None:
-        _infer_api_url = os.environ.get("CONTEXTPILOT_INFER_API_URL", "http://localhost:30000")
+        _infer_api_url = os.environ.get(
+            "CONTEXTPILOT_INFER_API_URL", "http://localhost:30000"
+        )
 
     # Initialize tokenizer for chat template if model is specified
     if _tokenizer is None:
@@ -190,17 +238,16 @@ class BuildIndexRequest(BaseModel):
     linkage_method: str = Field("average", description="Linkage method for clustering")
     # Multi-turn deduplication fields
     parent_request_ids: Optional[List[Optional[str]]] = Field(
-        None, 
+        None,
         description="List of parent request IDs for multi-turn deduplication. "
-                    "Each element corresponds to a context. None means turn 1 (no parent)."
+        "Each element corresponds to a context. None means turn 1 (no parent).",
     )
     deduplicate: bool = Field(
-        False,
-        description="If True, deduplicate contexts based on conversation history"
+        False, description="If True, deduplicate contexts based on conversation history"
     )
     hint_template: Optional[str] = Field(
         None,
-        description="Template for reference hints. Use {doc_id} and {turn_number} placeholders."
+        description="Template for reference hints. Use {doc_id} and {turn_number} placeholders.",
     )
 
 
@@ -208,9 +255,9 @@ class ScheduleRequest(BaseModel):
     """Request to schedule a batch (legacy, use ReorderRequest instead)."""
 
     contexts: List[List[Any]] = Field(
-        ..., 
+        ...,
         description="List of contexts. Each context is a list of items (int doc IDs OR string doc contents). "
-                    "If strings are provided, identical strings are treated as the same document."
+        "If strings are provided, identical strings are treated as the same document.",
     )
     alpha: float = Field(0.001, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
@@ -223,7 +270,7 @@ class ReorderRequest(BaseModel):
     contexts: List[List[Any]] = Field(
         ...,
         description="List of contexts. Each context is a list of items (int doc IDs OR string doc contents). "
-                    "If strings are provided, identical strings are treated as the same document."
+        "If strings are provided, identical strings are treated as the same document.",
     )
     alpha: float = Field(0.001, description="Distance computation parameter")
     use_gpu: bool = Field(False, description="Use GPU for distance computation")
@@ -234,23 +281,23 @@ class ReorderRequest(BaseModel):
     )
     parent_request_ids: Optional[List[Optional[str]]] = Field(
         None,
-        description="Parent request IDs for multi-turn deduplication (stateful mode only)"
+        description="Parent request IDs for multi-turn deduplication (stateful mode only)",
     )
     deduplicate: bool = Field(
         False,
-        description="If True, deduplicate contexts based on conversation history (stateful mode only)"
+        description="If True, deduplicate contexts based on conversation history (stateful mode only)",
     )
     hint_template: Optional[str] = Field(
-        None,
-        description="Template for reference hints (stateful mode only)"
+        None, description="Template for reference hints (stateful mode only)"
     )
 
 
 class EvictRequest(BaseModel):
     """Request to evict (remove) requests from the index."""
 
-    request_ids: List[str] = Field(..., description="List of request IDs to evict/remove")
-
+    request_ids: List[str] = Field(
+        ..., description="List of request IDs to evict/remove"
+    )
 
 
 class SearchRequest(BaseModel):
@@ -270,18 +317,18 @@ class InsertRequest(BaseModel):
 
 class DeduplicateRequest(BaseModel):
     """Request to deduplicate contexts for multi-turn conversations."""
-    
+
     contexts: List[List[Any]] = Field(
         ..., description="List of contexts (each is a list of document IDs)"
     )
     parent_request_ids: List[Optional[str]] = Field(
-        ..., 
+        ...,
         description="List of parent request IDs. Each element corresponds to a context. "
-                    "None means turn 1 (no parent, will be registered for future dedup)."
+        "None means turn 1 (no parent, will be registered for future dedup).",
     )
     hint_template: Optional[str] = Field(
         None,
-        description="Template for reference hints. Use {doc_id} and {turn_number} placeholders."
+        description="Template for reference hints. Use {doc_id} and {turn_number} placeholders.",
     )
 
 
@@ -438,6 +485,7 @@ async def reorder(request: ReorderRequest):
 
 # ── internal helpers ─────────────────────────────────────────────────────────
 
+
 async def _reorder_stateless(request: ReorderRequest):
     """Stateless reorder: one-shot clustering + scheduling, no state."""
     try:
@@ -480,8 +528,7 @@ async def _reorder_stateless(request: ReorderRequest):
         scheduled_contexts = result["reordered_contexts"]
         if is_string_input:
             scheduled_contexts = [
-                [id_to_str[item_id] for item_id in ctx]
-                for ctx in scheduled_contexts
+                [id_to_str[item_id] for item_id in ctx] for ctx in scheduled_contexts
             ]
 
         logger.info(
@@ -559,26 +606,26 @@ async def _reorder_stateful(request: ReorderRequest):
             if request.deduplicate:
                 tracker = get_conversation_tracker()
                 dedup_results = tracker.deduplicate_batch(
-                    request_ids=result['request_ids'],
-                    docs_list=result.get('reordered_contexts') or contexts,
+                    request_ids=result["request_ids"],
+                    docs_list=result.get("reordered_contexts") or contexts,
                     parent_request_ids=request.parent_request_ids,
                     hint_template=request.hint_template,
                 )
                 logger.info(f"Deduplication: processed {len(dedup_results)} contexts")
 
-            reordered = _to_output(result.get('reordered_contexts'))
+            reordered = _to_output(result.get("reordered_contexts"))
             response = {
                 "status": "success",
                 "message": "Incremental reorder completed",
                 "mode": "incremental",
                 "input_type": "string" if is_string_input else "integer",
                 "num_contexts": len(contexts),
-                "matched_count": result['matched_count'],
-                "merged_count": result['merged_count'],
-                "request_ids": result['request_ids'],
+                "matched_count": result["matched_count"],
+                "merged_count": result["merged_count"],
+                "request_ids": result["request_ids"],
                 "reordered_contexts": reordered,
-                "original_indices": result['original_indices'],
-                "groups": result['groups'],
+                "original_indices": result["original_indices"],
+                "groups": result["groups"],
                 "stats": _index.get_stats(),
             }
 
@@ -587,7 +634,7 @@ async def _reorder_stateful(request: ReorderRequest):
                     "enabled": True,
                     "results": [
                         {
-                            "request_id": result['request_ids'][i],
+                            "request_id": result["request_ids"][i],
                             "original_docs": r.original_docs,
                             "deduplicated_docs": r.deduplicated_docs,
                             "overlapping_docs": r.overlapping_docs,
@@ -596,7 +643,9 @@ async def _reorder_stateful(request: ReorderRequest):
                         }
                         for i, r in enumerate(dedup_results)
                     ],
-                    "total_docs_deduplicated": sum(len(r.overlapping_docs) for r in dedup_results),
+                    "total_docs_deduplicated": sum(
+                        len(r.overlapping_docs) for r in dedup_results
+                    ),
                 }
 
             return response
@@ -618,14 +667,12 @@ async def _reorder_stateful(request: ReorderRequest):
         request_id_mapping = result.get("request_id_mapping", {})
         request_ids = result.get("request_ids", [])
 
-        logger.info(
-            f"Index built. Auto-assigned {len(request_id_mapping)} request IDs"
-        )
+        logger.info(f"Index built. Auto-assigned {len(request_id_mapping)} request IDs")
 
         dedup_results = None
         if request.deduplicate:
             tracker = get_conversation_tracker()
-            reordered_raw = result.get('reordered_contexts') or contexts
+            reordered_raw = result.get("reordered_contexts") or contexts
             dedup_results = tracker.deduplicate_batch(
                 request_ids=request_ids,
                 docs_list=reordered_raw,
@@ -665,7 +712,9 @@ async def _reorder_stateful(request: ReorderRequest):
                     }
                     for i, r in enumerate(dedup_results)
                 ],
-                "total_docs_deduplicated": sum(len(r.overlapping_docs) for r in dedup_results),
+                "total_docs_deduplicated": sum(
+                    len(r.overlapping_docs) for r in dedup_results
+                ),
             }
 
         return response
@@ -676,6 +725,7 @@ async def _reorder_stateful(request: ReorderRequest):
 
 
 # ── Legacy aliases (deprecated, use /reorder) ────────────────────────────────
+
 
 @app.post("/build", deprecated=True)
 async def build_index(request: BuildIndexRequest):
@@ -705,6 +755,7 @@ async def schedule_batch(request: ScheduleRequest):
     # Force stateless behaviour regardless of server mode
     return await _reorder_stateless(unified)
 
+
 @app.post("/evict")
 async def evict(request: EvictRequest):
     """
@@ -731,20 +782,16 @@ async def evict(request: EvictRequest):
 
     try:
         logger.debug(f"Eviction incoming IDs: {request.request_ids}")
+        normalized_ids = [_normalize_request_id(rid) for rid in request.request_ids]
         normalized_ids = [
-            _normalize_request_id(rid)
-            for rid in request.request_ids
-        ]
-        normalized_ids = [
-            rid for rid in normalized_ids
-            if rid and not rid.startswith("HEALTH_CHECK")
+            rid for rid in normalized_ids if rid and not rid.startswith("HEALTH_CHECK")
         ]
         # Deduplicate while preserving order for deterministic logs/responses.
         normalized_ids = list(dict.fromkeys(normalized_ids))
 
         # Remove the evicted requests from our index
         result = _index.remove_requests(normalized_ids)
-        
+
         # Also clear conversation history for evicted requests
         # This ensures ConversationTracker stays in sync with the engine's cache
         tracker = get_conversation_tracker()
@@ -777,14 +824,20 @@ async def evict(request: EvictRequest):
 async def reset_index():
     """
     Reset the index to initial state.
-    
+
     Clears all nodes, metadata, request tracking, conversation history,
     and string-to-ID mappings.
     Use this to start fresh without restarting the server.
-    
+
     After reset, you must call /reorder again before other operations.
     """
-    global _index, _str_to_id, _id_to_str, _next_str_id, _intercept_index, _intercept_state
+    global \
+        _index, \
+        _str_to_id, \
+        _id_to_str, \
+        _next_str_id, \
+        _intercept_index, \
+        _intercept_state
 
     # Reset conversation tracker
     reset_conversation_tracker()
@@ -797,24 +850,26 @@ async def reset_index():
     _str_to_id = {}
     _id_to_str = {}
     _next_str_id = 0
-    
+
     if _index is None:
         return {
             "status": "success",
             "message": "No index to reset (was not initialized)",
             "conversation_tracker": "reset",
         }
-    
+
     try:
         _index.reset()
-        logger.info("Index, conversation tracker, and string mappings reset successfully")
-        
+        logger.info(
+            "Index, conversation tracker, and string mappings reset successfully"
+        )
+
         return {
             "status": "success",
             "message": "Index reset to initial state",
             "conversation_tracker": "reset",
         }
-    
+
     except Exception as e:
         logger.error(f"Error resetting index: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1000,7 +1055,7 @@ async def proxy_completions(request: Request):
     try:
         # Parse request body
         body = await request.json()
-        
+
         # Check for request_id (from manual calls) or rid (from RAGPipeline)
         # RAGPipeline sends 'rid' directly, manual calls may use 'request_id'
         request_id = body.pop("request_id", None) or body.get("rid", None)
@@ -1025,11 +1080,13 @@ async def proxy_completions(request: Request):
         # Pass request_id to inference engine so it can use the same ID for request tracking
         # Engine will notify ContextPilot via /evict callback when this request is evicted
         if request_id:
-            body["rid"] = request_id          # SGLang
-            body["request_id"] = request_id   # vLLM
+            body["rid"] = request_id  # SGLang
+            body["request_id"] = request_id  # vLLM
             logger.info(f"Proxy: forwarding request with request_id={request_id}")
         else:
-            logger.info("Proxy: forwarding request without rid (no ContextPilot tracking)")
+            logger.info(
+                "Proxy: forwarding request without rid (no ContextPilot tracking)"
+            )
 
         # Forward to inference engine
         api_url = f"{infer_api_url}/v1/completions"
@@ -1040,22 +1097,28 @@ async def proxy_completions(request: Request):
 
             # Token tracking is handled by the inference engine via CONTEXTPILOT_INDEX_URL
             # The engine calls /evict after its internal cache eviction
-            
+
             # Add request_id to response header (not body, to avoid
             # breaking strict API response parsers).
             cp_headers = {}
             if request_id and response.status == 200:
                 usage = result.get("usage", {})
-                cp_headers["X-ContextPilot-Result"] = json.dumps({
-                    "request_id": request_id,
-                    "tokens_reported": usage.get("total_tokens", 0),
-                })
+                cp_headers["X-ContextPilot-Result"] = json.dumps(
+                    {
+                        "request_id": request_id,
+                        "tokens_reported": usage.get("total_tokens", 0),
+                    }
+                )
 
-            return JSONResponse(content=result, status_code=response.status, headers=cp_headers)
+            return JSONResponse(
+                content=result, status_code=response.status, headers=cp_headers
+            )
 
     except aiohttp.ClientError as e:
         logger.error(f"Error proxying to inference engine: {e}")
-        raise HTTPException(status_code=502, detail=f"Inference engine backend error: {str(e)}")
+        raise HTTPException(
+            status_code=502, detail=f"Inference engine backend error: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Error in proxy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1101,9 +1164,7 @@ def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
     return _intercept_state
 
 
-def _deduplicate_docs(
-    docs: List[str], state: _InterceptConvState
-) -> tuple:
+def _deduplicate_docs(docs: List[str], state: _InterceptConvState) -> tuple:
     """Remove documents already seen in previous tool results.
 
     Returns (new_docs, deduped_count).  Also registers all doc hashes
@@ -1119,6 +1180,7 @@ def _deduplicate_docs(
             new_docs.append(doc)
         state.seen_doc_hashes.add(h)
     return new_docs, deduped_count
+
 
 # Regex for OpenClaw's EXTERNAL_UNTRUSTED_CONTENT security markers.
 # These contain a random hex id that changes every request, preventing
@@ -1137,7 +1199,7 @@ def _strip_external_content_ids(body: Any) -> Any:
     """
     if isinstance(body, str):
         return _EXTERNAL_MARKER_RE.sub(
-            lambda m: f'<<<{m.group(1) or ""}EXTERNAL_UNTRUSTED_CONTENT>>>', body
+            lambda m: f"<<<{m.group(1) or ''}EXTERNAL_UNTRUSTED_CONTENT>>>", body
         )
     if isinstance(body, dict):
         return {k: _strip_external_content_ids(v) for k, v in body.items()}
@@ -1274,7 +1336,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
     _tool_call_names = {}
     for m in _debug_messages:
         if m.get("role") == "assistant":
-            for tc in (m.get("tool_calls") or []):
+            for tc in m.get("tool_calls") or []:
                 _tc_id = tc.get("id", "")
                 _fn = (tc.get("function") or {}).get("name", "?")
                 _args_raw = (tc.get("function") or {}).get("arguments", "")
@@ -1309,7 +1371,10 @@ async def _intercept_and_forward(request: Request, api_format: str):
             )
         elif _role == "user" and isinstance(m.get("content"), list):
             for bi, block in enumerate(m["content"]):
-                if isinstance(block, dict) and block.get("type") in ("tool_result", "toolResult"):
+                if isinstance(block, dict) and block.get("type") in (
+                    "tool_result",
+                    "toolResult",
+                ):
                     _tu_id = block.get("tool_use_id", "?")
                     _tc = block.get("content", "")
                     _tc_str = str(_tc)
@@ -1352,9 +1417,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 f"{_debug_msg_count - _prev_n} new msgs"
             )
     else:
-        logger.info(
-            f"Intercept: {_debug_msg_count} msgs (first request or reset)"
-        )
+        logger.info(f"Intercept: {_debug_msg_count} msgs (first request or reset)")
 
     _debug_prev_msg_hashes = list(_debug_msg_hashes)
 
@@ -1389,15 +1452,21 @@ async def _intercept_and_forward(request: Request, api_format: str):
             if multi.system_extraction and not state.system_processed:
                 extraction, sys_idx = multi.system_extraction
                 if len(extraction.documents) >= 2:
-                    reordered_docs, orig_order, new_order = _reorder_documents(extraction.documents, config)
+                    reordered_docs, orig_order, new_order = _reorder_documents(
+                        extraction.documents, config
+                    )
                     if orig_order != new_order:
-                        reorder_details.append({
-                            "source": "system",
-                            "count": len(extraction.documents),
-                            "original_order": orig_order,
-                            "reordered_order": new_order,
-                        })
-                        handler.reconstruct_system(body, extraction, reordered_docs, sys_idx)
+                        reorder_details.append(
+                            {
+                                "source": "system",
+                                "count": len(extraction.documents),
+                                "original_order": orig_order,
+                                "reordered_order": new_order,
+                            }
+                        )
+                        handler.reconstruct_system(
+                            body, extraction, reordered_docs, sys_idx
+                        )
                         total_reordered += len(extraction.documents)
                         system_count = 1
                     state.system_processed = True
@@ -1418,20 +1487,22 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     for doc in extraction.documents:
                         state.seen_doc_hashes.add(_hash_text(doc))
                     if orig_order != new_order:
-                        reorder_details.append({
-                            "source": f"tool_result[{location.msg_index}]",
-                            "count": len(extraction.documents),
-                            "original_order": orig_order,
-                            "reordered_order": new_order,
-                        })
-                        handler.reconstruct_tool_result(body, extraction, reordered_docs, location)
+                        reorder_details.append(
+                            {
+                                "source": f"tool_result[{location.msg_index}]",
+                                "count": len(extraction.documents),
+                                "original_order": orig_order,
+                                "reordered_order": new_order,
+                            }
+                        )
+                        handler.reconstruct_tool_result(
+                            body, extraction, reordered_docs, location
+                        )
                         total_reordered += len(extraction.documents)
                         tool_result_count += 1
                 else:
                     # Subsequent tool results → dedup only
-                    new_docs, deduped = _deduplicate_docs(
-                        extraction.documents, state
-                    )
+                    new_docs, deduped = _deduplicate_docs(extraction.documents, state)
                     total_deduped += deduped
                     if deduped > 0:
                         if not new_docs:
@@ -1444,12 +1515,16 @@ async def _intercept_and_forward(request: Request, api_format: str):
                             _chars_before_slim += orig_chars
                             _chars_after_slim += len(new_docs[0])
                             total_slimmed += deduped
-                        reorder_details.append({
-                            "source": f"tool_result[{location.msg_index}]",
-                            "count": len(new_docs),
-                            "deduped": deduped,
-                        })
-                        handler.reconstruct_tool_result(body, extraction, new_docs, location)
+                        reorder_details.append(
+                            {
+                                "source": f"tool_result[{location.msg_index}]",
+                                "count": len(new_docs),
+                                "deduped": deduped,
+                            }
+                        )
+                        handler.reconstruct_tool_result(
+                            body, extraction, new_docs, location
+                        )
                         tool_result_count += 1
 
             # ── Single-doc tool results: cross-turn dedup ────────────
@@ -1493,7 +1568,12 @@ async def _intercept_and_forward(request: Request, api_format: str):
                         single_doc.tool_call_id
                     )
 
-            if total_reordered > 0 or total_deduped > 0 or total_slimmed > 0 or tool_results_skipped > 0:
+            if (
+                total_reordered > 0
+                or total_deduped > 0
+                or total_slimmed > 0
+                or tool_results_skipped > 0
+            ):
                 saved = _chars_before_slim - _chars_after_slim
                 saved_tokens = saved // 4 if saved > 0 else 0
                 logger.info(
@@ -1507,58 +1587,94 @@ async def _intercept_and_forward(request: Request, api_format: str):
             state.cached_system = handler.cache_system(body)
 
         except Exception as e:
-            logger.warning(f"Intercept extraction/reorder failed, forwarding original: {e}")
+            logger.warning(
+                f"Intercept extraction/reorder failed, forwarding original: {e}"
+            )
             total_reordered = 0
             total_deduped = 0
             total_slimmed = 0
 
     # In stateful mode, inject ContextPilot request_id as `rid` so SGLang
     # uses the same ID for cache tracking (enables eviction sync).
-    if not _stateless_mode and _index is not None:
+    if not _cloud_mode and not _stateless_mode and _index is not None:
         request_id = f"req-{uuid.uuid4().hex[:12]}"
         body["rid"] = request_id
         logger.debug(f"Intercept: injected rid={request_id}")
 
+    # ── Cloud proxy mode: inject cache_control + compute content hash ──
+    _cloud_content_hash = ""
+    if _cloud_mode and _cloud_adapter is not None and _ttl_policy is not None:
+        _ttl_policy.evict_expired()
+        cached_hashes = _ttl_policy.get_cached_hashes()
+        body = _cloud_adapter.inject_cache_control(body, cached_hashes)
+        _cloud_content_hash = hashlib.sha256(
+            json.dumps(
+                body.get("system", ""), sort_keys=True, ensure_ascii=False
+            ).encode()
+        ).hexdigest()[:24]
+
     # Determine target URL
-    target_url = f"{infer_api_url}{handler.target_path()}"
+    if _cloud_mode and _cloud_adapter is not None:
+        target_url = _cloud_adapter.get_api_url(_cloud_adapter.get_target_path())
+    else:
+        target_url = f"{infer_api_url}{handler.target_path()}"
 
     # Build outbound headers: forward everything except X-ContextPilot-*
     # and hop-by-hop headers that must not be forwarded by proxies.
-    _HOP_BY_HOP = frozenset((
-        "host", "connection", "keep-alive", "transfer-encoding",
-        "te", "trailer", "upgrade", "proxy-authorization",
-        "proxy-authenticate", "content-length",
-    ))
-    outbound_headers = {}
-    for k, v in headers.items():
-        kl = k.lower()
-        if kl.startswith("x-contextpilot-"):
-            continue
-        if kl in _HOP_BY_HOP:
-            continue
-        outbound_headers[k] = v
+    _HOP_BY_HOP = frozenset(
+        (
+            "host",
+            "connection",
+            "keep-alive",
+            "transfer-encoding",
+            "te",
+            "trailer",
+            "upgrade",
+            "proxy-authorization",
+            "proxy-authenticate",
+            "content-length",
+        )
+    )
+    if _cloud_mode and _cloud_adapter is not None and _cloud_api_key:
+        outbound_headers = _cloud_adapter.get_auth_headers(_cloud_api_key)
+    else:
+        outbound_headers = {}
+        for k, v in headers.items():
+            kl = k.lower()
+            if kl.startswith("x-contextpilot-"):
+                continue
+            if kl in _HOP_BY_HOP:
+                continue
+            outbound_headers[k] = v
 
     # Build ContextPilot metadata as a response header (not in body,
     # which would break strict API response parsers like OpenClaw's SDK).
     cp_response_headers = {}
-    if total_reordered > 0 or total_deduped > 0 or total_slimmed > 0 or tool_results_skipped > 0:
-        cp_response_headers["X-ContextPilot-Result"] = json.dumps({
-            "intercepted": True,
-            "documents_reordered": total_reordered > 0,
-            "total_documents": total_reordered,
-            "documents_deduplicated": total_deduped,
-            "documents_slimmed": total_slimmed,
-            "chars_before_slim": _chars_before_slim,
-            "chars_after_slim": _chars_after_slim,
-            "chars_saved": _chars_before_slim - _chars_after_slim,
-            "tool_results_skipped": tool_results_skipped,
-            "message_count": state.last_message_count,
-            "sources": {
-                "system": system_count,
-                "tool_results": tool_result_count,
-            },
-            "reorder_details": reorder_details,
-        })
+    if (
+        total_reordered > 0
+        or total_deduped > 0
+        or total_slimmed > 0
+        or tool_results_skipped > 0
+    ):
+        cp_response_headers["X-ContextPilot-Result"] = json.dumps(
+            {
+                "intercepted": True,
+                "documents_reordered": total_reordered > 0,
+                "total_documents": total_reordered,
+                "documents_deduplicated": total_deduped,
+                "documents_slimmed": total_slimmed,
+                "chars_before_slim": _chars_before_slim,
+                "chars_after_slim": _chars_after_slim,
+                "chars_saved": _chars_before_slim - _chars_after_slim,
+                "tool_results_skipped": tool_results_skipped,
+                "message_count": state.last_message_count,
+                "sources": {
+                    "system": system_count,
+                    "tool_results": tool_result_count,
+                },
+                "reorder_details": reorder_details,
+            }
+        )
 
     is_stream = body.get("stream", False)
 
@@ -1607,6 +1723,25 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 _saved = _chars_before_slim - _chars_after_slim
                 _log_ttft(_ttft_ms, total_slimmed, _saved)
                 result = await resp.json()
+
+                # ── Cloud mode: track cache metrics from response ──
+                if (
+                    _cloud_mode
+                    and _cloud_adapter is not None
+                    and _ttl_policy is not None
+                    and _cloud_content_hash
+                ):
+                    metrics = _cloud_adapter.parse_cache_metrics(result)
+                    _ttl_policy.update_from_response(metrics, _cloud_content_hash)
+                    cp_response_headers["X-ContextPilot-Cloud-Cache"] = json.dumps(
+                        {
+                            "provider": _cloud_adapter.provider_name,
+                            "cache_creation_tokens": metrics.cache_creation_tokens,
+                            "cache_read_tokens": metrics.cache_read_tokens,
+                            "ttl_stats": _ttl_policy.get_stats(),
+                        }
+                    )
+
                 return JSONResponse(
                     content=result,
                     status_code=resp.status,
@@ -1628,6 +1763,20 @@ async def intercept_openai_chat(request: Request):
 async def intercept_anthropic_messages(request: Request):
     """Intercept Anthropic messages: extract docs, reorder, forward."""
     return await _intercept_and_forward(request, _ANTHROPIC_MESSAGES)
+
+
+@app.get("/cloud/stats")
+async def cloud_cache_stats():
+    """Get cloud prompt cache statistics (cloud proxy mode only)."""
+    if not _cloud_mode or _ttl_policy is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Cloud proxy mode not enabled. Start with --cloud-provider.",
+        )
+    _ttl_policy.evict_expired()
+    stats = _ttl_policy.get_stats()
+    stats["provider"] = _cloud_adapter.provider_name if _cloud_adapter else None
+    return JSONResponse(content=stats)
 
 
 @app.api_route("/v1/{path:path}", methods=["GET", "POST"])
@@ -1678,7 +1827,9 @@ async def proxy_engine(path: str, request: Request):
 
     except aiohttp.ClientError as e:
         logger.error(f"Error proxying to inference engine: {e}")
-        raise HTTPException(status_code=502, detail=f"Inference engine backend error: {str(e)}")
+        raise HTTPException(
+            status_code=502, detail=f"Inference engine backend error: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Error in proxy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1697,6 +1848,11 @@ Examples:
   # Stateless mode (just clustering/scheduling, no index maintained):
   python -m contextpilot.server.http_server --port 8765 --stateless --infer-api-url http://localhost:30000
 
+  # Cloud proxy mode (forward to cloud LLM API with prompt cache optimization):
+  python -m contextpilot.server.http_server --port 8765 --cloud-provider anthropic --cloud-api-key sk-ant-xxx
+  python -m contextpilot.server.http_server --port 8765 --cloud-provider openai --cloud-api-key sk-xxx
+  python -m contextpilot.server.http_server --port 8765 --cloud-provider minimax --cloud-api-key xxx
+
 Live mode:
   - Build context index via POST /reorder
   - Receive eviction callbacks from inference engine at POST /evict
@@ -1707,6 +1863,12 @@ Stateless mode:
   - Use POST /reorder endpoint for one-off batch reordering
   - No index maintained, no eviction tracking
   - Each /reorder call is independent
+
+Cloud proxy mode:
+  - Forward to cloud LLM APIs (Anthropic, OpenAI, MiniMax)
+  - Automatically inject cache_control for prompt cache optimization
+  - Each provider uses its optimal TTL (Anthropic: 5min, OpenAI: 24hr, MiniMax: 5min)
+  - GET /cloud/stats for cache hit/miss statistics
         """,
     )
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
@@ -1721,7 +1883,7 @@ Stateless mode:
         "--stateless",
         action="store_true",
         help="Run in stateless mode: clustering/reordering only, no index maintained. "
-             "Use POST /reorder endpoint for batch reordering.",
+        "Use POST /reorder endpoint for batch reordering.",
     )
     parser.add_argument(
         "--infer-api-url",
@@ -1741,11 +1903,27 @@ Stateless mode:
         default=None,
         help="Model name/path for chat template tokenizer (e.g., 'Qwen/Qwen3-32B')",
     )
+    parser.add_argument(
+        "--cloud-provider",
+        type=str,
+        default=None,
+        choices=["anthropic", "openai", "minimax"],
+        help="Cloud LLM provider for cloud proxy mode (anthropic/openai/minimax)",
+    )
+    parser.add_argument(
+        "--cloud-api-key",
+        type=str,
+        default=None,
+        help="API key for cloud provider (or set CONTEXTPILOT_CLOUD_API_KEY env var)",
+    )
+    parser.add_argument(
+        "--extended-cache",
+        action="store_true",
+        default=False,
+        help="Use extended cache (Anthropic: 1hr, OpenAI: 24hr, MiniMax: N/A)",
+    )
 
     args = parser.parse_args()
-
-    # Note: --max-tokens is no longer required since eviction is now driven by
-    # engine's callback, not by ContextPilot's internal tracking
 
     # Set environment variables so they propagate to uvicorn workers
     if args.max_tokens is not None:
@@ -1754,6 +1932,12 @@ Stateless mode:
     os.environ["CONTEXTPILOT_STATELESS_MODE"] = "1" if args.stateless else "0"
     if args.model:
         os.environ["CONTEXTPILOT_MODEL_NAME"] = args.model
+    if args.cloud_provider:
+        os.environ["CONTEXTPILOT_CLOUD_PROVIDER"] = args.cloud_provider
+    if args.extended_cache:
+        os.environ["CONTEXTPILOT_EXTENDED_CACHE"] = "1"
+    if args.cloud_api_key:
+        os.environ["CONTEXTPILOT_CLOUD_API_KEY"] = args.cloud_api_key
 
     # Also set global config for direct access
     global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode
@@ -1776,15 +1960,26 @@ Stateless mode:
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    if _stateless_mode:
-        logger.info(f"Starting ContextPilot Index Server on {args.host}:{args.port} (STATELESS MODE)")
+    if args.cloud_provider:
+        logger.info(
+            f"Starting ContextPilot Index Server on {args.host}:{args.port} (CLOUD PROXY MODE)"
+        )
+        logger.info(f"Cloud provider: {args.cloud_provider}")
+        logger.info("GET /cloud/stats for cache statistics")
+    elif _stateless_mode:
+        logger.info(
+            f"Starting ContextPilot Index Server on {args.host}:{args.port} (STATELESS MODE)"
+        )
         logger.info("Stateless mode: clustering/scheduling only, no cache tracking")
         logger.info("Use POST /reorder endpoint for batch reordering")
     else:
-        logger.info(f"Starting ContextPilot Index Server on {args.host}:{args.port} (LIVE MODE)")
+        logger.info(
+            f"Starting ContextPilot Index Server on {args.host}:{args.port} (LIVE MODE)"
+        )
         logger.info("Use POST /reorder endpoint for stateful reordering")
         logger.info("Eviction is driven by engine callback (CONTEXTPILOT_INDEX_URL)")
-    logger.info(f"Inference backend URL: {_infer_api_url}")
+    if not args.cloud_provider:
+        logger.info(f"Inference backend URL: {_infer_api_url}")
 
     # Run server
     uvicorn.run(

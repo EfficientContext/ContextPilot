@@ -65,6 +65,7 @@ class ExtractionResult:
     original_content: str = ""
     # JSON-results-specific: full result objects (documents = content strings)
     json_items: Optional[List[Any]] = None
+    json_envelope_path: Tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass
@@ -329,6 +330,14 @@ def _reconstruct_markdown_headers(
 
 # Keys that carry a URL / path identifier suitable for clustering.
 _JSON_ID_KEYS = ("url", "path", "file", "filename", "uri", "href")
+_JSON_RESULTS_NESTED_KEYS = (
+    "stdout",
+    "output",
+    "result",
+    "content",
+    "text",
+    "aggregated",
+)
 
 
 def _extract_json_id(item: dict) -> Optional[str]:
@@ -337,6 +346,48 @@ def _extract_json_id(item: dict) -> Optional[str]:
         val = item.get(key)
         if isinstance(val, str) and val.strip():
             return val.strip()
+    return None
+
+
+def _extract_json_results_from_obj(
+    obj: Any, path: Tuple[str, ...] = ()
+) -> Optional[Tuple[List[str], List[Any], Tuple[str, ...]]]:
+    """Extract result identifiers from a parsed JSON object or nested envelope."""
+    if not isinstance(obj, dict):
+        return None
+
+    results = obj.get("results")
+    if isinstance(results, list) and len(results) >= 2:
+        documents = []
+        for item in results:
+            if isinstance(item, dict):
+                doc_id = _extract_json_id(item)
+                if doc_id is not None:
+                    documents.append(doc_id)
+                else:
+                    documents.append(json.dumps(item, ensure_ascii=False))
+            else:
+                documents.append(json.dumps(item, ensure_ascii=False))
+        if len(documents) >= 2:
+            return documents, results, path
+
+    for key in _JSON_RESULTS_NESTED_KEYS:
+        nested = obj.get(key)
+        if isinstance(nested, str):
+            stripped = nested.strip()
+            if not stripped.startswith("{"):
+                continue
+            try:
+                nested_obj = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            found = _extract_json_results_from_obj(nested_obj, path + (key,))
+            if found:
+                return found
+        elif isinstance(nested, dict):
+            found = _extract_json_results_from_obj(nested, path + (key,))
+            if found:
+                return found
     return None
 
 
@@ -358,28 +409,10 @@ def _extract_json_results(
         obj = json.loads(stripped)
     except (json.JSONDecodeError, ValueError):
         return None
-    if not isinstance(obj, dict):
+    found = _extract_json_results_from_obj(obj)
+    if not found:
         return None
-    results = obj.get("results")
-    if not isinstance(results, list) or len(results) < 2:
-        return None
-
-    # Use url/path as document identifier for clustering — short, stable,
-    # and same-site results share shingles → cluster together naturally.
-    # Falls back to full serialised object when no id key is found.
-    documents = []
-    for item in results:
-        if isinstance(item, dict):
-            doc_id = _extract_json_id(item)
-            if doc_id is not None:
-                documents.append(doc_id)
-            else:
-                documents.append(json.dumps(item, ensure_ascii=False))
-        else:
-            documents.append(json.dumps(item, ensure_ascii=False))
-
-    if len(documents) < 2:
-        return None
+    documents, results, envelope_path = found
 
     return ExtractionResult(
         documents=documents,
@@ -388,6 +421,7 @@ def _extract_json_results(
         mode="json_results",
         original_content=text,
         json_items=results,
+        json_envelope_path=envelope_path,
     )
 
 
@@ -504,9 +538,26 @@ def _reconstruct_json_results(
                     reordered_items.append(extraction.json_items[idx])
                     used.add(idx)
                     break
-        obj["results"] = reordered_items
+        reordered_results = reordered_items
     else:
-        obj["results"] = [json.loads(doc) for doc in reordered_docs]
+        reordered_results = [json.loads(doc) for doc in reordered_docs]
+
+    if extraction.json_envelope_path:
+        container = obj
+        for key in extraction.json_envelope_path[:-1]:
+            container = container[key]
+        leaf_key = extraction.json_envelope_path[-1]
+        leaf = container.get(leaf_key)
+        if isinstance(leaf, str):
+            nested_obj = json.loads(leaf)
+            nested_obj["results"] = reordered_results
+            container[leaf_key] = json.dumps(nested_obj, indent=2, ensure_ascii=False)
+        elif isinstance(leaf, dict):
+            leaf["results"] = reordered_results
+        else:
+            raise TypeError(f"Unsupported JSON envelope leaf type for {leaf_key!r}: {type(leaf)!r}")
+    else:
+        obj["results"] = reordered_results
     return json.dumps(obj, indent=2, ensure_ascii=False)
 
 

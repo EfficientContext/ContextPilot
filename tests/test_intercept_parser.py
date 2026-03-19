@@ -366,6 +366,43 @@ class TestJsonResultsExtraction:
         assert rebuilt_obj["results"][1]["path"] == "b.md"
         assert rebuilt_obj["results"][2]["path"] == "a.md"
 
+    def test_exec_stdout_envelope_results(self):
+        import json
+        inner = {
+            "query": "transformer paper summary",
+            "provider": "duckduckgo",
+            "results": [
+                {"title": "Doc A", "url": "https://a.com", "description": "A"},
+                {"title": "Doc B", "url": "https://b.com", "description": "B"},
+                {"title": "Doc C", "url": "https://c.com", "description": "C"},
+            ],
+        }
+        outer = {
+            "stdout": json.dumps(inner, indent=2),
+            "stderr": "Searching for: transformer paper summary\nType: web, Max results: 3",
+            "exitCode": 0,
+        }
+        text = json.dumps(outer, indent=2)
+
+        result = extract_documents(text, InterceptConfig())
+
+        assert result is not None
+        assert result.mode == "json_results"
+        assert result.documents == ["https://a.com", "https://b.com", "https://c.com"]
+        assert result.json_envelope_path == ("stdout",)
+
+        rebuilt = reconstruct_content(result, ["https://c.com", "https://a.com", "https://b.com"])
+        rebuilt_obj = json.loads(rebuilt)
+        rebuilt_inner = json.loads(rebuilt_obj["stdout"])
+
+        assert rebuilt_obj["stderr"].startswith("Searching for:")
+        assert rebuilt_obj["exitCode"] == 0
+        assert [item["url"] for item in rebuilt_inner["results"]] == [
+            "https://c.com",
+            "https://a.com",
+            "https://b.com",
+        ]
+
 
 # ============================================================================
 # Auto detection priority

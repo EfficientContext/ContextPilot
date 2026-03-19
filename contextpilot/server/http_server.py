@@ -118,6 +118,7 @@ _intercept_state = _InterceptConvState()
 
 # TTFT tracking for averages across a session
 _ttft_history: List[float] = []
+_dumped_first_intercept_request: bool = False
 _ttft_chars_saved_total = 0
 
 
@@ -1239,6 +1240,18 @@ async def _intercept_and_forward(request: Request, api_format: str):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    dump_path = os.environ.get("CONTEXTPILOT_DUMP_FIRST_REQUEST", "").strip()
+    global _dumped_first_intercept_request
+    if dump_path and not _dumped_first_intercept_request:
+        try:
+            with open(dump_path, "w", encoding="utf-8") as f:
+                json.dump(body, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            _dumped_first_intercept_request = True
+            logger.info(f"Intercept: dumped first request body to {dump_path}")
+        except Exception as e:
+            logger.warning(f"Intercept: failed to dump first request body to {dump_path}: {e}")
 
     # Strip random IDs from OpenClaw's EXTERNAL_UNTRUSTED_CONTENT markers
     # early, so extraction/clustering sees deterministic content and

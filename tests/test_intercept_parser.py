@@ -282,10 +282,10 @@ class TestJsonResultsExtraction:
         assert result is not None
         assert result.mode == "json_results"
         assert len(result.documents) == 3
-        # Documents are path identifiers (used for clustering)
-        assert result.documents[0] == "MEMORY.md"
-        assert result.documents[1] == "notes.md"
-        assert result.documents[2] == "config.md"
+        # Documents are content strings (snippet preferred over path for clustering)
+        assert result.documents[0] == "Use TypeScript"
+        assert result.documents[1] == "Prefer functional style"
+        assert result.documents[2] == "Port 8080"
         # Full objects stored in json_items
         assert result.json_items is not None
         assert result.json_items[0]["path"] == "MEMORY.md"
@@ -305,9 +305,9 @@ class TestJsonResultsExtraction:
         assert result is not None
         assert result.mode == "json_results"
         assert len(result.documents) == 2
-        # Documents are URL identifiers (used for clustering)
-        assert result.documents[0] == "https://a.com"
-        assert result.documents[1] == "https://b.com"
+        # Documents are content strings (description preferred over url for clustering)
+        assert result.documents[0] == "Guide to asyncio"
+        assert result.documents[1] == "Threading vs async"
 
     def test_explicit_mode(self):
         import json
@@ -353,8 +353,8 @@ class TestJsonResultsExtraction:
         config = InterceptConfig()
         result = extract_documents(text, config)
         assert result is not None
-        # Documents are path identifiers
-        assert result.documents == ["a.md", "b.md", "c.md"]
+        # Documents are content strings (snippet preferred over path)
+        assert result.documents == ["alpha", "beta", "gamma"]
         # Reorder: reverse the content strings
         reordered = list(reversed(result.documents))
         rebuilt = reconstruct_content(result, reordered)
@@ -388,10 +388,11 @@ class TestJsonResultsExtraction:
 
         assert result is not None
         assert result.mode == "json_results"
-        assert result.documents == ["https://a.com", "https://b.com", "https://c.com"]
+        # Documents are content strings (description preferred over url)
+        assert result.documents == ["A", "B", "C"]
         assert result.json_envelope_path == ("stdout",)
 
-        rebuilt = reconstruct_content(result, ["https://c.com", "https://a.com", "https://b.com"])
+        rebuilt = reconstruct_content(result, ["C", "A", "B"])
         rebuilt_obj = json.loads(rebuilt)
         rebuilt_inner = json.loads(rebuilt_obj["stdout"])
 

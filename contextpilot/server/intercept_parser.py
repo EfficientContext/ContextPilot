@@ -330,6 +330,12 @@ def _reconstruct_markdown_headers(
 
 # Keys that carry a URL / path identifier suitable for clustering.
 _JSON_ID_KEYS = ("url", "path", "file", "filename", "uri", "href")
+
+# Keys that carry substantive content text — preferred over URL/path for
+# clustering so that the reordering algorithm works on actual page text
+# rather than short URL strings.
+_JSON_CONTENT_KEYS = ("description", "snippet", "content", "text", "body", "summary")
+
 _JSON_RESULTS_NESTED_KEYS = (
     "stdout",
     "output",
@@ -349,6 +355,19 @@ def _extract_json_id(item: dict) -> Optional[str]:
     return None
 
 
+def _extract_json_content(item: dict) -> Optional[str]:
+    """Extract substantive content text from a JSON result item for clustering.
+
+    Prefers description/snippet/content/text over URL/path identifiers so
+    that clustering operates on meaningful text rather than short strings.
+    """
+    for key in _JSON_CONTENT_KEYS:
+        val = item.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
 def _extract_json_results_from_obj(
     obj: Any, path: Tuple[str, ...] = ()
 ) -> Optional[Tuple[List[str], List[Any], Tuple[str, ...]]]:
@@ -361,9 +380,13 @@ def _extract_json_results_from_obj(
         documents = []
         for item in results:
             if isinstance(item, dict):
-                doc_id = _extract_json_id(item)
-                if doc_id is not None:
-                    documents.append(doc_id)
+                # Prefer substantive content text for clustering;
+                # fall back to URL/path, then full JSON serialisation.
+                doc_text = _extract_json_content(item)
+                if doc_text is None:
+                    doc_text = _extract_json_id(item)
+                if doc_text is not None:
+                    documents.append(doc_text)
                 else:
                     documents.append(json.dumps(item, ensure_ascii=False))
             else:

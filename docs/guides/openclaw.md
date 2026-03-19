@@ -243,6 +243,67 @@ Set via headers in the OpenClaw provider config, or per-request.
 | `X-ContextPilot-Alpha` | Clustering distance parameter | `0.001` |
 | `X-ContextPilot-Linkage` | Clustering linkage method | `average` |
 
+## OpenClaw Benchmark (ClawBench)
+
+Benchmark ContextPilot against baseline SGLang on the OpenClaw multi-turn RAG dataset (143 tasks with high document overlap across turns).
+
+### Prerequisites
+
+```bash
+git clone https://github.com/yourname/ClawBench.git
+cd ClawBench
+pip install -r requirements.txt
+pip install ddgs
+```
+
+Build the ContextPilot+SGLang Docker image (from the contextpilot repo):
+
+```bash
+cd /path/to/ContextPilot
+docker build -t contextpilot-sglang -f docker/Dockerfile.sglang .
+```
+
+### Option A: Automated (recommended)
+
+Runs both ContextPilot and baseline back-to-back, then compares:
+
+```bash
+cd ClawBench
+bash scripts/run_full_comparison.sh
+```
+
+Filter to a single topic or change the model:
+
+```bash
+bash scripts/run_full_comparison.sh --topic paper-transformer
+bash scripts/run_full_comparison.sh --model Qwen/Qwen2.5-7B-Instruct
+```
+
+### Option B: Manual step-by-step
+
+**1. ContextPilot + SGLang**
+
+```bash
+docker run --gpus all --name cp-bench -p 8765:8765 -p 30000:30000 contextpilot-sglang
+python scripts/run_bench.py --tasks-file openclaw_tasks_all.json --runner api --model Qwen/Qwen2.5-7B-Instruct
+docker rm -f cp-bench
+```
+
+**2. Baseline SGLang**
+
+```bash
+docker run --gpus all --name bl-bench -p 30000:30000 lmsysorg/sglang:latest \
+  python3 -m sglang.launch_server --model-path Qwen/Qwen2.5-7B-Instruct --host 0.0.0.0 --port 30000
+OPENAI_BASE_URL=http://localhost:30000/v1 python scripts/run_bench.py --tasks-file openclaw_tasks_all.json --runner api --model Qwen/Qwen2.5-7B-Instruct
+docker rm -f bl-bench
+```
+
+**3. Compare**
+
+```bash
+python scripts/compare_runs.py results/run_CP.json results/run_BL.json --label-a "ContextPilot" --label-b "Baseline"
+```
+
 ## Troubleshooting
 
 **No `X-ContextPilot-Result` header** — Request had < 2 extractable documents. Check that search/memory tools are returning multiple results.

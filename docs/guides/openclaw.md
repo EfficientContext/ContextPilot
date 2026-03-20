@@ -304,6 +304,107 @@ docker rm -f bl-bench
 python scripts/compare_runs.py results/run_CP.json results/run_BL.json --label-a "ContextPilot" --label-b "Baseline"
 ```
 
+## Multi-User Document Search Benchmark (ClawBench)
+
+Benchmark ContextPilot's KV cache reuse optimization when multiple users concurrently query `memory_search` against a shared document corpus. Four users ask biology/zoology questions that cluster around related topics, causing overlapping documents to be fetched — exactly the scenario where ContextPilot's document reordering yields cache hits.
+
+**Architecture:**
+```
+Users A-D ── OpenClaw (cp-bench profile) ──▶ CP Proxy (:8765) ──▶ SGLang (:30000) [CP hooks]
+Users A-D ── OpenClaw (bl-bench profile) ──▶ SGLang (:30001) [baseline, no reordering]
+```
+
+- **Model:** `Qwen3-4B-Instruct-2507`
+- **Corpus:** 18 biology/zoology documents with 5 hub documents shared across users
+- **Tasks:** 4 users × 5 questions = 20 tasks, run concurrently via `asyncio`
+
+### Prerequisites
+
+```bash
+git clone https://github.com/yourname/ClawBench.git
+cd ClawBench
+
+# Generate the 20 task files
+python scripts/generate_tasks_multiuser.py
+```
+
+Build the ContextPilot+SGLang Docker image:
+
+```bash
+cd /path/to/ContextPilot
+docker build -t contextpilot-sglang -f docker/Dockerfile.sglang .
+```
+
+### Infrastructure Setup
+
+**Terminal 1 — ContextPilot + SGLang** (serves both proxy on :8765 and model on :30000):
+
+```bash
+docker run --gpus all --name cp-bench \
+  -p 8765:8765 -p 30000:30000 \
+  contextpilot-sglang \
+  --model-path Qwen/Qwen3-4B-Instruct-2507 \
+  --tool-call-parser qwen3_coder \
+  --port 30000
+```
+
+**Terminal 2 — Baseline SGLang** (no ContextPilot, port 30001):
+
+```bash
+docker run --gpus all --name bl-bench -p 30001:30000 \
+  lmsysorg/sglang:latest \
+  python3 -m sglang.launch_server \
+    --model-path Qwen/Qwen3-4B-Instruct-2507 \
+    --tool-call-parser qwen3_coder \
+    --host 0.0.0.0 --port 30000
+```
+
+### Running the Benchmark
+
+```bash
+# Preview all 20 tasks across 4 users
+python scripts/run_bench_multiuser.py --dry-run
+
+# Run both ContextPilot and baseline
+python scripts/run_bench_multiuser.py --mode both
+
+# Run only ContextPilot or baseline
+python scripts/run_bench_multiuser.py --mode cp
+python scripts/run_bench_multiuser.py --mode baseline
+
+# Filter to a single user
+python scripts/run_bench_multiuser.py --mode both --user user-a
+```
+
+### Reading Results
+
+Results are saved to `results/run_multiuser_<timestamp>.json`:
+
+```json
+{
+  "run_id": "20260320_143022",
+  "benchmark": "multiuser-docsearch",
+  "model": "Qwen3-4B-Instruct-2507",
+  "modes": {
+    "cp": {
+      "results_by_user": { "user-a": [...], "user-b": [...], ... },
+      "metrics": { "avg_ttft_ms": 142, "p50_ttft_ms": 128, "p90_ttft_ms": 210, ... }
+    },
+    "baseline": {
+      "results_by_user": { ... },
+      "metrics": { "avg_elapsed_seconds": 45.2, ... }
+    }
+  },
+  "comparison": {
+    "elapsed_speedup": 1.35,
+    "total_elapsed_speedup": 1.28,
+    "cp_avg_ttft_ms": 142
+  }
+}
+```
+
+The `comparison` section shows how ContextPilot's document reordering translates into faster responses through KV cache reuse. Hub documents like `reptile-thermoregulation.md` and `reptile-conservation.md` appear in queries from all 4 users, so ContextPilot can reorder them to maximize prefix overlap across requests.
+
 ## Troubleshooting
 
 **No `X-ContextPilot-Result` header** — Request had < 2 extractable documents. Check that search/memory tools are returning multiple results.

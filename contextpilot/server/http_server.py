@@ -612,9 +612,9 @@ async def _reorder_stateful(request: ReorderRequest):
                 tracker = get_conversation_tracker()
                 docs_list = result.get("reordered_contexts") or contexts
                 doc_contents_list = None
-                if id_to_str:
+                if _id_to_str:
                     doc_contents_list = [
-                        {did: id_to_str[did] for did in ctx if did in id_to_str}
+                        {did: _id_to_str[did] for did in ctx if did in _id_to_str}
                         for ctx in docs_list
                     ]
                 dedup_results = tracker.deduplicate_batch(
@@ -624,6 +624,11 @@ async def _reorder_stateful(request: ReorderRequest):
                     hint_template=request.hint_template,
                     doc_contents_list=doc_contents_list,
                 )
+                if doc_contents_list:
+                    for dc in doc_contents_list:
+                        for did, content in dc.items():
+                            if did in _id_to_str and content != _id_to_str[did]:
+                                _id_to_str[did] = content
                 logger.info(f"Deduplication: processed {len(dedup_results)} contexts")
 
             reordered = _to_output(result.get("reordered_contexts"))
@@ -653,11 +658,17 @@ async def _reorder_stateful(request: ReorderRequest):
                             "overlapping_docs": r.overlapping_docs,
                             "new_docs": r.new_docs,
                             "reference_hints": r.reference_hints,
+                            "blocks_deduped": r.blocks_deduped,
+                            "blocks_total": r.blocks_total,
+                            "block_chars_saved": r.block_chars_saved,
                         }
                         for i, r in enumerate(dedup_results)
                     ],
                     "total_docs_deduplicated": sum(
                         len(r.overlapping_docs) for r in dedup_results
+                    ),
+                    "total_blocks_deduped": sum(
+                        r.blocks_deduped for r in dedup_results
                     ),
                 }
 
@@ -687,9 +698,9 @@ async def _reorder_stateful(request: ReorderRequest):
             tracker = get_conversation_tracker()
             reordered_raw = result.get("reordered_contexts") or contexts
             doc_contents_list = None
-            if id_to_str:
+            if _id_to_str:
                 doc_contents_list = [
-                    {did: id_to_str[did] for did in ctx if did in id_to_str}
+                    {did: _id_to_str[did] for did in ctx if did in _id_to_str}
                     for ctx in reordered_raw
                 ]
             dedup_results = tracker.deduplicate_batch(
@@ -699,6 +710,11 @@ async def _reorder_stateful(request: ReorderRequest):
                 hint_template=request.hint_template,
                 doc_contents_list=doc_contents_list,
             )
+            if doc_contents_list:
+                for dc in doc_contents_list:
+                    for did, content in dc.items():
+                        if did in _id_to_str and content != _id_to_str[did]:
+                            _id_to_str[did] = content
             logger.info(f"Deduplication: processed {len(dedup_results)} contexts")
 
         reordered = _to_output(result.get("reordered_contexts", contexts))
@@ -729,12 +745,16 @@ async def _reorder_stateful(request: ReorderRequest):
                         "overlapping_docs": r.overlapping_docs,
                         "new_docs": r.new_docs,
                         "reference_hints": r.reference_hints,
+                        "blocks_deduped": r.blocks_deduped,
+                        "blocks_total": r.blocks_total,
+                        "block_chars_saved": r.block_chars_saved,
                     }
                     for i, r in enumerate(dedup_results)
                 ],
                 "total_docs_deduplicated": sum(
                     len(r.overlapping_docs) for r in dedup_results
                 ),
+                "total_blocks_deduped": sum(r.blocks_deduped for r in dedup_results),
             }
 
         return response

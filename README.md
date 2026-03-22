@@ -17,6 +17,8 @@
 
 ## News
 
+- [2026/03] [OpenClaw](https://openclaw.ai) integration with block-level dedup — [guide](docs/guides/openclaw.md) | [benchmark](docs/benchmarks/openclaw.md)
+- [2026/03] Cloud API support (OpenAI, Anthropic, MiniMax) with TTL-based [cache sync](docs/guides/cache_sync.md)
 - [2026/03] ContextPilot now can run on **macOS / Apple Silicon** via [llama.cpp](docs/guides/mac_llama_cpp.md).
 - [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.
@@ -96,9 +98,23 @@ Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cac
 
 ---
 
-### vLLM / SGLang
+### OpenClaw
 
-ContextPilot works with both CPU and GPU backends for building the context index. The `[gpu]` extra enables GPU-accelerated distance computation (via `cupy-cuda12x`) and is faster for large batches; without it, ContextPilot falls back to the CPU backend automatically.
+```bash
+pip install contextpilot
+
+# Start proxy (points to your LLM backend)
+python -m contextpilot.server.http_server \
+  --port 8765 --infer-api-url http://localhost:30000   # SGLang
+  # or: --infer-api-url https://api.anthropic.com      # Anthropic
+  # or: --infer-api-url https://api.openai.com         # OpenAI
+```
+
+Then set OpenClaw's base URL to `http://localhost:8765/v1`. See the [full OpenClaw integration guide](docs/guides/openclaw.md) for UI setup, config file examples, and self-hosted model instructions.
+
+---
+
+### vLLM / SGLang
 
 **From PyPI** — the vLLM and SGLang hooks are installed automatically:
 ```bash
@@ -136,22 +152,6 @@ xcode-select --install    # one-time: provides clang++ to compile the native hoo
 ```
 
 > **Why `xcode-select`?** The llama.cpp integration uses a small C++ shared library injected into `llama-server` via `DYLD_INSERT_LIBRARIES`. It is compiled automatically on first use and requires `clang++` from Xcode Command Line Tools.
-
----
-
-### OpenClaw
-
-```bash
-pip install contextpilot
-
-# Start proxy (points to your LLM backend)
-python -m contextpilot.server.http_server \
-  --port 8765 --infer-api-url http://localhost:30000   # SGLang
-  # or: --infer-api-url https://api.anthropic.com      # Anthropic
-  # or: --infer-api-url https://api.openai.com         # OpenAI
-```
-
-Then set OpenClaw's base URL to `http://localhost:8765/v1`. See the [full OpenClaw integration guide](docs/guides/openclaw.md) for UI setup, config file examples, and self-hosted model instructions.
 
 ---
 

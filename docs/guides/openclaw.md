@@ -242,36 +242,7 @@ Set via headers in the OpenClaw provider config, or per-request.
 | `X-ContextPilot-Alpha` | Clustering distance parameter | `0.001` |
 | `X-ContextPilot-Linkage` | Clustering linkage method | `average` |
 
-## How Block Dedup Works
-
-Like file system deduplication — only unique data is stored, duplicates become pointers to the original. When an agent reads two contracts with the same legal boilerplate, ContextPilot keeps the first intact and replaces identical blocks in the second with back-references.
-
-**Contract A** (read first — kept intact):
-```
-ARTICLE 6 — CONFIDENTIALITY
-6.1 Each party agrees to hold the other party's Confidential
-Information in strict confidence and not to disclose such
-Confidential Information to any third party without the prior
-written consent of the disclosing party...
-
-ARTICLE 7 — DATA PROTECTION
-7.1 Each party shall comply with all applicable data protection
-laws including GDPR, CCPA, and PDPA...
-```
-
-**Contract B** has the exact same Articles 6 and 7. After dedup:
-```
-[... "6.1 Each party agrees to hold the other party's Confidential"
-  — identical to earlier read_file result, see above ...]
-
-[... "7.1 Each party shall comply with all applicable data protection"
-  — identical to earlier read_file result, see above ...]
-
-ARTICLE 17 — AI/ML SPECIFIC TERMS              ← unique, kept
-17.1 All models shall achieve minimum accuracy of 95%...
-```
-
-Across 4 contracts sharing ~70% boilerplate: **180 KB → 90 KB prefill (-50%)**.
+For details on how reorder and dedup work, see [How It Works](how_it_works.md).
 
 ## Benchmark Results
 

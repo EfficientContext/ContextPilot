@@ -30,7 +30,7 @@ Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many co
 ContextPilot sits between context assembly and inference to maximize prefix reuse and remove duplicates:
 
 1. **Higher throughput & cache hits** — boosts prefill throughput and prefix cache hit ratio via context reuse.  
-2. **Drop-in solutions** — works with [OpenClaw](https://openclaw.ai) ([guide](docs/guides/openclaw.md)), [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) / [llama.cpp](docs/guides/mac_llama_cpp.md).
+2. **Drop-in solutions** — supports [OpenClaw](https://openclaw.ai) ([guide](docs/guides/openclaw.md)), [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [llama.cpp](docs/guides/mac_llama_cpp.md), and cloud APIs (OpenAI, Anthropic).
 3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
 4. **Widely tested** — validated across diverse RAG and agentic workloads.
 

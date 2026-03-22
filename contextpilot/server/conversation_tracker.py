@@ -173,11 +173,15 @@ class ConversationTracker:
     def deduplicate(
         self,
         request_id: str,
-        docs: List[int],
+        docs: Optional[List[int]] = None,
         parent_request_id: Optional[str] = None,
         hint_template: Optional[str] = None,
         doc_contents: Optional[Dict[int, str]] = None,
     ) -> DeduplicationResult:
+        if docs is None and doc_contents is not None:
+            docs = list(doc_contents.keys())
+        elif docs is None:
+            docs = []
         self._stats["total_dedup_calls"] += 1
 
         if not parent_request_id or parent_request_id not in self._requests:

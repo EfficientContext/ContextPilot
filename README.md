@@ -46,8 +46,8 @@ It maintains a **Context Index** of cached content, then per request applies **R
 
 | Metric | OpenClaw + SGLang | + ContextPilot | Δ |
 |--------|-------------------|----------------|---|
-| Prompt tokens (avg) | 45,771 | 33,622 | **-26.5%** |
-| Prompt tokens (P99) | 92,785 | 51,581 | **-44.4%** |
+| Prompt tokens / request (avg) | 45,771 | 33,622 | **-26.5%** |
+| Prompt tokens / request (P99) | 92,785 | 51,581 | **-44.4%** |
 | Wall time (avg) | 26.1s | 20.8s | **-20.4%** |
 | Wall time (P99) | 68.8s | 50.4s | **-26.6%** |
 | Accuracy | 245/245 | 245/245 | ✓ |

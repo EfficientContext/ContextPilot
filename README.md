@@ -52,6 +52,8 @@ It maintains a **Context Index** of cached content, then per request applies **R
 | Wall time (P99) | 68.8s | 50.4s | **-26.6%** |
 | Accuracy | 245/245 | 245/245 | ✓ |
 
+At GPT-5.4 rates ($2.50/M input tokens), this saves ~$1,500/month for a team running ~500 document analysis tasks/day.
+
 ContextPilot is also validated across RAG, production MoE inference, and multi-turn memory chat:
 
 **Qwen3-32B on 4×A6000** — single-node academic RAG with a 32B model on consumer GPUs.

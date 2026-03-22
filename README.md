@@ -52,8 +52,6 @@ It maintains a **Context Index** of cached content, then per request applies **R
 | Wall time (P99) | 68.8s | 50.4s | **-26.6%** |
 | Accuracy | 245/245 | 245/245 | ✓ |
 
-For one person processing documents daily (~25 queries/day), the token reduction saves $17/month with GPT-5.4, or $100+/month with Claude Opus / o1. For self-hosted engines, it means faster prefill and lower GPU-hours.
-
 ContextPilot is also validated across RAG, production MoE inference, and multi-turn memory chat:
 
 **Qwen3-32B on 4×A6000** — single-node academic RAG with a 32B model on consumer GPUs.

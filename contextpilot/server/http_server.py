@@ -610,11 +610,19 @@ async def _reorder_stateful(request: ReorderRequest):
             dedup_results = None
             if request.deduplicate:
                 tracker = get_conversation_tracker()
+                docs_list = result.get("reordered_contexts") or contexts
+                doc_contents_list = None
+                if id_to_str:
+                    doc_contents_list = [
+                        {did: id_to_str[did] for did in ctx if did in id_to_str}
+                        for ctx in docs_list
+                    ]
                 dedup_results = tracker.deduplicate_batch(
                     request_ids=result["request_ids"],
-                    docs_list=result.get("reordered_contexts") or contexts,
+                    docs_list=docs_list,
                     parent_request_ids=request.parent_request_ids,
                     hint_template=request.hint_template,
+                    doc_contents_list=doc_contents_list,
                 )
                 logger.info(f"Deduplication: processed {len(dedup_results)} contexts")
 
@@ -678,11 +686,18 @@ async def _reorder_stateful(request: ReorderRequest):
         if request.deduplicate:
             tracker = get_conversation_tracker()
             reordered_raw = result.get("reordered_contexts") or contexts
+            doc_contents_list = None
+            if id_to_str:
+                doc_contents_list = [
+                    {did: id_to_str[did] for did in ctx if did in id_to_str}
+                    for ctx in reordered_raw
+                ]
             dedup_results = tracker.deduplicate_batch(
                 request_ids=request_ids,
                 docs_list=reordered_raw,
                 parent_request_ids=request.parent_request_ids,
                 hint_template=request.hint_template,
+                doc_contents_list=doc_contents_list,
             )
             logger.info(f"Deduplication: processed {len(dedup_results)} contexts")
 

@@ -11,7 +11,7 @@ This module tracks what content is currently cached in the cloud provider
 so ContextPilot can optimize document ordering to maximize cache hits.
 
 Key Design:
-- TTL-based expiry (not capacity-based like EvictionHeap)
+- TTL-based expiry
 - Thread-safe for concurrent request handling
 - Tracks hit/miss statistics for monitoring
 - Supports two TTL tiers: SHORT (5 min) and LONG (1 hr)
@@ -42,6 +42,7 @@ class CacheEntry:
     """A single cached content entry with TTL tracking."""
 
     content_hash: str
+    request_id: str
     created_at: float
     last_accessed_at: float
     ttl_seconds: int
@@ -130,73 +131,59 @@ class TTLEvictionPolicy:
         """Set default TTL tier."""
         self._default_ttl = value
 
-    def add_entry(self, content_hash: str, token_count: int = 0) -> CacheEntry:
+    def add_entry(
+        self, request_id: str, content_hash: str = "", token_count: int = 0
+    ) -> Optional[CacheEntry]:
+        if not request_id:
+            return None
         ttl_secs = self._default_ttl_seconds
         now = time.time()
 
         with self._lock:
-            if content_hash in self._entries:
-                entry = self._entries[content_hash]
+            if request_id in self._entries:
+                entry = self._entries[request_id]
                 entry.last_accessed_at = now
                 entry.token_count = token_count or entry.token_count
-                logger.debug(f"Cache entry refreshed: {content_hash[:12]}...")
+                logger.debug(f"Cache entry refreshed: {request_id}")
             else:
                 entry = CacheEntry(
                     content_hash=content_hash,
+                    request_id=request_id,
                     created_at=now,
                     last_accessed_at=now,
                     ttl_seconds=ttl_secs,
                     token_count=token_count,
                 )
-                self._entries[content_hash] = entry
+                self._entries[request_id] = entry
                 self._total_additions += 1
                 logger.debug(
-                    f"Cache entry added: {content_hash[:12]}... "
+                    f"Cache entry added: {request_id} "
                     f"(ttl={ttl_secs}s, tokens={token_count})"
                 )
 
         return entry
 
-    def touch_entry(self, content_hash: str) -> bool:
-        """
-        Refresh last_accessed_at timestamp for an entry.
-
-        Args:
-            content_hash: Hash of the cached content
-
-        Returns:
-            True if entry was found and refreshed, False if not found or expired
-        """
+    def touch_entry(self, request_id: str) -> bool:
         with self._lock:
-            entry = self._entries.get(content_hash)
+            entry = self._entries.get(request_id)
             if entry is None:
                 return False
             if entry.is_expired():
-                # Already expired, remove it
-                del self._entries[content_hash]
+                del self._entries[request_id]
                 self._total_evictions += 1
                 return False
             entry.last_accessed_at = time.time()
             self._total_hits += 1
             return True
 
-    def is_cached(self, content_hash: str) -> bool:
-        """
-        Check if content is still within its TTL window.
-
-        Args:
-            content_hash: Hash of the content to check
-
-        Returns:
-            True if cached and not expired
-        """
+    def is_cached(self, request_id: str) -> bool:
         with self._lock:
-            entry = self._entries.get(content_hash)
+            entry = self._entries.get(request_id)
             if entry is None:
                 self._total_misses += 1
                 return False
             if entry.is_expired():
-                del self._entries[content_hash]
+                del self._entries[request_id]
                 self._total_evictions += 1
                 self._total_misses += 1
                 return False
@@ -231,16 +218,12 @@ class TTLEvictionPolicy:
         return evicted
 
     def get_cached_hashes(self) -> Set[str]:
-        """
-        Get set of all currently-cached content hashes (non-expired).
-
-        Returns:
-            Set of content hashes that are still within TTL
-        """
         now = time.time()
         with self._lock:
             return {
-                h for h, entry in self._entries.items() if not entry.is_expired(now)
+                entry.content_hash
+                for entry in self._entries.values()
+                if not entry.is_expired(now) and entry.content_hash
             }
 
     def get_cached_count(self) -> int:
@@ -261,30 +244,27 @@ class TTLEvictionPolicy:
                 if not entry.is_expired(now)
             )
 
-    def update_from_response(self, metrics: CacheMetrics, content_hash: str) -> None:
-        """
-        Update cache state based on cloud API response metrics.
+    def update_from_response(
+        self, metrics: CacheMetrics, request_id: str, content_hash: str = ""
+    ) -> None:
+        if not request_id:
+            return
 
-        If cache_read_tokens > 0: content was served from cache -> touch entry.
-        If cache_creation_tokens > 0: new content was cached -> add entry.
-
-        Args:
-            metrics: Cache metrics from the cloud API response
-            content_hash: Hash of the content that was sent
-        """
         if metrics.cache_read_tokens > 0:
-            # Cache hit — refresh TTL
-            self.touch_entry(content_hash)
+            self.touch_entry(request_id)
             logger.debug(
-                f"Cache hit confirmed: {content_hash[:12]}... "
+                f"Cache hit confirmed: {request_id} "
                 f"({metrics.cache_read_tokens} tokens read from cache)"
             )
 
         if metrics.cache_creation_tokens > 0:
-            # New content cached — add/update entry
-            self.add_entry(content_hash, token_count=metrics.cache_creation_tokens)
+            self.add_entry(
+                request_id,
+                content_hash=content_hash,
+                token_count=metrics.cache_creation_tokens,
+            )
             logger.debug(
-                f"Cache write confirmed: {content_hash[:12]}... "
+                f"Cache write confirmed: {request_id} "
                 f"({metrics.cache_creation_tokens} tokens cached)"
             )
 

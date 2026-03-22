@@ -25,7 +25,7 @@ import asyncio
 import os
 import re
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, cast
 from contextlib import asynccontextmanager
 
 try:
@@ -54,6 +54,11 @@ from .intercept_parser import (
 )
 from .ttl_eviction import TTLEvictionPolicy, TTLTier, CacheMetrics
 from .cloud_adapters import get_cloud_adapter, CloudProviderAdapter
+from contextpilot.dedup import (
+    dedup_chat_completions,
+    dedup_responses_api,
+    DedupResult,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -751,6 +756,10 @@ async def schedule_batch(request: ScheduleRequest):
         alpha=request.alpha,
         use_gpu=request.use_gpu,
         linkage_method=request.linkage_method,
+        initial_tokens_per_context=0,
+        parent_request_ids=None,
+        deduplicate=False,
+        hint_template=None,
     )
     # Force stateless behaviour regardless of server mode
     return await _reorder_stateless(unified)
@@ -790,7 +799,7 @@ async def evict(request: EvictRequest):
         normalized_ids = list(dict.fromkeys(normalized_ids))
 
         # Remove the evicted requests from our index
-        result = _index.remove_requests(normalized_ids)
+        result = _index.remove_requests(set(normalized_ids))
 
         # Also clear conversation history for evicted requests
         # This ensures ConversationTracker stays in sync with the engine's cache
@@ -1052,6 +1061,10 @@ async def proxy_completions(request: Request):
             detail="Inference API URL not configured. Set CONTEXTPILOT_INFER_API_URL env var or use --infer-api-url.",
         )
 
+    session = _aiohttp_session
+    if session is None:
+        raise HTTPException(status_code=503, detail="HTTP session not initialized")
+
     try:
         # Parse request body
         body = await request.json()
@@ -1092,7 +1105,7 @@ async def proxy_completions(request: Request):
         api_url = f"{infer_api_url}/v1/completions"
         logger.debug(f"Proxying to {api_url}")
 
-        async with _aiohttp_session.post(api_url, json=body) as response:
+        async with session.post(api_url, json=body) as response:
             result = await response.json()
 
             # Token tracking is handled by the inference engine via CONTEXTPILOT_INDEX_URL
@@ -1244,13 +1257,15 @@ def _reorder_documents(docs: List[str], config: InterceptConfig) -> tuple:
             use_gpu=False,
             linkage_method=config.linkage_method,
         )
-        _intercept_index.build_and_schedule(contexts=contexts)
+        _intercept_index.build_and_schedule(contexts=cast(List[List[int]], contexts))
         logger.debug("Intercept index initialised (no reorder on first call)")
         return docs, original_order, original_order
 
     # Subsequent calls — search existing tree and reorder for prefix sharing.
     # build_incremental returns reordered_contexts with strings converted.
-    result = _intercept_index.build_incremental(contexts=contexts)
+    result = _intercept_index.build_incremental(
+        contexts=cast(List[List[int]], contexts)
+    )
     reordered = result.get("reordered_contexts", [docs])[0]
 
     # Build order mapping: find where each reordered doc was in the original.
@@ -1297,6 +1312,10 @@ async def _intercept_and_forward(request: Request, api_format: str):
             detail="Inference API URL not configured.",
         )
 
+    session = _aiohttp_session
+    if session is None:
+        raise HTTPException(status_code=503, detail="HTTP session not initialized")
+
     try:
         body = await request.json()
     except Exception:
@@ -1319,6 +1338,8 @@ async def _intercept_and_forward(request: Request, api_format: str):
     system_count = 0
     tool_result_count = 0
     reorder_details = []  # collect per-source reorder info
+    _dedup_result = DedupResult()
+    state = _intercept_state
 
     # ── Debug: log conversation shape, divergence, and tool_result details ──
     _debug_messages = body.get("messages") or []
@@ -1582,6 +1603,24 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     f"(saved {saved:,} chars ≈ {saved_tokens:,} tokens)"
                 )
 
+            _dedup_result = DedupResult()
+            try:
+                if api_format == _OPENAI_CHAT:
+                    _dedup_result = dedup_chat_completions(body)
+                elif "input" in body and isinstance(body.get("input"), list):
+                    _dedup_result = dedup_responses_api(body)
+
+                if _dedup_result.chars_saved > 0:
+                    _chars_before_slim += _dedup_result.chars_before
+                    _chars_after_slim += _dedup_result.chars_after
+                    logger.info(
+                        f"Dedup ({api_format}): "
+                        f"blocks={_dedup_result.blocks_deduped}/{_dedup_result.blocks_total}, "
+                        f"saved {_dedup_result.chars_saved:,} chars"
+                    )
+            except Exception as dedup_err:
+                logger.warning(f"Dedup failed, continuing: {dedup_err}")
+
             # ── Cache the final messages array for next turn ──────────
             state.cached_messages = copy.deepcopy(body.get("messages", []))
             state.cached_system = handler.cache_system(body)
@@ -1603,6 +1642,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
     # ── Cloud proxy mode: inject cache_control + compute content hash ──
     _cloud_content_hash = ""
+    _cloud_request_id = ""
     if _cloud_mode and _cloud_adapter is not None and _ttl_policy is not None:
         _ttl_policy.evict_expired()
         cached_hashes = _ttl_policy.get_cached_hashes()
@@ -1612,6 +1652,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 body.get("system", ""), sort_keys=True, ensure_ascii=False
             ).encode()
         ).hexdigest()[:24]
+        _cloud_request_id = f"cloud-{uuid.uuid4().hex[:12]}"
 
     # Determine target URL
     if _cloud_mode and _cloud_adapter is not None:
@@ -1650,12 +1691,14 @@ async def _intercept_and_forward(request: Request, api_format: str):
     # Build ContextPilot metadata as a response header (not in body,
     # which would break strict API response parsers like OpenClaw's SDK).
     cp_response_headers = {}
-    if (
+    _has_activity = (
         total_reordered > 0
         or total_deduped > 0
         or total_slimmed > 0
         or tool_results_skipped > 0
-    ):
+        or _dedup_result.chars_saved > 0
+    )
+    if _has_activity:
         cp_response_headers["X-ContextPilot-Result"] = json.dumps(
             {
                 "intercepted": True,
@@ -1673,6 +1716,11 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     "tool_results": tool_result_count,
                 },
                 "reorder_details": reorder_details,
+                "dedup": {
+                    "blocks_deduped": _dedup_result.blocks_deduped,
+                    "blocks_total": _dedup_result.blocks_total,
+                    "chars_saved": _dedup_result.chars_saved,
+                },
             }
         )
 
@@ -1685,7 +1733,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
             # Streaming: passthrough SSE chunks, forwarding status & headers
             async def _stream_with_headers():
                 _ttft_logged = False
-                async with _aiohttp_session.post(
+                async with session.post(
                     target_url, json=body, headers=outbound_headers
                 ) as resp:
                     # Collect response headers to forward
@@ -1706,17 +1754,23 @@ async def _intercept_and_forward(request: Request, api_format: str):
                         yield chunk
 
             stream_iter = _stream_with_headers()
-            status, fwd_headers = await stream_iter.__anext__()
+            first_event = await stream_iter.__anext__()
+            status, fwd_headers = cast(tuple[int, Dict[str, str]], first_event)
+
+            async def _stream_content_only():
+                async for event in stream_iter:
+                    if isinstance(event, bytes):
+                        yield event
 
             return StreamingResponse(
-                stream_iter,
+                _stream_content_only(),
                 status_code=status,
                 headers=fwd_headers,
                 media_type=fwd_headers.get("content-type", "text/event-stream"),
             )
         else:
             # Non-streaming: forward JSON with metadata in header only
-            async with _aiohttp_session.post(
+            async with session.post(
                 target_url, json=body, headers=outbound_headers
             ) as resp:
                 _ttft_ms = (time.monotonic() - _request_start) * 1000
@@ -1732,7 +1786,17 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     and _cloud_content_hash
                 ):
                     metrics = _cloud_adapter.parse_cache_metrics(result)
-                    _ttl_policy.update_from_response(metrics, _cloud_content_hash)
+                    _ttl_policy.update_from_response(
+                        metrics, _cloud_request_id, content_hash=_cloud_content_hash
+                    )
+                    if (
+                        metrics.cache_read_tokens > 0
+                        and _index is not None
+                        and _cloud_request_id
+                    ):
+                        node_id = _index._request_to_node.get(_cloud_request_id)
+                        if node_id is not None and node_id in _index.metadata:
+                            _index.metadata[node_id].update_access_time()
                     cp_response_headers["X-ContextPilot-Cloud-Cache"] = json.dumps(
                         {
                             "provider": _cloud_adapter.provider_name,
@@ -1800,30 +1864,126 @@ async def proxy_engine(path: str, request: Request):
             detail="Inference API URL not configured. Set CONTEXTPILOT_INFER_API_URL env var or use --infer-api-url.",
         )
 
+    session = _aiohttp_session
+    if session is None:
+        raise HTTPException(status_code=503, detail="HTTP session not initialized")
+
     try:
-        target_url = f"{infer_api_url}/v1/{path}"
+        if _cloud_mode and _cloud_adapter is not None:
+            target_url = _cloud_adapter.get_api_url(f"/v1/{path}")
+            headers = _cloud_adapter.get_auth_headers(_cloud_api_key or "")
+        else:
+            target_url = f"{infer_api_url}/v1/{path}"
+            headers = {}
 
         if request.method == "GET":
-            async with _aiohttp_session.get(target_url) as response:
+            async with session.get(target_url, headers=headers) as response:
                 result = await response.json()
                 return JSONResponse(content=result, status_code=response.status)
         else:
             body = await request.json()
 
-            # Inject rid for SGLang cache tracking (same logic as proxy_completions)
-            request_id = body.pop("request_id", None) or body.get("rid", None)
-            if not request_id:
-                request_id = f"req-{uuid.uuid4().hex[:12]}"
-                logger.debug(f"Auto-assigned request_id={request_id}")
-            if _index:
-                _index.track_request(request_id)
-            if request_id:
-                body["rid"] = request_id
-                body["request_id"] = request_id
+            if not _cloud_mode:
+                request_id = body.pop("request_id", None) or body.get("rid", None)
+                if not request_id:
+                    request_id = f"req-{uuid.uuid4().hex[:12]}"
+                    logger.debug(f"Auto-assigned request_id={request_id}")
+                if _index:
+                    _index.track_request(request_id)
+                if request_id:
+                    body["rid"] = request_id
+                    body["request_id"] = request_id
 
-            async with _aiohttp_session.post(target_url, json=body) as response:
-                result = await response.json()
-                return JSONResponse(content=result, status_code=response.status)
+            body["temperature"] = 0
+            if _cloud_mode:
+                body["top_p"] = 0
+
+            dedup_result = DedupResult()
+            try:
+                if path == "responses" or (
+                    "input" in body and isinstance(body.get("input"), list)
+                ):
+                    # Log function_call_output stats before dedup
+                    input_items = body.get("input", [])
+                    fco_items = [
+                        it
+                        for it in input_items
+                        if isinstance(it, dict)
+                        and it.get("type") == "function_call_output"
+                    ]
+                    if fco_items:
+                        import hashlib as _hl
+
+                        fco_summary = []
+                        for it in fco_items:
+                            out = it.get("output", "")
+                            h = _hl.sha256(
+                                out.encode("utf-8", errors="replace")
+                            ).hexdigest()[:12]
+                            call_id = it.get("call_id", "?")
+                            # Find the tool name from function_call items
+                            fn_name = "?"
+                            for fc in input_items:
+                                if (
+                                    isinstance(fc, dict)
+                                    and fc.get("type") == "function_call"
+                                    and fc.get("call_id") == it.get("call_id")
+                                ):
+                                    fn_name = fc.get("name", "?")
+                                    break
+                            content_preview = (
+                                out[:60].replace("\n", "\\n") if len(out) < 100 else ""
+                            )
+                            fco_summary.append(
+                                f"  call={call_id[:20]} fn={fn_name} len={len(out)} hash={h}"
+                                + (f" [{content_preview}]" if content_preview else "")
+                            )
+                        logger.info(
+                            f"Request /v1/{path}: {len(input_items)} items, "
+                            f"{len(fco_items)} function_call_output:\n"
+                            + "\n".join(fco_summary)
+                        )
+                    dedup_result = dedup_responses_api(body)
+                elif "messages" in body and isinstance(body.get("messages"), list):
+                    dedup_result = dedup_chat_completions(body)
+                if dedup_result.chars_saved > 0:
+                    logger.info(
+                        f"Passthrough dedup /v1/{path}: "
+                        f"block={dedup_result.blocks_deduped}/{dedup_result.blocks_total} "
+                        f"(saved {dedup_result.chars_saved:,} chars)"
+                    )
+            except Exception as pe:
+                logger.warning(f"Passthrough dedup failed: {pe}")
+
+            response = await session.post(target_url, json=body, headers=headers)
+            ct = response.headers.get("content-type", "")
+            if "text/event-stream" in ct:
+
+                async def _sse_passthrough():
+                    try:
+                        async for chunk in response.content.iter_any():
+                            yield chunk
+                    finally:
+                        response.close()
+
+                fwd_hdrs = {
+                    k: v
+                    for k, v in response.headers.items()
+                    if k.lower()
+                    not in (
+                        "transfer-encoding",
+                        "content-encoding",
+                        "content-length",
+                    )
+                }
+                return StreamingResponse(
+                    _sse_passthrough(),
+                    status_code=response.status,
+                    headers=fwd_hdrs,
+                )
+            result = await response.json()
+            response.close()
+            return JSONResponse(content=result, status_code=response.status)
 
     except aiohttp.ClientError as e:
         logger.error(f"Error proxying to inference engine: {e}")

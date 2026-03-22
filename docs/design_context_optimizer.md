@@ -291,7 +291,7 @@ contextpilot/                           contextpilot/
 │   ├── conversation_tracker.py  ──→    │   ├── rules/dedup.py     (dedup rule)
 │   ├── metadata.py              ──→    │   ├── catalog.py         (usage stats + registry)
 │   ├── live_index.py            ──→    │   └── planner.py         (plan generation)
-│   ├── eviction_heap.py         ──→    │
+│   ├── (eviction_heap removed)  ──→    │
 │   └── http_server.py           ──→    ├── engine/
 │                                       │   ├── live_index.py      (cache mgmt)
 │                                       │   ├── eviction.py

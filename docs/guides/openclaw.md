@@ -17,10 +17,9 @@ ContextPilot acts as a transparent HTTP proxy. OpenClaw sends requests to the pr
 OpenClaw's search and memory retrieval results appear as **tool_result messages** in the conversation history, not in the system prompt. When multiple search results are returned, their ordering affects the LLM's attention and response quality.
 
 ContextPilot:
-1. Extracts documents from tool_result content blocks
-2. Clusters semantically related documents together
-3. Reorders to minimize attention distance between related content
-4. Preserves the original format (XML, numbered, etc.)
+1. **Reorder**: Clusters semantically related documents and reorders to maximize prefix cache hits
+2. **Dedup**: Block-level deduplication across tool results — identical content blocks replaced with back-references, reducing prefill tokens
+3. **Cache sync**: Tracks inference engine cache state (see [Cache Synchronization](cache_sync.md))
 
 ## Setup
 
@@ -242,6 +241,58 @@ Set via headers in the OpenClaw provider config, or per-request.
 | `X-ContextPilot-Separator` | Custom separator | `---` |
 | `X-ContextPilot-Alpha` | Clustering distance parameter | `0.001` |
 | `X-ContextPilot-Linkage` | Clustering linkage method | `average` |
+
+## How Block Dedup Works
+
+Like file system deduplication — only unique data is stored, duplicates become pointers to the original. When an agent reads two contracts with the same legal boilerplate, ContextPilot keeps the first intact and replaces identical blocks in the second with back-references.
+
+**Contract A** (read first — kept intact):
+```
+ARTICLE 6 — CONFIDENTIALITY
+6.1 Each party agrees to hold the other party's Confidential
+Information in strict confidence and not to disclose such
+Confidential Information to any third party without the prior
+written consent of the disclosing party...
+
+ARTICLE 7 — DATA PROTECTION
+7.1 Each party shall comply with all applicable data protection
+laws including GDPR, CCPA, and PDPA...
+```
+
+**Contract B** has the exact same Articles 6 and 7. After dedup:
+```
+[... "6.1 Each party agrees to hold the other party's Confidential"
+  — identical to earlier read_file result, see above ...]
+
+[... "7.1 Each party shall comply with all applicable data protection"
+  — identical to earlier read_file result, see above ...]
+
+ARTICLE 17 — AI/ML SPECIFIC TERMS              ← unique, kept
+17.1 All models shall achieve minimum accuracy of 95%...
+```
+
+Across 4 contracts sharing ~70% boilerplate: **180 KB → 90 KB prefill (-50%)**.
+
+## Benchmark Results
+
+Tested on [claw-tasks](https://github.com/EfficientContext/ClawTasks) — 60 enterprise document analysis tasks, 22 documents (490 KB), ~250 turns.
+
+```
+                                              Avg        P50        P99
+Prompt Tokens
+  OpenClaw + SGLang                        45,771     44,570     92,785
+  OpenClaw + ContextPilot + SGLang         33,622     32,526     51,581
+  Δ                                        -26.5%     -27.0%     -44.4%
+
+Wall Time (s)
+  OpenClaw + SGLang                          26.1       25.2       68.8
+  OpenClaw + ContextPilot + SGLang           20.8       21.8       50.4
+  Δ                                        -20.4%     -13.3%     -26.6%
+
+Accuracy                               245/245    245/245
+```
+
+See [`docs/benchmarks/openclaw.md`](../benchmarks/openclaw.md) for details.
 
 ## Troubleshooting
 

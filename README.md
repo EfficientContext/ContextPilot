@@ -17,8 +17,8 @@
 
 ## News
 
-- [2026/03] [OpenClaw](https://openclaw.ai) integration with block-level dedup — [guide](docs/guides/openclaw.md) | [benchmark](docs/benchmarks/openclaw.md)
-- [2026/03] Cloud API support (OpenAI, Anthropic, MiniMax) with TTL-based [cache sync](docs/guides/cache_sync.md)
+- [2026/03] Supports [OpenClaw](https://openclaw.ai) with block-level dedup — [guide](docs/guides/openclaw.md) | [benchmark](docs/benchmarks/openclaw.md)
+- [2026/03] Supports cloud APIs (OpenAI, Anthropic, MiniMax) with TTL-based [cache sync](docs/guides/cache_sync.md)
 - [2026/03] ContextPilot now can run on **macOS / Apple Silicon** via [llama.cpp](docs/guides/mac_llama_cpp.md).
 - [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.

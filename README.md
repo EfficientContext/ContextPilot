@@ -17,6 +17,8 @@
 
 ## News
 
+- [2026/03] Supports [OpenClaw](https://openclaw.ai) — [guide](docs/guides/openclaw.md) | [benchmark](docs/benchmarks/openclaw.md)
+- [2026/03] Supports cloud APIs (OpenAI, Anthropic, MiniMax) — [cache sync](docs/guides/cache_sync.md)
 - [2026/03] ContextPilot now can run on **macOS / Apple Silicon** via [llama.cpp](docs/guides/mac_llama_cpp.md).
 - [2026/02] ContextPilot v0.3.2 released, supporting [PageIndex](https://github.com/VectifyAI/PageIndex) and [Mem0](https://github.com/mem0ai/mem0).
 - [2026/01] ContextPilot has been accepted to MLSys 2026 🎉! See you in Bellevue, WA, USA.
@@ -28,7 +30,7 @@ Long-context workloads (RAG, memory chat, tool-augmented agents) prepend many co
 ContextPilot sits between context assembly and inference to maximize prefix reuse and remove duplicates:
 
 1. **Higher throughput & cache hits** — boosts prefill throughput and prefix cache hit ratio via context reuse.  
-2. **Drop-in solutions** — works with [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), and backends like [vLLM](https://github.com/vllm-project/vllm) / [SGLang](https://github.com/sgl-project/sglang) / [llama.cpp](docs/guides/mac_llama_cpp.md).
+2. **Drop-in solutions** — supports [OpenClaw](https://openclaw.ai) ([guide](docs/guides/openclaw.md)), [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [llama.cpp](docs/guides/mac_llama_cpp.md), and cloud APIs (OpenAI, Anthropic).
 3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
 4. **Widely tested** — validated across diverse RAG and agentic workloads.
 
@@ -42,43 +44,39 @@ It maintains a **Context Index** of cached content, then per request applies **R
 
 ## Performance at a Glance
 
-ContextPilot is validated across three representative settings: single-node academic RAG, multi-node production MoE inference, and multi-turn memory-augmented chat. In every case it delivers significant speedups with comparable answer quality.
+**OpenClaw Agent on RTX 5090** — 60 enterprise document analysis tasks ([claw-tasks](https://github.com/EfficientContext/ClawTasks)), Qwen3-4B-Instruct via SGLang. [Full results →](docs/benchmarks/openclaw.md)
 
-**Qwen3-32B on 4×A6000** — single-node academic RAG with a 32B model on consumer GPUs.
-
-| Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
-|-----------|--------|--------------------|-----------|--------|
-| MultihopRAG | SGLang | 7,290 | 4.64% | 60.42 |
-|              | **SGLang + ContextPilot** | **14,214** | **33.97%** | **64.39** |
-| NarrativeQA | SGLang | 7,921 | 5.91% | 28.41 |
-|              | **SGLang + ContextPilot** | **12,117** | **20.82%** | **29.64** |
-
-**DeepSeek-R1-671B on 16×H20** — production-scale 671B MoE inference on a multi-node GPU cluster.
-
-| Benchmark | Method | Prefill TP (tok/s) | Cache Hit | F1 (%) |
-|-----------|--------|--------------------|-----------|--------|
-| MultihopRAG | SGLang | 9,636 | 5.12% | 64.15 |
-|            | **SGLang + ContextPilot** | **17,498** | **60.37%** | **64.68** |
-| NarrativeQA | SGLang | 8,687 | 6.08% | 40.20 |
-|            | **SGLang + ContextPilot** | **13,201** | **38.24%** | **41.08** |
+| Metric | OpenClaw + SGLang | + ContextPilot | Δ |
+|--------|-------------------|----------------|---|
+| Prompt tokens / request (avg) | 45,771 | 33,622 | **-26.5%** |
+| Prompt tokens / request (P99) | 92,785 | 51,581 | **-44.4%** |
+| Wall time (avg) | 26.1s | 20.8s | **-20.4%** |
+| Wall time (P99) | 68.8s | 50.4s | **-26.6%** |
+| Accuracy | 245/245 | 245/245 | ✓ |
 
 **Qwen3-4B on 1×A6000** — multi-turn memory chat with [Mem0](https://github.com/mem0ai/mem0) on the [LoCoMo](https://github.com/snap-research/locomo) benchmark.
 
 | Context Size | Method | TTFT (s) | LLM Judge |
 |--------------|--------|----------|-----------|
+| 5 (long context memory) | SGLang | 0.1051 | 0.418 |
+|            | **SGLang + ContextPilot** | **0.0548** | 0.414 |
 | 100 memories | SGLang | 0.1012 | 0.437 |
 |            | **SGLang + ContextPilot** | **0.0554** | 0.420 |
 
 >ContextPilot results in mem0 table are without context annotation — an optional feature that adds original importance ranking to reordered context blocks, which can further improve answer quality (see [Paper](https://arxiv.org/abs/2511.03475)).
 
-**Llama-3.2-1B on Apple M3 (MacBook Air, 16 GB)** — MultihopRAG on Apple Silicon with llama.cpp, no GPU server required.
+**Llama-3.2-1B on Apple Silicon** — MultihopRAG with llama.cpp, no GPU server required.
 
-| Method | Avg Latency (ms) |
-|--------|-----------------|
-| llama.cpp | 3,315 |
-| **llama.cpp + ContextPilot** | **1,378** |
+| Device | Method | Avg Latency (ms) |
+|--------|--------|-----------------|
+| M3 (MacBook Air, 16 GB) | llama.cpp | 3,315 |
+|  | **llama.cpp + ContextPilot** | **1,378** |
+| M5 (MacBook Air, 32 GB) | llama.cpp | 2,157 |
+|  | **llama.cpp + ContextPilot** | **911** |
 
 Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cache-reuse 256`, `--parallel 4`, context 32768 tokens. See the [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md).
+
+We also evaluated on academic RAG (Qwen3-32B, 4×A6000) and production MoE inference (DeepSeek-R1-671B, 16×H20) — see [RAG benchmarks](docs/benchmarks/rag.md) and [paper](https://arxiv.org/abs/2511.03475).
 
 ## Installation
 
@@ -86,9 +84,23 @@ Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cac
 
 ---
 
-### vLLM / SGLang
+### OpenClaw
 
-ContextPilot works with both CPU and GPU backends for building the context index. The `[gpu]` extra enables GPU-accelerated distance computation (via `cupy-cuda12x`) and is faster for large batches; without it, ContextPilot falls back to the CPU backend automatically.
+```bash
+pip install contextpilot
+
+# Start proxy (points to your LLM backend)
+python -m contextpilot.server.http_server \
+  --port 8765 --infer-api-url http://localhost:30000   # SGLang
+  # or: --infer-api-url https://api.anthropic.com      # Anthropic
+  # or: --infer-api-url https://api.openai.com         # OpenAI
+```
+
+Then set OpenClaw's base URL to `http://localhost:8765/v1`. See the [full OpenClaw integration guide](docs/guides/openclaw.md) for UI setup, config file examples, and self-hosted model instructions.
+
+---
+
+### vLLM / SGLang
 
 **From PyPI** — the vLLM and SGLang hooks are installed automatically:
 ```bash
@@ -134,6 +146,19 @@ More [detailed installation instructions](https://efficientcontext.github.io/con
 Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](https://efficientcontext.github.io/contextpilot-docs/getting_started/docker).
 
 ## Getting Started
+
+### Quick Start with OpenClaw
+
+```bash
+# Ask OpenClaw to analyze vendor contracts (ContextPilot deduplicates shared content automatically)
+openclaw agent --message "Read contracts/contract_alpha_cloud.txt and summarize the liability terms."
+openclaw agent --message "Read contracts/contract_beta_ai.txt and compare its liability with Alpha."
+openclaw agent --message "Read contracts/contract_gamma_security.txt. Rank all three by liability exposure."
+```
+
+When the agent reads multiple documents sharing content (contracts from the same template, proposals with shared methodology), ContextPilot automatically deduplicates identical blocks — reducing prefill tokens by ~27% with zero accuracy loss. See the [integration guide](docs/guides/openclaw.md) and [benchmark](docs/benchmarks/openclaw.md).
+
+---
 
 ### Quick Start with Context Ordering
 

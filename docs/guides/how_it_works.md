@@ -29,7 +29,7 @@ When an agent reads multiple documents that share content, the conversation hist
 
 If a tool result is byte-identical to an earlier one in the same conversation, replace it with a reference. This is handled by the intercept pipeline's `single_doc_hashes` for cross-turn dedup, and the conversation tracker's `deduplicate()` for the `/reorder` API.
 
-### Content-level dedup
+### ContextBlock-level dedup
 
 Like file system deduplication — when two documents share content blocks (e.g., contracts from the same template), only the first occurrence is kept. Subsequent identical blocks are replaced with pointers.
 

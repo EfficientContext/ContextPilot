@@ -86,7 +86,7 @@ If req-001 and req-002 share prefix [A, B], evicting req-001 doesn't affect req-
 
 ## Dedup: Independent of Backend
 
-Content-level dedup operates on the message content before forwarding. It doesn't depend on cache state — it simply finds identical blocks across tool results and replaces duplicates with pointers. Works the same whether the backend is SGLang, OpenAI, or Anthropic.
+ContextBlock-level dedup operates on the message content before forwarding. It doesn't depend on cache state — it simply finds identical blocks across tool results and replaces duplicates with pointers. Works the same whether the backend is SGLang, OpenAI, or Anthropic.
 
 ```
 messages with tool results

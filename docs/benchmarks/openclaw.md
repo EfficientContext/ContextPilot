@@ -51,4 +51,4 @@ python scripts/analyze.py results/results.jsonl
 
 ## Raw Data
 
-To generate raw results, run the benchmark using [claw-tasks](https://github.com/EfficientContext/ClawTasks). Results are saved to `results/results.jsonl` (490 data points: 60 scenarios × 2 arms × ~4 turns).
+To generate raw results, run the benchmark using [claw-tasks](https://github.com/EfficientContext/ClawTasks). Results are saved to `results/results.jsonl` (490 data points: 60 scenarios, each run with and without ContextPilot, ~4 turns each).

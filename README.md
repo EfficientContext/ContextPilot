@@ -163,16 +163,14 @@ Docker images are also available for both all-in-one and standalone deployment. 
 
 ### Quick Start with OpenClaw
 
-```
-User: Read contracts/contract_alpha_cloud.txt and summarize the liability terms.
-Agent: [reads 45KB contract] Article 9 limits liability to 12 months of fees...
-
-User: Read contracts/contract_beta_ai.txt and compare its liability with Alpha.
-Agent: [reads 45KB contract — but ContextPilot deduplicates 70% shared template]
-       Articles 9-10 are identical. Beta adds AI-specific indemnification for...
+```bash
+# Ask OpenClaw to analyze vendor contracts (ContextPilot deduplicates shared content automatically)
+openclaw agent --message "Read contracts/contract_alpha_cloud.txt and summarize the liability terms."
+openclaw agent --message "Read contracts/contract_beta_ai.txt and compare its liability with Alpha."
+openclaw agent --message "Read contracts/contract_gamma_security.txt. Rank all three by liability exposure."
 ```
 
-ContextPilot sits between OpenClaw and the LLM as a proxy. When the agent reads multiple documents sharing content (contracts, proposals, policies), identical blocks are automatically replaced with pointers — reducing prefill tokens by ~27% with zero accuracy loss. See the [integration guide](docs/guides/openclaw.md) and [benchmark](docs/benchmarks/openclaw.md).
+When the agent reads multiple documents sharing content (contracts from the same template, proposals with shared methodology), ContextPilot automatically deduplicates identical blocks — reducing prefill tokens by ~27% with zero accuracy loss. See the [integration guide](docs/guides/openclaw.md) and [benchmark](docs/benchmarks/openclaw.md).
 
 ---
 

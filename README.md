@@ -161,6 +161,24 @@ Docker images are also available for both all-in-one and standalone deployment. 
 
 ## Getting Started
 
+### Quick Start with OpenClaw
+
+No code changes needed — just start the proxy and point OpenClaw to it:
+
+```bash
+# Terminal 1: Start ContextPilot proxy
+pip install contextpilot
+python -m contextpilot.server.http_server \
+  --port 8765 --infer-api-url http://localhost:30000
+
+# Terminal 2: Set OpenClaw's base URL to the proxy
+# In ~/.openclaw/openclaw.json → models.providers.sglang.baseUrl = "http://localhost:8765/v1"
+```
+
+ContextPilot automatically deduplicates shared content across documents the agent reads — no changes to OpenClaw or the LLM backend. See the [full integration guide](docs/guides/openclaw.md).
+
+---
+
 ### Quick Start with Context Ordering
 
 Add **one call** (`cp_instance.optimize()`) before inference to rearrange context blocks so that shared content aligns into a common prefix, enabling cache reuse. An importance ranking in the prompt preserves accuracy.

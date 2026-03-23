@@ -247,7 +247,7 @@ For details on how reorder and dedup work, see [How It Works](how_it_works.md).
 ## Pipeline Overview
 
 <div align="center">
-<img src="../images/Openclaw+ContextPilot.png" alt="OpenClaw + ContextPilot Pipeline" width="800"/>
+<img src="../images/openclaw-cp.png" alt="OpenClaw + ContextPilot Pipeline" width="800"/>
 </div>
 
 ## Benchmark Results

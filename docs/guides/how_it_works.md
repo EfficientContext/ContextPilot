@@ -1,6 +1,6 @@
 # How It Works
 
-ContextPilot optimizes LLM inference through two mechanisms: **Reorder** and **Dedup**. Both operate on the request before it reaches the inference engine.
+ContextPilot optimizes LLM inference through two mechanisms: **Reorder** and **Deduplication**. Both operate on the request before it reaches the inference engine.
 
 ## Reorder
 
@@ -21,15 +21,15 @@ ContextPilot builds a Context Index (hierarchical clustering tree) that groups s
 
 See [cache_sync.md](cache_sync.md) for how the Context Index stays in sync with the engine's cache.
 
-## Dedup
+## Deduplication
 
 When an agent reads multiple documents that share content, the conversation history accumulates redundant text. ContextPilot removes this redundancy through two layers:
 
-### ContextBlock-level dedup
+### ContextBlock-level deduplication
 
-If a tool result is byte-identical to an earlier one in the same conversation, replace it with a reference. This is handled by the intercept pipeline's `single_doc_hashes` for cross-turn dedup, and the conversation tracker's `deduplicate()` for the `/reorder` API.
+If a tool result is byte-identical to an earlier one in the same conversation, replace it with a reference. This is handled by the intercept pipeline's `single_doc_hashes` for cross-turn deduplication, and the conversation tracker's `deduplicate()` for the `/reorder` API.
 
-### Content-level dedup
+### Content-level deduplication
 
 Like file system deduplication — when two documents share content blocks (e.g., contracts from the same template), only the first occurrence is kept. Subsequent identical blocks are replaced with pointers.
 
@@ -38,10 +38,10 @@ Like file system deduplication — when two documents share content blocks (e.g.
 1. Split each tool result into blocks using content-defined boundaries (line hash mod M)
 2. Hash each block (SHA-256)
 3. If a block matches one from a different tool result, replace it with a pointer
-4. Never dedup within the same tool result
+4. Never deduplicate within the same tool result
 
 ```
-Contract A (kept intact):           Contract B (after dedup):
+Contract A (kept intact):           Contract B (after deduplication):
 ┌────────────────────────┐          ┌────────────────────────┐
 │ Art. 1 — Definitions   │          │ Art. 1 — (unique part) │
 │ Art. 2 — Scope         │          │ [... "Art. 2 — Scope"  │
@@ -56,7 +56,7 @@ Contract A (kept intact):           Contract B (after dedup):
 
 Each pointer quotes the first line of the replaced block so the LLM knows what content it refers to. The LLM resolves pointers via attention to the original content above.
 
-**Why content-defined chunking?** Fixed-size blocks have an alignment problem — if content shifts by a few lines, all block boundaries change and hashes stop matching. Content-defined boundaries (determined by `hash(line) % M`) adapt to the content, so the same text produces the same blocks regardless of its position in the document. This is the same principle used in file system dedup (Rabin fingerprint).
+**Why content-defined chunking?** Fixed-size blocks have an alignment problem — if content shifts by a few lines, all block boundaries change and hashes stop matching. Content-defined boundaries (determined by `hash(line) % M`) adapt to the content, so the same text produces the same blocks regardless of its position in the document. This is the same principle used in file system deduplication (Rabin fingerprint).
 
 ### Tuning block size
 
@@ -72,7 +72,7 @@ python -m contextpilot.server.http_server --chunk-modulus 13   # default
 | 11-15 | ~11-15 lines | Template documents with concentrated differences (contracts, proposals) — **default** |
 | 20-30 | ~20-30 lines | Documents that are nearly identical (only a few lines differ) |
 
-Smaller M = more blocks = more fine-grained dedup, but each pointer has ~80 chars of overhead. Larger M = fewer blocks = less overhead, but may miss partial overlaps if differences are scattered.
+Smaller M = more blocks = more fine-grained deduplication, but each pointer has ~80 chars of overhead. Larger M = fewer blocks = less overhead, but may miss partial overlaps if differences are scattered.
 
 ### API
 
@@ -85,4 +85,4 @@ result = dedup_chat_completions(body, chunk_modulus=13)
 # result.chars_saved — characters removed
 ```
 
-The dedup module (`contextpilot/dedup/`) is independent of the server — it operates on message content with no dependency on the Context Index or cache state.
+The deduplication module (`contextpilot/dedup/`) is independent of the server — it operates on message content with no dependency on the Context Index or cache state.

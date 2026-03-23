@@ -13,10 +13,10 @@ ContextPilot acts as a transparent HTTP proxy. OpenClaw sends requests to the pr
 OpenClaw's search and memory retrieval results appear as **tool_result messages** in the conversation history, not in the system prompt. When multiple search results are returned, their ordering affects the LLM's attention and response quality.
 
 ContextPilot:
-1. **Align prefix cache**: Replaces old messages with cached (deduped) versions so the inference engine's prefix cache sees identical tokens across turns
+1. **Reorder**: Reorders documents within tool results to maximize prefix cache hits (multi-doc tool results)
 2. **Dedup**: File-level and block-level deduplication across tool results — identical content replaced with back-references, reducing prefill tokens
-3. **Reorder**: Clusters semantically related documents and reorders to maximize prefix cache hits (multi-doc tool results only)
-4. **Cache sync**: Tracks inference engine cache state (see [Cache Synchronization](cache_sync.md))
+
+Results from reorder and dedup are cached and reapplied on subsequent turns to keep the prefix consistent across the conversation (prefix cache alignment). See [Cache Synchronization](cache_sync.md) for how ContextPilot stays in sync with the inference engine's cache.
 
 ## Setup
 

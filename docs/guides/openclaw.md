@@ -244,6 +244,12 @@ Set via headers in the OpenClaw provider config, or per-request.
 
 For details on how reorder and dedup work, see [How It Works](how_it_works.md).
 
+## Pipeline Overview
+
+<div align="center">
+<img src="../images/Openclaw+ContextPilot.png" alt="OpenClaw + ContextPilot Pipeline" width="800"/>
+</div>
+
 ## Benchmark Results
 
 Tested on [claw-tasks](https://github.com/EfficientContext/ClawTasks) — 60 enterprise document analysis tasks, 22 documents (490 KB), ~250 turns.

@@ -4,8 +4,8 @@ Evaluation of ContextPilot on [OpenClaw](https://openclaw.ai) agent workloads us
 
 ## Setup
 
-| | |
-|---|---|
+| Setting | Value |
+|---------|-------|
 | Model | Qwen3-4B-Instruct-2507 |
 | Engine | SGLang 0.5.9 |
 | GPU | single RTX 5090 |
@@ -51,4 +51,4 @@ python scripts/analyze.py results/results.jsonl
 
 ## Raw Data
 
-[`openclaw_results.jsonl`](openclaw_results.jsonl) — 490 data points (60 scenarios × 2 arms × ~4 turns).
+To generate raw results, run the benchmark using [claw-tasks](https://github.com/EfficientContext/ClawTasks). Results are saved to `results/results.jsonl` (490 data points: 60 scenarios × 2 arms × ~4 turns).

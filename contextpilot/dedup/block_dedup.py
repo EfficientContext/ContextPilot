@@ -48,7 +48,9 @@ def _build_tool_name_map_responses(items: list) -> Dict[str, str]:
     return mapping
 
 
-def _content_defined_chunking(text: str) -> List[str]:
+def _content_defined_chunking(
+    text: str, chunk_modulus: int = CHUNK_MODULUS
+) -> List[str]:
     lines = text.split("\n")
     if len(lines) <= CHUNK_MIN_LINES:
         return [text]
@@ -60,7 +62,7 @@ def _content_defined_chunking(text: str) -> List[str]:
         current.append(line)
         line_hash = hash(line.strip()) & 0xFFFFFFFF
         is_boundary = (
-            line_hash % CHUNK_MODULUS == 0 and len(current) >= CHUNK_MIN_LINES
+            line_hash % chunk_modulus == 0 and len(current) >= CHUNK_MIN_LINES
         ) or len(current) >= CHUNK_MAX_LINES
         if is_boundary:
             blocks.append("\n".join(current))
@@ -84,6 +86,7 @@ def dedup_chat_completions(
     body: dict,
     min_block_chars: int = MIN_BLOCK_CHARS,
     min_content_chars: int = MIN_CONTENT_CHARS,
+    chunk_modulus: int = CHUNK_MODULUS,
 ) -> DedupResult:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -104,7 +107,7 @@ def dedup_chat_completions(
         tc_id = msg.get("tool_call_id", "")
         fn_name = tool_names.get(tc_id, msg.get("name", "")) or "tool"
 
-        blocks = _content_defined_chunking(content)
+        blocks = _content_defined_chunking(content, chunk_modulus)
         if len(blocks) < 2:
             for b in blocks:
                 if len(b.strip()) >= min_block_chars:
@@ -167,6 +170,7 @@ def dedup_responses_api(
     body: dict,
     min_block_chars: int = MIN_BLOCK_CHARS,
     min_content_chars: int = MIN_CONTENT_CHARS,
+    chunk_modulus: int = CHUNK_MODULUS,
 ) -> DedupResult:
     input_items = body.get("input")
     if not isinstance(input_items, list) or not input_items:
@@ -187,7 +191,7 @@ def dedup_responses_api(
         call_id = item.get("call_id", "")
         fn_name = fn_names.get(call_id, call_id) or "tool"
 
-        blocks = _content_defined_chunking(output)
+        blocks = _content_defined_chunking(output, chunk_modulus)
         if len(blocks) < 2:
             for b in blocks:
                 if len(b.strip()) >= min_block_chars:

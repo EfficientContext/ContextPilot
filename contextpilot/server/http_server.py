@@ -85,6 +85,7 @@ _stateless_mode: bool = (
 )
 # Cloud proxy mode: forward to cloud LLM API with prompt cache optimization
 _cloud_mode: bool = False
+_chunk_modulus: int = 13
 _cloud_adapter: Optional[CloudProviderAdapter] = None
 _cloud_api_key: Optional[str] = None
 _ttl_policy: Optional[TTLEvictionPolicy] = None
@@ -1641,9 +1642,9 @@ async def _intercept_and_forward(request: Request, api_format: str):
             _dedup_result = DedupResult()
             try:
                 if api_format == _OPENAI_CHAT:
-                    _dedup_result = dedup_chat_completions(body)
+                    _dedup_result = dedup_chat_completions(body, chunk_modulus=_chunk_modulus)
                 elif "input" in body and isinstance(body.get("input"), list):
-                    _dedup_result = dedup_responses_api(body)
+                    _dedup_result = dedup_responses_api(body, chunk_modulus=_chunk_modulus)
 
                 if _dedup_result.chars_saved > 0:
                     _chars_before_slim += _dedup_result.chars_before
@@ -1978,9 +1979,9 @@ async def proxy_engine(path: str, request: Request):
                             f"{len(fco_items)} function_call_output:\n"
                             + "\n".join(fco_summary)
                         )
-                    dedup_result = dedup_responses_api(body)
+                    dedup_result = dedup_responses_api(body, chunk_modulus=_chunk_modulus)
                 elif "messages" in body and isinstance(body.get("messages"), list):
-                    dedup_result = dedup_chat_completions(body)
+                    dedup_result = dedup_chat_completions(body, chunk_modulus=_chunk_modulus)
                 if dedup_result.chars_saved > 0:
                     logger.info(
                         f"Passthrough dedup /v1/{path}: "
@@ -2117,6 +2118,15 @@ Cloud proxy mode:
         default=False,
         help="Use extended cache (Anthropic: 1hr, OpenAI: 24hr, MiniMax: N/A)",
     )
+    parser.add_argument(
+        "--chunk-modulus",
+        type=int,
+        default=13,
+        help="Content-level dedup block size (avg lines per block). "
+        "Smaller = more fine-grained dedup but more pointer overhead. "
+        "Larger = fewer blocks but may miss partial overlaps. "
+        "Default 13. Range 7-30 recommended.",
+    )
 
     args = parser.parse_args()
 
@@ -2139,6 +2149,7 @@ Cloud proxy mode:
     _max_tokens = args.max_tokens
     _infer_api_url = args.infer_api_url.rstrip("/")
     _stateless_mode = args.stateless
+    _chunk_modulus = args.chunk_modulus
 
     # Initialize tokenizer for chat template
     if args.model and AutoTokenizer is not None:

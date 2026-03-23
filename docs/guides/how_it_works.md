@@ -58,12 +58,28 @@ Each pointer quotes the first line of the replaced block so the LLM knows what c
 
 **Why content-defined chunking?** Fixed-size blocks have an alignment problem — if content shifts by a few lines, all block boundaries change and hashes stop matching. Content-defined boundaries (determined by `hash(line) % M`) adapt to the content, so the same text produces the same blocks regardless of its position in the document. This is the same principle used in file system dedup (Rabin fingerprint).
 
+### Tuning block size
+
+The `--chunk-modulus M` flag controls the average block size (default: 13 lines per block).
+
+```bash
+python -m contextpilot.server.http_server --chunk-modulus 13   # default
+```
+
+| M | Avg block size | Best for |
+|---|---------------|----------|
+| 7-10 | ~7-10 lines | Documents with scattered differences (e.g., config files, code with inline changes) |
+| 11-15 | ~11-15 lines | Template documents with concentrated differences (contracts, proposals) — **default** |
+| 20-30 | ~20-30 lines | Documents that are nearly identical (only a few lines differ) |
+
+Smaller M = more blocks = more fine-grained dedup, but each pointer has ~80 chars of overhead. Larger M = fewer blocks = less overhead, but may miss partial overlaps if differences are scattered.
+
 ### API
 
 ```python
 from contextpilot.dedup import dedup_chat_completions, DedupResult
 
-result = dedup_chat_completions(body)
+result = dedup_chat_completions(body, chunk_modulus=13)
 # result.blocks_deduped — number of blocks replaced with pointers
 # result.blocks_total — total blocks processed  
 # result.chars_saved — characters removed

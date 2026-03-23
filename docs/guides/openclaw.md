@@ -2,15 +2,11 @@
 
 ## Architecture
 
-```
-┌──────────────┐      ┌───────────────────┐      ┌─────────────┐
-│  OpenClaw UI │─────▶│ ContextPilot Proxy│─────▶│ LLM Backend │
-│  (browser)   │◀─────│   (localhost:8765) │◀─────│(Anthropic/  │
-└──────────────┘      └───────────────────┘      │ OpenAI)     │
-                                                  └─────────────┘
-```
+<div align="center">
+<img src="../images/openclaw-cp.png" alt="OpenClaw + ContextPilot Pipeline" width="800"/>
+</div>
 
-ContextPilot acts as a transparent HTTP proxy. OpenClaw sends requests to the proxy instead of directly to the LLM API. The proxy extracts documents, reorders them, and forwards to the real backend.
+ContextPilot acts as a transparent HTTP proxy. OpenClaw sends requests to the proxy instead of directly to the LLM API. The proxy deduplicates shared content across tool results, reorders documents, and forwards to the backend.
 
 ## Why This Matters for OpenClaw
 
@@ -243,12 +239,6 @@ Set via headers in the OpenClaw provider config, or per-request.
 | `X-ContextPilot-Linkage` | Clustering linkage method | `average` |
 
 For details on how reorder and dedup work, see [How It Works](how_it_works.md).
-
-## Pipeline Overview
-
-<div align="center">
-<img src="../images/openclaw-cp.png" alt="OpenClaw + ContextPilot Pipeline" width="800"/>
-</div>
 
 ## Benchmark Results
 

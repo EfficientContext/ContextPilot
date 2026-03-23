@@ -60,6 +60,8 @@ Also validated on multi-turn memory chat and Apple Silicon (RAG results: [docs/b
 
 | Context Size | Method | TTFT (s) | LLM Judge |
 |--------------|--------|----------|-----------|
+| 5 (long context memory) | SGLang | 0.1051 | 0.418 |
+|            | **SGLang + ContextPilot** | **0.0548** | 0.414 |
 | 100 memories | SGLang | 0.1012 | 0.437 |
 |            | **SGLang + ContextPilot** | **0.0554** | 0.420 |
 

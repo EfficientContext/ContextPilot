@@ -25,7 +25,7 @@ See [cache_sync.md](cache_sync.md) for how the Context Index stays in sync with 
 
 When an agent reads multiple documents that share content, the conversation history accumulates redundant text. ContextPilot removes this redundancy through two layers:
 
-### Tool-level dedup
+### Document-level dedup
 
 If a tool result is byte-identical to an earlier one in the same conversation, replace it with a reference. This is handled by the intercept pipeline's `single_doc_hashes` for cross-turn dedup, and the conversation tracker's `deduplicate()` for the `/reorder` API.
 

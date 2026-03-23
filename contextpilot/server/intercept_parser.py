@@ -13,6 +13,7 @@ import json
 import re
 import copy
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
 
@@ -973,9 +974,6 @@ def replace_single_doc_anthropic(
 # ── Format handler abstraction ─────────────────────────────────────────────
 # Strategy pattern: encapsulates all format-specific operations so the
 # intercept logic in http_server.py can be completely format-agnostic.
-
-
-from abc import ABC, abstractmethod
 
 
 class FormatHandler(ABC):

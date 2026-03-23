@@ -54,8 +54,6 @@ It maintains a **Context Index** of cached content, then per request applies **R
 | Wall time (P99) | 68.8s | 50.4s | **-26.6%** |
 | Accuracy | 245/245 | 245/245 | ✓ |
 
-Also validated on multi-turn memory chat and Apple Silicon (RAG results: [docs/benchmarks/rag.md](docs/benchmarks/rag.md) | [paper](https://arxiv.org/abs/2511.03475)):
-
 **Qwen3-4B on 1×A6000** — multi-turn memory chat with [Mem0](https://github.com/mem0ai/mem0) on the [LoCoMo](https://github.com/snap-research/locomo) benchmark.
 
 | Context Size | Method | TTFT (s) | LLM Judge |
@@ -75,6 +73,8 @@ Also validated on multi-turn memory chat and Apple Silicon (RAG results: [docs/b
 | **llama.cpp + ContextPilot** | **1,378** |
 
 Settings: `Llama-3.2-1B-Instruct-Q4_K_M.gguf`, Metal offload (`-ngl 99`), `--cache-reuse 256`, `--parallel 4`, context 32768 tokens. See the [Mac + llama.cpp guide](docs/guides/mac_llama_cpp.md).
+
+We also evaluated on academic RAG (Qwen3-32B, 4×A6000) and production MoE inference (DeepSeek-R1-671B, 16×H20) — see [RAG benchmarks](docs/benchmarks/rag.md) and [paper](https://arxiv.org/abs/2511.03475).
 
 ## Installation
 

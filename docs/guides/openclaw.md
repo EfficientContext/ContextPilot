@@ -14,7 +14,7 @@ OpenClaw's search and memory retrieval results appear as **tool_result messages*
 
 ContextPilot:
 1. **Reorder**: Reorders documents within tool results to maximize prefix cache hits (multi-doc tool results)
-2. **Dedup**: File-level and block-level deduplication across tool results — identical content replaced with back-references, reducing prefill tokens
+2. **Dedup**: Tool-level and content-level deduplication across tool results — identical content replaced with back-references, reducing prefill tokens
 
 Results from reorder and dedup are cached and reapplied on subsequent turns to keep the prefix consistent across the conversation (prefix cache alignment). See [Cache Synchronization](cache_sync.md) for how ContextPilot stays in sync with the inference engine's cache.
 

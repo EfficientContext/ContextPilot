@@ -78,7 +78,10 @@ class FakeSession:
 
     def __init__(self, response=None):
         self._response = response or FakeResponse(
-            {"choices": [{"message": {"content": "Hello"}}], "usage": {"total_tokens": 10}}
+            {
+                "choices": [{"message": {"content": "Hello"}}],
+                "usage": {"total_tokens": 10},
+            }
         )
 
     def post(self, url, json=None, headers=None):
@@ -87,8 +90,9 @@ class FakeSession:
         self._last_headers = headers
         return self._response
 
-    def get(self, url):
+    def get(self, url, headers=None):
         self._last_url = url
+        self._last_headers = headers
         return self._response
 
 
@@ -320,7 +324,7 @@ class TestAnthropicIntercept:
 class TestStreaming:
     def test_streaming_passthrough(self, mock_session):
         """Streaming responses are passed through."""
-        chunks = [b"data: {\"id\":\"1\"}\n\n", b"data: [DONE]\n\n"]
+        chunks = [b'data: {"id":"1"}\n\n', b"data: [DONE]\n\n"]
         stream_resp = FakeStreamResponse(chunks)
         session = FakeSession(stream_resp)
 
@@ -434,17 +438,28 @@ class TestToolResultIntercept:
             "messages": [
                 {"role": "system", "content": "You are a helper."},
                 {"role": "user", "content": "Search for X"},
-                {"role": "assistant", "content": None,
-                 "tool_calls": [{"id": "tc1", "type": "function",
-                                 "function": {"name": "search", "arguments": "{}"}}]},
-                {"role": "tool", "tool_call_id": "tc1",
-                 "content": (
-                     f"<documents>\n"
-                     f"<document>{_AUTH_DOC}</document>\n"
-                     f"<document>{_DB_DOC}</document>\n"
-                     f"<document>{_OAUTH_DOC}</document>\n"
-                     f"</documents>"
-                 )},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "tc1",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "tc1",
+                    "content": (
+                        f"<documents>\n"
+                        f"<document>{_AUTH_DOC}</document>\n"
+                        f"<document>{_DB_DOC}</document>\n"
+                        f"<document>{_OAUTH_DOC}</document>\n"
+                        f"</documents>"
+                    ),
+                },
                 {"role": "user", "content": "Now summarize."},
             ],
         }
@@ -461,20 +476,33 @@ class TestToolResultIntercept:
             "system": "You are a helper.",
             "messages": [
                 {"role": "user", "content": "Search for X"},
-                {"role": "assistant", "content": [
-                    {"type": "tool_use", "id": "tu1", "name": "search",
-                     "input": {"query": "X"}},
-                ]},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "tu1",
-                     "content": (
-                         f"<documents>\n"
-                         f"<document>{_AUTH_DOC}</document>\n"
-                         f"<document>{_DB_DOC}</document>\n"
-                         f"<document>{_OAUTH_DOC}</document>\n"
-                         f"</documents>"
-                     )},
-                ]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu1",
+                            "name": "search",
+                            "input": {"query": "X"},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu1",
+                            "content": (
+                                f"<documents>\n"
+                                f"<document>{_AUTH_DOC}</document>\n"
+                                f"<document>{_DB_DOC}</document>\n"
+                                f"<document>{_OAUTH_DOC}</document>\n"
+                                f"</documents>"
+                            ),
+                        },
+                    ],
+                },
                 {"role": "user", "content": "Now summarize."},
             ],
         }
@@ -487,6 +515,7 @@ class TestToolResultIntercept:
     def test_openai_json_tool_result_forwarded(self, client, mock_session):
         """OpenClaw-style JSON tool results are forwarded correctly."""
         import json as _json
+
         results = [
             {"path": "auth.md", "snippet": _AUTH_DOC, "score": 0.9},
             {"path": "db.md", "snippet": _DB_DOC, "score": 0.8},
@@ -497,11 +526,24 @@ class TestToolResultIntercept:
             "messages": [
                 {"role": "system", "content": "You are a helper."},
                 {"role": "user", "content": "Search for auth"},
-                {"role": "assistant", "content": None,
-                 "tool_calls": [{"id": "tc1", "type": "function",
-                                 "function": {"name": "memory_search", "arguments": "{}"}}]},
-                {"role": "tool", "tool_call_id": "tc1",
-                 "content": _json.dumps({"results": results, "citations": "auto"}, indent=2)},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "tc1",
+                            "type": "function",
+                            "function": {"name": "memory_search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "tc1",
+                    "content": _json.dumps(
+                        {"results": results, "citations": "auto"}, indent=2
+                    ),
+                },
                 {"role": "user", "content": "Now summarize."},
             ],
         }
@@ -516,6 +558,7 @@ class TestToolResultIntercept:
     def test_anthropic_json_tool_result_forwarded(self, client, mock_session):
         """Anthropic-format JSON tool results are forwarded correctly."""
         import json as _json
+
         results = [
             {"title": "Auth guide", "url": "https://a.com", "description": _AUTH_DOC},
             {"title": "DB guide", "url": "https://b.com", "description": _DB_DOC},
@@ -526,14 +569,29 @@ class TestToolResultIntercept:
             "system": "You are a helper.",
             "messages": [
                 {"role": "user", "content": "Search the web"},
-                {"role": "assistant", "content": [
-                    {"type": "tool_use", "id": "tu1", "name": "web_search",
-                     "input": {"query": "auth"}},
-                ]},
-                {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "tu1",
-                     "content": _json.dumps({"results": results, "provider": "brave"}, indent=2)},
-                ]},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu1",
+                            "name": "web_search",
+                            "input": {"query": "auth"},
+                        },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu1",
+                            "content": _json.dumps(
+                                {"results": results, "provider": "brave"}, indent=2
+                            ),
+                        },
+                    ],
+                },
                 {"role": "user", "content": "Summarize."},
             ],
         }
@@ -619,9 +677,17 @@ class TestConversationAwareIntercept:
         if tool_results:
             for i, content in enumerate(tool_results):
                 messages.append(
-                    {"role": "assistant", "content": None,
-                     "tool_calls": [{"id": f"tc{i}", "type": "function",
-                                     "function": {"name": "search", "arguments": "{}"}}]}
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": f"tc{i}",
+                                "type": "function",
+                                "function": {"name": "search", "arguments": "{}"},
+                            }
+                        ],
+                    }
                 )
                 messages.append(
                     {"role": "tool", "tool_call_id": f"tc{i}", "content": content}
@@ -630,7 +696,6 @@ class TestConversationAwareIntercept:
         return {"model": "gpt-4", "messages": messages}
 
     def test_old_tool_result_skipped_on_second_turn(self, client, mock_session):
-        """Same tool result in a second request is skipped (already processed)."""
         tool_content = (
             f"<documents>\n"
             f"<document>{_AUTH_DOC}</document>\n"
@@ -648,11 +713,11 @@ class TestConversationAwareIntercept:
         resp2 = client.post("/v1/chat/completions", json=body1)
         assert resp2.status_code == 200
         meta2 = _cp_meta(resp2)
-        # Tool result was skipped (already processed).
-        assert meta2.get("tool_results_skipped", 0) >= 1
+        assert meta2 == {}
+        forwarded = mock_session._last_json
+        assert forwarded["messages"][3]["content"] == tool_content
 
     def test_new_tool_result_processed_old_skipped(self, client, mock_session):
-        """Second turn with a NEW tool result: old one skipped, new one processed."""
         system = "You are a helpful assistant."
         tool1 = (
             f"<documents>\n"
@@ -679,8 +744,12 @@ class TestConversationAwareIntercept:
         resp2 = client.post("/v1/chat/completions", json=body2)
         assert resp2.status_code == 200
         meta2 = _cp_meta(resp2)
-        # Old tool result skipped.
-        assert meta2.get("tool_results_skipped", 0) == 1
+        assert meta2 == {}
+        forwarded = mock_session._last_json
+        tool2_forwarded = forwarded["messages"][6]["content"]
+        assert tool2_forwarded.count("<document>") == 3
+        assert _DOC_CACHE in tool2_forwarded
+        assert _DOC_DEPLOY in tool2_forwarded
 
     def test_cross_tool_result_dedup(self, client, mock_session):
         """Documents seen in a previous tool result get deduped in new ones."""
@@ -712,7 +781,9 @@ class TestConversationAwareIntercept:
         assert resp2.status_code == 200
         meta2 = _cp_meta(resp2)
         assert meta2.get("intercepted") is True
-        assert meta2.get("documents_deduplicated", 0) == 2  # AUTH + OAUTH deduped in tool2
+        assert (
+            meta2.get("documents_deduplicated", 0) == 2
+        )  # AUTH + OAUTH deduped in tool2
 
     def test_system_prompt_processed_once(self, client, mock_session):
         """System prompt docs are only processed on the first turn.
@@ -748,28 +819,44 @@ class TestConversationAwareIntercept:
             f"<document>{_OAUTH_DOC}</document>\n"
             f"</documents>"
         )
+        tool_overlap = (
+            f"<documents>\n"
+            f"<document>{_AUTH_DOC}</document>\n"
+            f"<document>{_OAUTH_DOC}</document>\n"
+            f"<document>{_DOC_CACHE}</document>\n"
+            f"<document>{_DOC_DEPLOY}</document>\n"
+            f"</documents>"
+        )
         # Session 1: long conversation with tool result.
         body_long = self._make_body(system, [tool_content])
         resp1 = client.post("/v1/chat/completions", json=body_long)
         assert resp1.status_code == 200
 
-        # Send same body again — tool result is skipped (already processed).
-        resp2 = client.post("/v1/chat/completions", json=body_long)
+        body_overlap = self._make_body(system, [tool_content, tool_overlap])
+        resp2 = client.post("/v1/chat/completions", json=body_overlap)
         meta2 = _cp_meta(resp2)
-        assert meta2.get("tool_results_skipped", 0) >= 1
+        assert meta2.get("documents_deduplicated", 0) == 2
 
         # Session 2: shorter messages → triggers state reset.
-        body_short = {"model": "gpt-4", "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": "Fresh session"},
-        ]}
+        body_short = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "Fresh session"},
+            ],
+        }
         client.post("/v1/chat/completions", json=body_short)
 
-        # Now send tool content again — should NOT be skipped (state was reset).
-        resp3 = client.post("/v1/chat/completions", json=body_long)
+        resp3 = client.post(
+            "/v1/chat/completions", json=self._make_body(system, [tool_overlap])
+        )
         assert resp3.status_code == 200
         meta3 = _cp_meta(resp3)
-        assert meta3.get("tool_results_skipped", 0) == 0
+        assert meta3.get("documents_deduplicated", 0) == 0
+        forwarded = mock_session._last_json
+        tool3_content = forwarded["messages"][3]["content"]
+        assert _AUTH_DOC in tool3_content
+        assert _OAUTH_DOC in tool3_content
 
     def test_json_tool_result_dedup(self, client, mock_session):
         """JSON results format also gets cross-turn dedup.
@@ -778,6 +865,7 @@ class TestConversationAwareIntercept:
         entries must be byte-identical to be considered duplicates.
         """
         import json as _json
+
         system = "You are a helper."
         # Shared entry — identical dict so serialised form matches.
         auth_entry = {"path": "auth.md", "snippet": _AUTH_DOC, "score": 0.9}
@@ -805,8 +893,12 @@ class TestConversationAwareIntercept:
         assert resp2.status_code == 200
         meta2 = _cp_meta(resp2)
         assert meta2.get("intercepted") is True
-        assert meta2.get("documents_deduplicated", 0) == 1  # auth entry deduped in tool2
-        assert meta2.get("tool_results_skipped", 0) == 1  # tool1 skipped
+        assert (
+            meta2.get("documents_deduplicated", 0) == 1
+        )  # auth entry deduped in tool2
+        forwarded = mock_session._last_json
+        tool2_forwarded = _json.loads(forwarded["messages"][6]["content"])
+        assert len(tool2_forwarded["results"]) == 2
 
 
 # ============================================================================
@@ -830,20 +922,35 @@ class TestExternalContentIdStripping:
         wrapped_title = self._wrap("Example Title", "aabbccdd11223344")
         wrapped_desc = self._wrap("Example description text", "1122334455667788")
         import json as _json
+
         results = [
-            {"title": wrapped_title, "url": "https://a.com",
-             "description": wrapped_desc},
+            {
+                "title": wrapped_title,
+                "url": "https://a.com",
+                "description": wrapped_desc,
+            },
         ]
         body = {
             "model": "gpt-4",
             "messages": [
                 {"role": "system", "content": "You are a helper."},
                 {"role": "user", "content": "Search"},
-                {"role": "assistant", "content": None,
-                 "tool_calls": [{"id": "tc1", "type": "function",
-                                 "function": {"name": "web_search", "arguments": "{}"}}]},
-                {"role": "tool", "tool_call_id": "tc1",
-                 "content": _json.dumps({"results": results})},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "tc1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "tc1",
+                    "content": _json.dumps({"results": results}),
+                },
                 {"role": "user", "content": "Summarize"},
             ],
         }
@@ -864,17 +971,30 @@ class TestExternalContentIdStripping:
 
         def _make_body(marker_id):
             wrapped = self._wrap("Same content", marker_id)
-            results = [{"title": wrapped, "url": "https://a.com", "description": "plain"}]
+            results = [
+                {"title": wrapped, "url": "https://a.com", "description": "plain"}
+            ]
             return {
                 "model": "gpt-4",
                 "messages": [
                     {"role": "system", "content": "You are a helper."},
                     {"role": "user", "content": "Hello"},
-                    {"role": "assistant", "content": None,
-                     "tool_calls": [{"id": "tc1", "type": "function",
-                                     "function": {"name": "s", "arguments": "{}"}}]},
-                    {"role": "tool", "tool_call_id": "tc1",
-                     "content": _json.dumps({"results": results})},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "tc1",
+                                "type": "function",
+                                "function": {"name": "s", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc1",
+                        "content": _json.dumps({"results": results}),
+                    },
                     {"role": "user", "content": "Go"},
                 ],
             }

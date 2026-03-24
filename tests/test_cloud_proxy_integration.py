@@ -259,7 +259,7 @@ class TestLongTTLTier:
 
     def test_long_ttl_expires_after_24hr(self):
         policy = TTLEvictionPolicy(default_ttl=TTLTier.LONG, default_ttl_seconds=86400)
-        policy.add_entry("long_lived", token_count=5000)
+        policy.add_entry("long_lived", content_hash="long_lived", token_count=5000)
 
         future_25hr = time.time() + 90000
         with patch(

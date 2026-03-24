@@ -40,6 +40,7 @@ class TestCacheEntry:
         now = time.time()
         entry = CacheEntry(
             content_hash="abc",
+            request_id="req-abc",
             created_at=now,
             last_accessed_at=now,
             ttl_seconds=300,
@@ -50,6 +51,7 @@ class TestCacheEntry:
         now = time.time()
         entry = CacheEntry(
             content_hash="abc",
+            request_id="req-abc",
             created_at=now - 400,
             last_accessed_at=now - 400,
             ttl_seconds=300,
@@ -60,6 +62,7 @@ class TestCacheEntry:
         now = time.time()
         entry = CacheEntry(
             content_hash="abc",
+            request_id="req-abc",
             created_at=now,
             last_accessed_at=now,
             ttl_seconds=300,
@@ -70,6 +73,7 @@ class TestCacheEntry:
         now = time.time()
         entry = CacheEntry(
             content_hash="abc",
+            request_id="req-abc",
             created_at=now - 400,
             last_accessed_at=now - 400,
             ttl_seconds=300,
@@ -99,7 +103,8 @@ class TestCacheMetrics:
 class TestTTLEvictionPolicy:
     def test_add_entry(self):
         policy = TTLEvictionPolicy()
-        entry = policy.add_entry("hash1", token_count=5000)
+        entry = policy.add_entry("hash1", content_hash="hash1", token_count=5000)
+        assert entry is not None
         assert entry.content_hash == "hash1"
         assert entry.token_count == 5000
         assert policy.get_cached_count() == 1
@@ -107,14 +112,17 @@ class TestTTLEvictionPolicy:
     def test_add_entry_with_custom_ttl_seconds(self):
         policy = TTLEvictionPolicy(default_ttl=TTLTier.LONG, default_ttl_seconds=86400)
         entry = policy.add_entry("hash1")
+        assert entry is not None
         assert entry.ttl_seconds == 86400
 
     def test_add_existing_refreshes(self):
         policy = TTLEvictionPolicy()
         e1 = policy.add_entry("hash1", token_count=100)
+        assert e1 is not None
         t1 = e1.last_accessed_at
         time.sleep(0.01)
         e2 = policy.add_entry("hash1", token_count=200)
+        assert e2 is not None
         assert e2.last_accessed_at > t1
         assert e2.token_count == 200
         assert policy.get_cached_count() == 1
@@ -166,12 +174,12 @@ class TestTTLEvictionPolicy:
         short_policy = TTLEvictionPolicy(
             default_ttl=TTLTier.SHORT, default_ttl_seconds=300
         )
-        short_policy.add_entry("short_hash")
+        short_policy.add_entry("short_hash", content_hash="short_hash")
 
         long_policy = TTLEvictionPolicy(
             default_ttl=TTLTier.LONG, default_ttl_seconds=3600
         )
-        long_policy.add_entry("long_hash")
+        long_policy.add_entry("long_hash", content_hash="long_hash")
 
         future_6min = time.time() + 360
         with patch(
@@ -185,9 +193,9 @@ class TestTTLEvictionPolicy:
 
     def test_get_cached_hashes(self):
         policy = TTLEvictionPolicy()
-        policy.add_entry("a")
-        policy.add_entry("b")
-        policy.add_entry("c")
+        policy.add_entry("a", content_hash="a")
+        policy.add_entry("b", content_hash="b")
+        policy.add_entry("c", content_hash="c")
         hashes = policy.get_cached_hashes()
         assert hashes == {"a", "b", "c"}
 

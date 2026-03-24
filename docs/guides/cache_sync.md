@@ -83,20 +83,3 @@ req-002 still active → prefix [A, B] still considered cached
 ```
 
 If req-001 and req-002 share prefix [A, B], evicting req-001 doesn't affect req-002's TTL. The shared prefix stays in the cache model as long as any request using it is alive.
-
-## Dedup: Independent of Backend
-
-Content-level dedup operates on the message content before forwarding. It doesn't depend on cache state — it simply finds identical blocks across tool results and replaces duplicates with pointers. Works the same whether the backend is SGLang, OpenAI, or Anthropic.
-
-```
-messages with tool results
-        │
-        ▼
-dedup.block_dedup (content-defined chunking + SHA-256 matching)
-        │
-        ▼
-deduplicated messages (fewer tokens)
-        │
-        ▼
-forwarded to backend (local or cloud)
-```

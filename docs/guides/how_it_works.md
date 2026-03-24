@@ -10,9 +10,9 @@ Reorder solves this by sorting context blocks into a canonical order that maximi
 
 ```
 Without reorder:                    With reorder:
-  Request 1: [A, B, C] → cached      Request 1: [B, C, A] → cached
-  Request 2: [B, C, D] → cache miss  Request 2: [B, C, D] → prefix [B, C] hit!
-  (prefix A≠B, no match)               (both start with B, C)
+  Request 1: [A, B, C] → cached      Request 1: [A, B, C] → cached
+  Request 2: [D, A, B] → cache miss  Request 2: [A, B, D] → prefix [A, B] hit!
+  (prefix D≠A, no match)               (ContextPilot moves cached A, B to front)
 ```
 
 ContextPilot builds a Context Index (hierarchical clustering tree) that groups similar documents. When a new request arrives, it reorders the documents so that:

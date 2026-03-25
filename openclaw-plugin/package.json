@@ -1,0 +1,31 @@
+{
+  "name": "@contextpilot/openclaw-plugin",
+  "version": "0.2.0",
+  "description": "ContextPilot plugin for OpenClaw — faster long-context inference via in-process context reuse. Zero external dependencies.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "ContextPilot Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EfficientContext/ContextPilot.git",
+    "directory": "openclaw-plugin"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "contextpilot",
+    "kv-cache",
+    "context-reuse",
+    "prompt-cache",
+    "dedup",
+    "llm"
+  ],
+  "openclaw": {
+    "extensions": ["./src/index.ts"]
+  },
+  "files": [
+    "src/",
+    "openclaw.plugin.json",
+    "README.md"
+  ]
+}

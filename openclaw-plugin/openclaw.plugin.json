@@ -1,0 +1,42 @@
+{
+  "id": "contextpilot",
+  "name": "ContextPilot",
+  "description": "Faster long-context inference via in-process context reuse — reorders, deduplicates, and injects cache control for maximum prefix cache sharing. No external dependencies.",
+  "version": "0.2.0",
+  "providers": ["contextpilot"],
+  "providerAuthEnvVars": {
+    "contextpilot": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+  },
+  "providerAuthChoices": [
+    {
+      "provider": "contextpilot",
+      "method": "api-key",
+      "choiceId": "contextpilot-api-key",
+      "choiceLabel": "Backend API key (Anthropic or OpenAI)",
+      "groupId": "contextpilot",
+      "groupLabel": "ContextPilot",
+      "cliFlag": "--anthropic-api-key",
+      "cliOption": "--anthropic-api-key <key>",
+      "cliDescription": "API key for the backend LLM provider",
+      "onboardingScopes": ["text-inference"]
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "backendProvider": {
+        "type": "string",
+        "enum": ["anthropic", "openai"],
+        "description": "Backend LLM provider type",
+        "default": "anthropic"
+      },
+      "scope": {
+        "type": "string",
+        "enum": ["all", "system", "tool_results"],
+        "description": "Which messages ContextPilot optimizes",
+        "default": "all"
+      }
+    }
+  }
+}

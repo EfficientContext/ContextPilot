@@ -27,9 +27,14 @@
     "properties": {
       "backendProvider": {
         "type": "string",
-        "enum": ["anthropic", "openai"],
+        "enum": ["anthropic", "openai", "sglang"],
         "description": "Backend LLM provider type",
         "default": "anthropic"
+      },
+      "indexServerUrl": {
+        "type": "string",
+        "description": "ContextPilot index server URL (used in SGLang mode)",
+        "default": "http://localhost:8765"
       },
       "scope": {
         "type": "string",

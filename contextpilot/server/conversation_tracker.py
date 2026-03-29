@@ -136,8 +136,13 @@ class ConversationTracker:
         """
         chain = []
         current_id = request_id
+        visited = set()
 
         while current_id and current_id in self._requests:
+            if current_id in visited:
+                logger.warning(f"Cycle detected in conversation chain at {current_id}")
+                break
+            visited.add(current_id)
             chain.append(self._requests[current_id])
             current_id = self._requests[current_id].parent_request_id
 
@@ -304,7 +309,7 @@ class ConversationTracker:
                     new_blocks.append(block)
 
             if deduped_count > 0:
-                doc_contents[doc_id] = "\n\n".join(new_blocks)
+                doc_contents[doc_id] = "\n".join(new_blocks)
 
         if result.blocks_deduped > 0:
             logger.info(

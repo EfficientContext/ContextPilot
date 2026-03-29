@@ -112,7 +112,7 @@ class TTLEvictionPolicy:
         default_ttl_seconds: Optional[int] = None,
     ):
         self._default_ttl = default_ttl
-        self._default_ttl_seconds = default_ttl_seconds or default_ttl.seconds
+        self._default_ttl_seconds = default_ttl_seconds if default_ttl_seconds is not None else default_ttl.seconds
         self._entries: Dict[str, CacheEntry] = {}
         self._lock = threading.Lock()
 
@@ -130,6 +130,7 @@ class TTLEvictionPolicy:
     def default_ttl(self, value: TTLTier):
         """Set default TTL tier."""
         self._default_ttl = value
+        self._default_ttl_seconds = value.seconds
 
     def add_entry(
         self, request_id: str, content_hash: str = "", token_count: int = 0
@@ -250,14 +251,8 @@ class TTLEvictionPolicy:
         if not request_id:
             return
 
-        if metrics.cache_read_tokens > 0:
-            self.touch_entry(request_id)
-            logger.debug(
-                f"Cache hit confirmed: {request_id} "
-                f"({metrics.cache_read_tokens} tokens read from cache)"
-            )
-
         if metrics.cache_creation_tokens > 0:
+            # New or partial cache write — create/update entry with new token count
             self.add_entry(
                 request_id,
                 content_hash=content_hash,
@@ -266,6 +261,13 @@ class TTLEvictionPolicy:
             logger.debug(
                 f"Cache write confirmed: {request_id} "
                 f"({metrics.cache_creation_tokens} tokens cached)"
+            )
+        elif metrics.cache_read_tokens > 0:
+            # Pure cache hit — just refresh the entry
+            self.touch_entry(request_id)
+            logger.debug(
+                f"Cache hit confirmed: {request_id} "
+                f"({metrics.cache_read_tokens} tokens read from cache)"
             )
 
     def reset(self) -> None:

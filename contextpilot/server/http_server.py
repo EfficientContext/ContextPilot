@@ -1368,7 +1368,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
     total_reordered = 0
     total_deduped = 0
     total_slimmed = 0
-    tool_results_skipped = 0
+    tool_results_skipped = 0  # TODO: never incremented — wire up or remove
     _chars_before_slim = 0
     _chars_after_slim = 0
     system_count = 0
@@ -1383,11 +1383,12 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
     # Per-message hashes for this request
     _debug_msg_hashes = []
-    for m in _debug_messages:
-        h = hashlib.sha256(
-            json.dumps(m, sort_keys=True, ensure_ascii=False).encode()
-        ).hexdigest()[:12]
-        _debug_msg_hashes.append(h)
+    if logger.isEnabledFor(logging.DEBUG):
+        for m in _debug_messages:
+            h = hashlib.sha256(
+                json.dumps(m, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest()[:12]
+            _debug_msg_hashes.append(h)
 
     # Build tool_call_id → function name mapping from assistant messages
     _tool_call_names = {}
@@ -1483,7 +1484,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
     if config.enabled:
         try:
-            body = copy.deepcopy(body)
+            # body is already a fresh copy from _strip_external_content_ids
 
             # ── Conversation-aware state (single-conversation model) ──
             state = _get_intercept_state(body)
@@ -1522,7 +1523,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                             }
                         )
                         handler.reconstruct_system(
-                            body, extraction, reordered_docs, sys_idx
+                            body, extraction, reordered_docs, sys_idx, config
                         )
                         total_reordered += len(extraction.documents)
                         system_count = 1
@@ -1794,9 +1795,12 @@ async def _intercept_and_forward(request: Request, api_format: str):
             status, fwd_headers = cast(tuple[int, Dict[str, str]], first_event)
 
             async def _stream_content_only():
-                async for event in stream_iter:
-                    if isinstance(event, bytes):
-                        yield event
+                try:
+                    async for event in stream_iter:
+                        if isinstance(event, bytes):
+                            yield event
+                finally:
+                    await stream_iter.aclose()
 
             return StreamingResponse(
                 _stream_content_only(),
@@ -1812,7 +1816,11 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 _ttft_ms = (time.monotonic() - _request_start) * 1000
                 _saved = _chars_before_slim - _chars_after_slim
                 _log_ttft(_ttft_ms, total_slimmed, _saved)
-                result = await resp.json()
+                try:
+                    result = await resp.json()
+                except (json.JSONDecodeError, aiohttp.ContentTypeError):
+                    text = await resp.text()
+                    raise HTTPException(status_code=resp.status, detail=text[:500])
 
                 # ── Cloud mode: track cache metrics from response ──
                 if (
@@ -1850,7 +1858,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
     except aiohttp.ClientError as e:
         logger.error(f"Error forwarding intercepted request: {e}")
-        raise HTTPException(status_code=502, detail=f"Backend error: {str(e)}")
+        raise HTTPException(status_code=502, detail="Backend connection error")
 
 
 @app.post("/v1/chat/completions")
@@ -1930,9 +1938,9 @@ async def proxy_engine(path: str, request: Request):
                     body["rid"] = request_id
                     body["request_id"] = request_id
 
-            body["temperature"] = 0
+            body.setdefault("temperature", 0)
             if _cloud_mode:
-                body["top_p"] = 0
+                body.setdefault("top_p", 0)
 
             dedup_result = DedupResult()
             try:
@@ -2145,7 +2153,7 @@ Cloud proxy mode:
         os.environ["CONTEXTPILOT_CLOUD_API_KEY"] = args.cloud_api_key
 
     # Also set global config for direct access
-    global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode
+    global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode, _chunk_modulus
     _max_tokens = args.max_tokens
     _infer_api_url = args.infer_api_url.rstrip("/")
     _stateless_mode = args.stateless

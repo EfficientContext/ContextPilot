@@ -95,6 +95,9 @@ def _inject_system_cache_control(
     return body
 
 
+_MAX_TOOL_RESULT_BREAKPOINTS = 3  # Anthropic allows 4 total; 1 reserved for system
+
+
 def _inject_tool_result_cache_control(
     body: Dict[str, Any], cc: Dict[str, str]
 ) -> Dict[str, Any]:
@@ -102,18 +105,24 @@ def _inject_tool_result_cache_control(
     if not messages or not isinstance(messages, list):
         return body
 
+    breakpoints_used = 0
     for msg in messages:
+        if breakpoints_used >= _MAX_TOOL_RESULT_BREAKPOINTS:
+            break
         if msg.get("role") != "user":
             continue
         content = msg.get("content")
         if not isinstance(content, list):
             continue
         for block in content:
+            if breakpoints_used >= _MAX_TOOL_RESULT_BREAKPOINTS:
+                break
             if not isinstance(block, dict):
                 continue
             if block.get("type") not in ("tool_result", "toolResult"):
                 continue
             _maybe_add_cache_control_to_tool_result(block, cc)
+            breakpoints_used += 1
 
     return body
 

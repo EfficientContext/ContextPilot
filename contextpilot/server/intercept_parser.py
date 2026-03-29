@@ -110,6 +110,13 @@ class MultiExtractionResult:
         return total
 
 
+def _safe_float(value: str, default: float) -> float:
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def parse_intercept_headers(headers: Dict[str, str]) -> InterceptConfig:
     """Parse X-ContextPilot-* headers into an InterceptConfig."""
     def get(name: str, default: str = "") -> str:
@@ -132,7 +139,7 @@ def parse_intercept_headers(headers: Dict[str, str]) -> InterceptConfig:
         mode=get("mode", "auto").lower(),
         tag=get("tag", "document").lower(),
         separator=get("separator", "---"),
-        alpha=float(get("alpha", "0.001")),
+        alpha=_safe_float(get("alpha", "0.001"), 0.001),
         linkage_method=get("linkage", "average"),
         scope=scope,
     )
@@ -557,6 +564,7 @@ def reconstruct_openai_chat(
     extraction: ExtractionResult,
     reordered_docs: List[str],
     system_msg_index: int,
+    config: Optional[InterceptConfig] = None,
 ) -> Dict[str, Any]:
     """Reconstruct an OpenAI chat completions request body with reordered docs."""
     body = copy.deepcopy(body)
@@ -566,10 +574,10 @@ def reconstruct_openai_chat(
     if isinstance(msg.get("content"), str):
         msg["content"] = new_content
     elif isinstance(msg.get("content"), list):
-        # Find the text block that matched and replace it
+        cfg = config or InterceptConfig()
         for block in msg["content"]:
             if isinstance(block, dict) and block.get("type") == "text":
-                if extract_documents(block.get("text", ""), InterceptConfig()):
+                if extract_documents(block.get("text", ""), cfg):
                     block["text"] = new_content
                     break
     return body
@@ -608,6 +616,7 @@ def reconstruct_anthropic_messages(
     body: Dict[str, Any],
     extraction: ExtractionResult,
     reordered_docs: List[str],
+    config: Optional[InterceptConfig] = None,
 ) -> Dict[str, Any]:
     """Reconstruct an Anthropic messages request body with reordered docs."""
     body = copy.deepcopy(body)
@@ -616,9 +625,10 @@ def reconstruct_anthropic_messages(
     if isinstance(body.get("system"), str):
         body["system"] = new_content
     elif isinstance(body.get("system"), list):
+        cfg = config or InterceptConfig()
         for block in body["system"]:
             if isinstance(block, dict) and block.get("type") == "text":
-                if extract_documents(block.get("text", ""), InterceptConfig()):
+                if extract_documents(block.get("text", ""), cfg):
                     block["text"] = new_content
                     break
     return body
@@ -918,7 +928,8 @@ class FormatHandler(ABC):
     @abstractmethod
     def reconstruct_system(self, body: Dict[str, Any],
                            extraction: ExtractionResult,
-                           docs: List[str], sys_idx: int) -> None: ...
+                           docs: List[str], sys_idx: int,
+                           config: Optional["InterceptConfig"] = None) -> None: ...
 
     @abstractmethod
     def reconstruct_tool_result(self, body: Dict[str, Any],
@@ -951,15 +962,16 @@ class OpenAIChatHandler(FormatHandler):
     def extract_all(self, body, config):
         return extract_all_openai(body, config)
 
-    def reconstruct_system(self, body, extraction, docs, sys_idx):
+    def reconstruct_system(self, body, extraction, docs, sys_idx, config=None):
         new_content = reconstruct_content(extraction, docs)
         msg = body["messages"][sys_idx]
         if isinstance(msg.get("content"), str):
             msg["content"] = new_content
         elif isinstance(msg.get("content"), list):
+            cfg = config or InterceptConfig()
             for block in msg["content"]:
                 if isinstance(block, dict) and block.get("type") == "text":
-                    if extract_documents(block.get("text", ""), InterceptConfig()):
+                    if extract_documents(block.get("text", ""), cfg):
                         block["text"] = new_content
                         break
 
@@ -992,14 +1004,15 @@ class AnthropicMessagesHandler(FormatHandler):
     def extract_all(self, body, config):
         return extract_all_anthropic(body, config)
 
-    def reconstruct_system(self, body, extraction, docs, sys_idx):
+    def reconstruct_system(self, body, extraction, docs, sys_idx, config=None):
         new_content = reconstruct_content(extraction, docs)
         if isinstance(body.get("system"), str):
             body["system"] = new_content
         elif isinstance(body.get("system"), list):
+            cfg = config or InterceptConfig()
             for block in body["system"]:
                 if isinstance(block, dict) and block.get("type") == "text":
-                    if extract_documents(block.get("text", ""), InterceptConfig()):
+                    if extract_documents(block.get("text", ""), cfg):
                         block["text"] = new_content
                         break
 

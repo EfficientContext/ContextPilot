@@ -58,7 +58,7 @@ python examples/mem0_locomo_example.py
 
 ## Results
 
-Aggregate across all 10 LoCoMo conversations, Qwen2.5-7B-Instruct on 2xA6000 (SGLang, tp=2):
+Aggregate across all 10 LoCoMo conversations, Qwen3-4B on A6000 (SGLang, tp=1):
 
 | k | mode | ttft | ttft delta | judge |
 |---|---|---|---|---|

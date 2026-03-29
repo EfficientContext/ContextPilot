@@ -7,13 +7,13 @@ prefix sharing.
 
 Quick Start:
     >>> from contextpilot.pipeline import RAGPipeline
-    >>> 
+    >>>
     >>> pipeline = RAGPipeline(
     ...     retriever="bm25",
     ...     corpus_path="corpus.jsonl",
     ...     model="Qwen/Qwen2.5-7B-Instruct"
     ... )
-    >>> 
+    >>>
     >>> results = pipeline.run(queries=["What is AI?"])
 
 See docs/reference/api.md for detailed documentation.
@@ -38,6 +38,12 @@ from .context_ordering import (
 
 from .server.live_index import ContextPilot
 
+from .dedup import (
+    dedup_chat_completions,
+    dedup_responses_api,
+    DedupResult,
+)
+
 from .api import optimize, optimize_batch
 
 from .retriever import (
@@ -53,27 +59,28 @@ __version__ = "0.3.5.post2"
 
 __all__ = [
     # High-level pipeline API
-    'RAGPipeline',
-    'RetrieverConfig',
-    'OptimizerConfig',
-    'InferenceConfig',
-    'PipelineConfig',
-    
+    "RAGPipeline",
+    "RetrieverConfig",
+    "OptimizerConfig",
+    "InferenceConfig",
+    "PipelineConfig",
     # Core components
-    'ContextIndex',
-    'IndexResult',
-    'IntraContextOrderer',
-    'ContextPilot',
-    
+    "ContextIndex",
+    "IndexResult",
+    "IntraContextOrderer",
+    "ContextPilot",
+    # Deduplication
+    "dedup_chat_completions",
+    "dedup_responses_api",
+    "DedupResult",
     # Convenience functions
-    'optimize',
-    'optimize_batch',
-
+    "optimize",
+    "optimize_batch",
     # Retrievers
-    'BM25Retriever',
-    'FAISSRetriever',
-    'FAISS_AVAILABLE',
-    'Mem0Retriever',
-    'create_mem0_corpus_map',
-    'MEM0_AVAILABLE',
+    "BM25Retriever",
+    "FAISSRetriever",
+    "FAISS_AVAILABLE",
+    "Mem0Retriever",
+    "create_mem0_corpus_map",
+    "MEM0_AVAILABLE",
 ]

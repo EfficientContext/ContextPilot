@@ -5,6 +5,43 @@ All notable changes to ContextPilot will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-29
+
+### Added
+- **Cloud prompt cache proxy** for Anthropic, OpenAI, and MiniMax — transparent prefix caching over cloud APIs
+- **HTTP intercept proxy** — drop-in reverse proxy that extracts, reorders, and deduplicates documents in LLM requests without client changes
+- **Block-level dedup** — content-defined chunking within tool results and assistant code blocks to deduplicate repeated content across turns
+- **OpenClaw integration** — tool_result reordering, `markdown_header` extraction mode, deployment files, and quick-start guide
+- **TTL-based cache eviction** policy with configurable tiers and automatic expiry
+- **Conversation tracker** for multi-turn state: parent chain tracking, per-turn document history, and cross-turn block dedup
+- `--chunk-modulus` CLI flag for tuning content-level dedup block size
+- Cache sync documentation and `how_it_works.md` guide
+- Pipeline diagram and architecture SVGs
+- M5 MacBook Air results to Apple Silicon benchmark table
+- P99 wall time to OpenClaw benchmark table
+
+### Changed
+- Renamed dedup levels: file-level → document-level, block-level → content-level, content-level → ContextBlock-level
+- Intercept parser supports multiple extraction formats (XML, numbered, separator, JSON results) with auto-detection
+- Cloud adapters inject `cache_control` breakpoints on system prompts and tool results (limited to 4 per Anthropic API)
+- Proxy forwards request metadata via headers instead of body to avoid breaking tool loops
+
+### Fixed
+- Block dedup `"\n\n".join` corrupting content at chunk boundaries (phantom blank lines)
+- `hash()` non-determinism in content-defined chunking — replaced with `hashlib.md5`
+- `_chunk_modulus` missing from global declaration (CLI flag silently ignored)
+- Proxy hardcoding `temperature=0` overwriting user values — now uses `setdefault`
+- `default_ttl_seconds=0` silently becoming 300 (falsy `or` → `is not None`)
+- `default_ttl` setter not syncing `_default_ttl_seconds`
+- `update_from_response` double-counting partial cache hits
+- Reconstruction functions using default config instead of original extraction config
+- API key leak in error responses from `aiohttp.ClientError`
+- Non-JSON upstream error crashing with `JSONDecodeError`
+- Streaming connection leak on client disconnect (missing `finally` cleanup)
+- Redundant `copy.deepcopy` doubling memory pressure per request
+- Cycle detection added to `get_conversation_chain`
+- Alpha header validation (non-numeric no longer crashes)
+
 ## [0.3.5.post2] - 2026-03-05
 
 ### Added

@@ -4,7 +4,8 @@
 # Runs the full ContextPilot pipeline and compares against baseline.
 #
 # Usage:
-#   bash test_mac_contextpilot.sh                        # full run, 100 queries
+#   bash test_mac_contextpilot.sh                        # full run, 100 queries (raw OpenAI client)
+#   bash test_mac_contextpilot.sh --jiuwen               # use openjiuwen WorkflowAgent for inference
 #   bash test_mac_contextpilot.sh --num-queries 50       # fewer queries
 #   bash test_mac_contextpilot.sh --skip-data-prep       # skip steps 1-2 (data already built)
 #   bash test_mac_contextpilot.sh --model path/to/model.gguf
@@ -14,6 +15,7 @@
 #   - llama-server in PATH  (brew install llama.cpp)  OR  use --llama-server
 #   - Docker running        (for Elasticsearch)
 #   - pip install -e .
+#   - pip install openjiuwen   (only required for --jiuwen mode)
 
 set -euo pipefail
 

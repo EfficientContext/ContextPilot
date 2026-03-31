@@ -144,7 +144,7 @@ if [[ "$SKIP_DATA_PREP" == false ]]; then
     hr
     log "Step 2 — Building BM25 retrieval data (downloads MultiHopRAG dataset)"
 
-    python examples/construct_rag_data/multihopRAG_bm25.py \
+    python ../examples/construct_rag_data/multihopRAG_bm25.py \
         --corpus_path "$CORPUS_PATH" \
         --query_path  "$QUERY_PATH" \
         --output_path "$BM25_PATH"
@@ -155,7 +155,7 @@ if [[ "$SKIP_DATA_PREP" == false ]]; then
     hr
     log "Step 3 — Reordering contexts with ContextPilot (offline batch)"
 
-    python examples/offline/prepare_batch.py \
+    python ../examples/offline/prepare_batch.py \
         --context_path "$BM25_PATH" \
         --output_path  "$REORDERED_PATH"
 
@@ -200,7 +200,7 @@ wait_for_http "http://localhost:${CP_PORT}/" "ContextPilot server" 30
 hr
 log "Step 6 — Running ContextPilot benchmark via openjiuwen WorkflowAgent ($NUM_QUERIES queries)"
 
-python scripts/mac_multihop_bench_jiuwen.py \
+python ../scripts/mac_multihop_bench_jiuwen.py \
     --reordered_path "$REORDERED_PATH" \
     --corpus_path    "$CORPUS_PATH" \
     --num_queries    "$NUM_QUERIES" \
@@ -237,7 +237,7 @@ wait_for_http "http://localhost:${LLAMA_PORT}/health" "llama-server (restarted)"
 hr
 log "Step 8 — Running baseline benchmark via openjiuwen WorkflowAgent ($NUM_QUERIES queries)"
 
-python scripts/mac_multihop_bench_jiuwen.py \
+python ../scripts/mac_multihop_bench_jiuwen.py \
     --reordered_path "$REORDERED_PATH" \
     --corpus_path    "$CORPUS_PATH" \
     --num_queries    "$NUM_QUERIES" \

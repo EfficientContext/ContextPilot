@@ -1,0 +1,277 @@
+# ContextPilot + OpenClaw Integration Guide
+
+## Architecture
+
+<div align="center">
+<img src="../images/openclaw-cp.png" alt="OpenClaw + ContextPilot Pipeline" width="800"/>
+</div>
+
+ContextPilot acts as a transparent HTTP proxy. OpenClaw sends requests to the proxy instead of directly to the LLM API. The proxy deduplicates shared content across tool results, reorders documents, and forwards to the backend.
+
+## Why This Matters for OpenClaw
+
+OpenClaw's search and memory retrieval results appear as **tool_result messages** in the conversation history, not in the system prompt. When multiple search results are returned, their ordering affects the LLM's attention and response quality.
+
+ContextPilot:
+1. **Reorder**: Reorders documents within tool results to maximize prefix cache hits (multi-doc tool results)
+2. **Dedup**: ContextBlock-level and content-level deduplication across tool results — identical content replaced with back-references, reducing prefill tokens
+
+Results from reorder and dedup are cached and reapplied on subsequent turns to keep the prefix consistent across the conversation (prefix cache alignment). See [Cache Synchronization](cache_sync.md) for how ContextPilot stays in sync with the inference engine's cache.
+
+## Setup
+
+### Quick Start (one command)
+
+```bash
+# Clone and run
+git clone https://github.com/EfficientContext/ContextPilot.git
+cd ContextPilot/examples/openclaw
+bash setup.sh anthropic   # or: bash setup.sh openai
+```
+
+The script installs ContextPilot, generates a config, and starts the proxy.
+
+### Docker
+
+```bash
+cd ContextPilot/examples/openclaw
+docker compose up -d
+
+# OpenAI instead of Anthropic:
+CONTEXTPILOT_BACKEND_URL=https://api.openai.com docker compose up -d
+```
+
+### Manual
+
+```bash
+pip install contextpilot
+python -m contextpilot.server.http_server \
+  --stateless --port 8765 \
+  --infer-api-url https://api.anthropic.com
+```
+
+## Configure OpenClaw
+
+### Option A: UI (recommended)
+
+1. Open OpenClaw
+2. Go to **Settings → Models**
+3. Add a custom provider:
+
+| Field | Value |
+|-------|-------|
+| Name | `contextpilot-anthropic` |
+| Base URL | `http://localhost:8765/v1` |
+| API Key | your Anthropic API key |
+| API | `anthropic-messages` |
+| Model ID | `claude-opus-4-6` |
+
+4. Select the model and start chatting
+
+### Option B: Config file
+
+Merge into `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "models": {
+    "providers": {
+      "contextpilot-anthropic": {
+        "baseUrl": "http://localhost:8765/v1",
+        "apiKey": "${ANTHROPIC_API_KEY}",
+        "api": "anthropic-messages",
+        "headers": {
+          "X-ContextPilot-Scope": "all"
+        },
+        "models": [
+          {
+            "id": "claude-opus-4-6",
+            "name": "Claude Opus 4.6 (via ContextPilot)",
+            "reasoning": false,
+            "input": ["text"],
+            "contextWindow": 200000,
+            "maxTokens": 32000
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+For OpenAI, use `api: "openai-completions"` and point `--infer-api-url` to `https://api.openai.com`. See `examples/openclaw/openclaw.json.example` for both providers.
+
+### Option C: Self-hosted model via SGLang
+
+For self-hosted models, ContextPilot proxies between OpenClaw and SGLang:
+
+```
+OpenClaw ──▶ ContextPilot Proxy (server:8765) ──▶ SGLang (server:30000)
+```
+
+Start SGLang with tool calling support:
+
+```bash
+python -m sglang.launch_server \
+  --model-path Qwen/Qwen3.5-27B \
+  --tool-call-parser qwen3_coder \
+  --port 30000
+```
+
+Start ContextPilot proxy:
+
+```bash
+python -m contextpilot.server.http_server \
+  --port 8765 \
+  --infer-api-url http://localhost:30000 \
+  --model Qwen/Qwen3.5-27B
+```
+
+Configure OpenClaw (replace `<server-ip>` with your server's IP):
+
+```bash
+# Requires jq (install: sudo apt install jq / brew install jq)
+jq '
+  .agents.defaults.model.primary = "contextpilot-sglang/Qwen/Qwen3.5-27B" |
+  .models = {
+    "mode": "merge",
+    "providers": {
+      "contextpilot-sglang": {
+        "baseUrl": "http://<server-ip>:8765/v1",
+        "apiKey": "placeholder",
+        "api": "openai-completions",
+        "headers": {"X-ContextPilot-Scope": "all"},
+        "models": [{
+          "id": "Qwen/Qwen3.5-27B",
+          "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 131072,
+          "maxTokens": 8192
+        }]
+      }
+    }
+  }
+' ~/.openclaw/openclaw.json > /tmp/oc.json && mv /tmp/oc.json ~/.openclaw/openclaw.json
+```
+
+Then restart:
+
+```bash
+pkill -f openclaw && openclaw gateway start && openclaw tui
+```
+
+<details>
+<summary>Without jq: manually edit <code>~/.openclaw/openclaw.json</code></summary>
+
+1. Change `agents.defaults.model.primary` to `"contextpilot-sglang/Qwen/Qwen3.5-27B"`
+2. Add a `"models"` key at the top level:
+
+```json
+"models": {
+  "mode": "merge",
+  "providers": {
+    "contextpilot-sglang": {
+      "baseUrl": "http://<server-ip>:8765/v1",
+      "apiKey": "placeholder",
+      "api": "openai-completions",
+      "headers": { "X-ContextPilot-Scope": "all" },
+      "models": [{
+        "id": "Qwen/Qwen3.5-27B",
+        "name": "Qwen 3.5 27B (SGLang via ContextPilot)",
+        "reasoning": false,
+        "input": ["text"],
+        "contextWindow": 131072,
+        "maxTokens": 8192
+      }]
+    }
+  }
+}
+```
+
+</details>
+
+> **Important**: Use the server's IP address (not hostname) in `baseUrl` to avoid IPv6 DNS resolution issues in Node.js/WSL environments. `--tool-call-parser` is required for OpenClaw's tool loop to work.
+
+## Verify
+
+Check the `X-ContextPilot-Result` response header:
+
+```
+X-ContextPilot-Result: {"intercepted":true,"documents_reordered":true,"total_documents":8,"sources":{"system":1,"tool_results":2}}
+```
+
+If the header is absent, the request had fewer than 2 extractable documents (nothing to reorder).
+
+## Document Extraction
+
+ContextPilot auto-detects these formats in both system prompts and tool results:
+
+| Format | Pattern | Typical Source |
+|--------|---------|----------------|
+| XML tags | `<documents><document>...</document></documents>` | RAG systems |
+| File tags | `<files><file>...</file></files>` | Code search |
+| Numbered | `[1] doc [2] doc` | Search rankings |
+| Separator | docs split by `---` or `===` | Text chunking |
+| Markdown headers | sections split by `#`/`##` | Structured docs |
+
+Auto-detection priority: XML > Numbered > Separator > Markdown headers.
+
+## Scope Control
+
+| `X-ContextPilot-Scope` | System Prompt | Tool Results |
+|:---:|:---:|:---:|
+| `all` (default) | reordered | reordered |
+| `system` | reordered | untouched |
+| `tool_results` | untouched | reordered |
+
+Set via headers in the OpenClaw provider config, or per-request.
+
+## Full Header Reference
+
+| Header | Description | Default |
+|--------|-------------|---------|
+| `X-ContextPilot-Enabled` | Enable/disable | `true` |
+| `X-ContextPilot-Mode` | Extraction mode | `auto` |
+| `X-ContextPilot-Scope` | Which messages to process | `all` |
+| `X-ContextPilot-Tag` | Custom XML tag name | `document` |
+| `X-ContextPilot-Separator` | Custom separator | `---` |
+| `X-ContextPilot-Alpha` | Clustering distance parameter | `0.001` |
+| `X-ContextPilot-Linkage` | Clustering linkage method | `average` |
+
+For details on how reorder and dedup work, see [How It Works](how_it_works.md).
+
+## Benchmark Results
+
+Tested on [claw-tasks](https://github.com/EfficientContext/ClawTasks) — 60 enterprise document analysis tasks, 22 documents (490 KB), ~250 turns.
+
+```
+                                              Avg        P50        P99
+Prompt Tokens
+  OpenClaw + SGLang                        45,771     44,570     92,785
+  OpenClaw + ContextPilot + SGLang         33,622     32,526     51,581
+  Δ                                        -26.5%     -27.0%     -44.4%
+
+Wall Time (s)
+  OpenClaw + SGLang                          26.1       25.2       68.8
+  OpenClaw + ContextPilot + SGLang           20.8       21.8       50.4
+  Δ                                        -20.4%     -13.3%     -26.6%
+
+Accuracy                               245/245    245/245
+```
+
+See [`docs/benchmarks/openclaw.md`](../benchmarks/openclaw.md) for details.
+
+## Troubleshooting
+
+**No `X-ContextPilot-Result` header** — Request had < 2 extractable documents. Check that search/memory tools are returning multiple results.
+
+**Connection refused** — Proxy not running. Check `curl http://localhost:8765/health`.
+
+**`Connection error.` from OpenClaw (Node.js)** — IPv6 DNS resolution failure. Use IP address in `baseUrl`, or `export NODE_OPTIONS="--dns-result-order=ipv4first"`.
+
+**401/403 from backend** — API key not set or invalid. The proxy forwards auth headers as-is.
+
+**Tool call appears as XML text, agent stops** — SGLang not parsing tool calls into structured `tool_calls`. Add `--tool-call-parser qwen3_coder` (or the appropriate parser for your model) to SGLang launch command.
+
+**Tool results not reordered** — Check scope is `all` or `tool_results`. Verify tool results use a supported format.

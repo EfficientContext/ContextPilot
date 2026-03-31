@@ -1,0 +1,18 @@
+services:
+  contextpilot:
+    build: .
+    ports:
+      - "${CONTEXTPILOT_PORT:-8765}:8765"
+    environment:
+      - CONTEXTPILOT_INFER_API_URL=${CONTEXTPILOT_BACKEND_URL:-https://api.anthropic.com}
+    command:
+      - "--port"
+      - "8765"
+      - "--infer-api-url"
+      - "${CONTEXTPILOT_BACKEND_URL:-https://api.anthropic.com}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

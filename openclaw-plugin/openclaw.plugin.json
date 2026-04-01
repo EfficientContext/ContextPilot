@@ -1,41 +1,12 @@
 {
   "id": "contextpilot",
   "name": "ContextPilot",
-  "description": "Faster long-context inference via in-process context reuse — reorders, deduplicates, and injects cache control for maximum prefix cache sharing. No external dependencies.",
-  "version": "0.2.0",
-  "providers": ["contextpilot"],
-  "providerAuthEnvVars": {
-    "contextpilot": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
-  },
-  "providerAuthChoices": [
-    {
-      "provider": "contextpilot",
-      "method": "api-key",
-      "choiceId": "contextpilot-api-key",
-      "choiceLabel": "Backend API key (Anthropic or OpenAI)",
-      "groupId": "contextpilot",
-      "groupLabel": "ContextPilot",
-      "cliFlag": "--anthropic-api-key",
-      "cliOption": "--anthropic-api-key <key>",
-      "cliDescription": "API key for the backend LLM provider",
-      "onboardingScopes": ["text-inference"]
-    }
-  ],
+  "description": "Faster long-context inference via context reuse — reorders, deduplicates, and injects cache control for maximum prefix cache sharing.",
+  "version": "0.3.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "backendProvider": {
-        "type": "string",
-        "enum": ["anthropic", "openai", "sglang"],
-        "description": "Backend LLM provider type",
-        "default": "anthropic"
-      },
-      "indexServerUrl": {
-        "type": "string",
-        "description": "ContextPilot index server URL (used in SGLang mode)",
-        "default": "http://localhost:8765"
-      },
       "scope": {
         "type": "string",
         "enum": ["all", "system", "tool_results"],

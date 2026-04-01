@@ -102,6 +102,30 @@ function injectToolResultCacheControl(
         }
 
         const message = msg as MessageBlock;
+
+        // Handle OpenClaw's toolResult role (content is the tool result itself)
+        if (message.role === 'toolResult') {
+            const toolResultContent = message.content ?? '';
+            let totalChars = 0;
+
+            if (typeof toolResultContent === 'string') {
+                totalChars = toolResultContent.length;
+            } else if (Array.isArray(toolResultContent)) {
+                totalChars = toolResultContent.reduce((sum, inner) => {
+                    if (isRecord(inner) && inner.type === 'text') {
+                        return sum + (typeof inner.text === 'string' ? inner.text.length : 0);
+                    }
+                    return sum;
+                }, 0);
+            }
+
+            if (totalChars >= MIN_CONTENT_LENGTH_FOR_CACHE) {
+                (message as any).cache_control = cc;
+            }
+            continue;
+        }
+
+        // Handle Anthropic's user message with tool_result blocks
         if (message.role !== 'user' || !Array.isArray(message.content)) {
             continue;
         }
@@ -121,6 +145,9 @@ function injectToolResultCacheControl(
 }
 
 export function injectAnthropicCacheControl(body: Record<string, unknown>): Record<string, unknown> {
+    if (!body || typeof body !== 'object') {
+        return body ?? {};
+    }
     const copiedBody = structuredClone(body);
     injectSystemCacheControl(copiedBody, CACHE_CONTROL_EPHEMERAL);
     injectToolResultCacheControl(copiedBody, CACHE_CONTROL_EPHEMERAL);

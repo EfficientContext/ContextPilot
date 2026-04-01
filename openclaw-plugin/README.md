@@ -1,90 +1,108 @@
-# @contextpilot/openclaw-plugin
+# @contextpilot/contextpilot
 
-OpenClaw native plugin for [ContextPilot](https://github.com/EfficientContext/ContextPilot) — faster long-context inference via in-process context reuse. **Zero external dependencies** — no Python, no proxy server, just install and go.
+OpenClaw plugin for [ContextPilot](https://github.com/EfficientContext/ContextPilot) — faster long-context inference via in-process context optimization. **Zero external dependencies** — no Python, no proxy server, just install and go.
 
 ## What It Does
 
-ContextPilot optimizes every LLM request by:
+ContextPilot registers as an OpenClaw **Context Engine** and optimizes every LLM request by:
 
-1. **Extracting** documents from system prompts and tool results
+1. **Extracting** documents from tool results
 2. **Reordering** documents for maximum prefix cache sharing across turns
 3. **Deduplicating** repeated content blocks with compact reference hints
-4. **Injecting** provider-specific cache control markers (Anthropic `cache_control`)
+4. **Injecting** cache control markers (Anthropic `cache_control: { type: "ephemeral" }`)
 
-All processing happens in-process inside the OpenClaw plugin — no external services needed.
+All processing happens in-process — no external services needed.
 
 ## Installation
 
+### From npm (when published)
+
 ```bash
-openclaw plugins install @contextpilot/openclaw-plugin
+openclaw plugins install @contextpilot/contextpilot
 ```
 
-## Configuration
+### From local path (development)
 
-In `~/.openclaw/openclaw.json`:
+Add to `~/.openclaw/openclaw.json`:
 
-```json5
+```json
 {
-  plugins: {
-    entries: {
-      "contextpilot": {
-        enabled: true,
-        config: {
-          // "anthropic" (default) or "openai"
-          "backendProvider": "anthropic",
-          
-          // What to optimize: "all" (default), "system", or "tool_results"
-          "scope": "all"
-        }
-      }
+  "plugins": {
+    "load": {
+      "paths": [
+        "/path/to/ContextPilot/openclaw-plugin"
+      ]
     }
   }
 }
 ```
 
-Set your API key:
+## Configuration
 
-```bash
-export ANTHROPIC_API_KEY="sk-ant-xxx"
-# or
-export OPENAI_API_KEY="sk-xxx"
+In `~/.openclaw/openclaw.json`, enable the plugin and set it as the context engine:
+
+```json
+{
+  "plugins": {
+    "slots": {
+      "contextEngine": "contextpilot"
+    },
+    "entries": {
+      "contextpilot": {
+        "enabled": true,
+        "config": {
+          "scope": "all"
+        }
+      }
+    }
+  },
+  "tools": {
+    "allow": ["contextpilot"]
+  }
+}
 ```
 
-Then select a ContextPilot model (e.g., `contextpilot/claude-sonnet-4-6`) and start using OpenClaw.
+### Scope Options
 
-## Available Models
+| Scope | Tool Results | Description |
+|:------|:------------:|:------------|
+| `all` (default) | Optimized | Optimize all tool results |
+| `tool_results` | Optimized | Same as `all` |
 
-### Anthropic backend (default)
-
-| Model ID | Name |
-|----------|------|
-| `contextpilot/claude-opus-4-6` | Claude Opus 4.6 (ContextPilot) |
-| `contextpilot/claude-sonnet-4-6` | Claude Sonnet 4.6 (ContextPilot) |
-
-### OpenAI backend
-
-| Model ID | Name |
-|----------|------|
-| `contextpilot/gpt-4o` | GPT-4o (ContextPilot) |
-| `contextpilot/gpt-4o-mini` | GPT-4o Mini (ContextPilot) |
-
-Any model ID works via dynamic resolution — use `contextpilot/<any-model-id>`.
+> **Note:** System prompt optimization is not currently available — OpenClaw's context engine API does not expose the system prompt to plugins.
 
 ## How It Works
 
 ```
-OpenClaw request
+OpenClaw agent request
   ↓
-ContextPilot Plugin (wrapStreamFn)
-  ├─ Extract documents from system/tool_results
+ContextPilot Context Engine (assemble hook)
+  ├─ Convert OpenClaw message format (toolResult → tool_result)
+  ├─ Extract documents from tool results
   ├─ Reorder for prefix cache sharing
   ├─ Deduplicate repeated blocks
   ├─ Inject cache_control markers
   ↓
-Optimized request → LLM Backend (Anthropic/OpenAI)
+Optimized context → LLM Backend
 ```
 
-The plugin registers as an OpenClaw provider and uses `wrapStreamFn` to intercept requests before they reach the backend. All optimization is done in-process in TypeScript.
+The plugin registers as an OpenClaw Context Engine using `api.registerContextEngine()`. The `assemble()` hook intercepts context assembly before each LLM call.
+
+## Files
+
+```
+openclaw-plugin/
+├── openclaw.plugin.json   # Plugin manifest (id: "contextpilot")
+├── package.json           # npm package (@contextpilot/contextpilot)
+├── src/
+│   ├── index.ts           # Plugin entry point
+│   └── engine/
+│       ├── cache-control.ts   # Cache control injection
+│       ├── dedup.ts           # Content deduplication
+│       ├── extract.ts         # Document extraction
+│       └── live-index.ts      # Reordering engine
+└── tsconfig.json
+```
 
 ## Agent Tool
 
@@ -92,13 +110,17 @@ The plugin registers as an OpenClaw provider and uses `wrapStreamFn` to intercep
 |------|-------------|
 | `contextpilot_status` | Check engine status, request count, and chars saved |
 
-## Scope Control
+> **Note:** The status tool is registered but may not be visible to agents due to OpenClaw plugin API limitations.
 
-| Scope | System Prompt | Tool Results |
-|:---:|:---:|:---:|
-| `all` (default) | Optimized | Optimized |
-| `system` | Optimized | Untouched |
-| `tool_results` | Untouched | Optimized |
+## Verifying It Works
+
+Check the gateway logs for ContextPilot output:
+
+```
+[ContextPilot] assemble() called with 84 messages
+[ContextPilot] Extractions found - system: 0 tool: 1 singleDoc: 3
+[ContextPilot] Optimization complete. Chars saved: 2389
+```
 
 ## License
 

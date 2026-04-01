@@ -1,45 +1,19 @@
 import { Type } from "@sinclair/typebox";
-import {
-  definePluginEntry,
-  type ProviderResolveDynamicModelContext,
-  type ProviderWrapStreamFnContext,
-} from "openclaw/plugin-sdk/plugin-entry";
-import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-auth";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { delegateCompactionToRuntime } from "openclaw/plugin-sdk/core";
 
 import { injectCacheControl } from "./engine/cache-control.js";
-import { dedupChatCompletions, dedupResponsesApi } from "./engine/dedup.js";
+import { dedupChatCompletions } from "./engine/dedup.js";
 import { getFormatHandler, type InterceptConfig } from "./engine/extract.js";
-import { ContextPilotIndexClient } from "./engine/http-client.js";
 import { ContextPilot } from "./engine/live-index.js";
 
-const PROVIDER_ID = "contextpilot";
-type BackendProvider = "anthropic" | "openai" | "sglang";
+type Scope = "all" | "system" | "tool_results";
 
-function parseBackendProvider(value: unknown): BackendProvider {
-  if (value === "openai" || value === "sglang") {
-    return value;
-  }
-  return "anthropic";
-}
-
-function parseScope(value: unknown): "all" | "system" | "tool_results" {
+function parseScope(value: unknown): Scope {
   if (value === "system" || value === "tool_results" || value === "all") {
     return value;
   }
   return "all";
-}
-
-function detectApiFormat(
-  body: Record<string, unknown>,
-  backendProvider: BackendProvider,
-): "openai_chat" | "anthropic_messages" {
-  if (backendProvider === "anthropic") {
-    return "anthropic_messages";
-  }
-  if (backendProvider === "openai") {
-    return "openai_chat";
-  }
-  return "system" in body ? "anthropic_messages" : "openai_chat";
 }
 
 function reorderWithEngine(engine: ContextPilot, docs: string[]): string[] {
@@ -54,242 +28,181 @@ function reorderWithEngine(engine: ContextPilot, docs: string[]): string[] {
   return candidate as string[];
 }
 
-async function reorderWithClient(
-  client: ContextPilotIndexClient,
-  docs: string[],
-): Promise<string[]> {
-  const encodedDocs = docs.map((doc) => Array.from(doc, (ch) => ch.charCodeAt(0)));
-  const result = await client.reorder(encodedDocs, 0.001, false, "average");
-
-  if (result === null) {
-    return docs;
-  }
-
-  const [, originalIndices] = result;
-  if (!Array.isArray(originalIndices) || originalIndices.length !== docs.length) {
-    return docs;
-  }
-
-  const reordered = originalIndices.map((index) => {
-    if (typeof index !== "number" || index < 0 || index >= docs.length) {
-      return null;
-    }
-    return docs[index];
-  });
-
-  return reordered.includes(null) ? docs : (reordered as string[]);
-}
-
-function formatJson(value: unknown): string {
-  return value === null || value === undefined ? "unavailable" : JSON.stringify(value);
+interface Message {
+  role: string;
+  content: unknown;
 }
 
 export default definePluginEntry({
   id: "contextpilot",
   name: "ContextPilot",
-  description: "Optimizes LLM requests in-process via extraction, dedup, caching, and reordering.",
+  description: "Optimizes context via reordering, deduplication, and cache control injection.",
   register: (api) => {
     const config = {
-      backendProvider: parseBackendProvider(api.pluginConfig?.backendProvider),
       scope: parseScope(api.pluginConfig?.scope),
-      indexServerUrl: String(api.pluginConfig?.indexServerUrl || "http://localhost:8765"),
     };
 
-    const isSglang = config.backendProvider === "sglang";
-    const engine = isSglang ? null : new ContextPilot(0.001, false, "average");
-    const client = isSglang ? new ContextPilotIndexClient(config.indexServerUrl) : null;
+    // Initialize the ContextPilot engine for reordering
+    const engine = new ContextPilot(0.001, false, "average");
 
-    let requestCount = 0;
+    let assembleCount = 0;
     let totalCharsSaved = 0;
 
-    api.registerProvider({
-      id: PROVIDER_ID,
-      label: "ContextPilot",
-      docsPath: "/providers/contextpilot",
-      envVars: isSglang
-        ? []
-        : [config.backendProvider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY"],
-      auth: isSglang
-        ? []
-        : [
-          createProviderApiKeyAuthMethod({
-            providerId: PROVIDER_ID,
-            methodId: "api-key",
-            label: config.backendProvider === "anthropic" ? "Anthropic API key" : "OpenAI API key",
-            hint: "API key for the backend LLM provider",
-            optionKey: config.backendProvider === "anthropic" ? "anthropicApiKey" : "openaiApiKey",
-            flagName: config.backendProvider === "anthropic" ? "--anthropic-api-key" : "--openai-api-key",
-            envVar: config.backendProvider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY",
-            promptMessage: "Enter your API key",
-            defaultModel:
-              config.backendProvider === "anthropic"
-                ? "contextpilot/claude-sonnet-4-6"
-                : "contextpilot/gpt-4o",
-          }),
-        ],
-      resolveDynamicModel: (ctx: ProviderResolveDynamicModelContext) => {
-        if (config.backendProvider === "sglang") {
-          return {
-            id: ctx.modelId,
-            name: ctx.modelId,
-            provider: PROVIDER_ID,
-            baseUrl: config.indexServerUrl,
-            api: "openai-completions",
-            reasoning: false,
-            input: ["text", "image"] as Array<"text" | "image">,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 200000,
-            maxTokens: 16384,
-          };
-        }
-
-        const isAnthropic = config.backendProvider === "anthropic";
-        return {
-          id: ctx.modelId,
-          name: ctx.modelId,
-          provider: PROVIDER_ID,
-          baseUrl: isAnthropic ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1",
-          api: isAnthropic ? "anthropic-messages" : "openai-completions",
-          reasoning: false,
-          input: ["text", "image"] as Array<"text" | "image">,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 200000,
-          maxTokens: 16384,
-        };
+    // Register as a Context Engine - this intercepts context assembly
+    api.registerContextEngine("contextpilot", () => ({
+      info: {
+        id: "contextpilot",
+        name: "ContextPilot",
+        ownsCompaction: false,
       },
-      wrapStreamFn: (ctx: ProviderWrapStreamFnContext) => {
-        const originalStreamFn = ctx.streamFn;
-        if (!originalStreamFn) return undefined;
 
-        return async (params) => {
-          const request = params as { body?: unknown };
-          if (!request.body) {
-            return originalStreamFn(params);
+      async ingest() {
+        return { ingested: true };
+      },
+
+      async assemble({ messages, system }: { messages: Message[]; system?: string }) {
+        const interceptConfig: InterceptConfig = {
+          enabled: true,
+          mode: "auto",
+          tag: "document",
+          separator: "---",
+          alpha: 0.001,
+          linkageMethod: "average",
+          scope: config.scope,
+        };
+
+        // OpenClaw uses role: "toolResult" instead of Anthropic's user+tool_result blocks
+        // Convert to Anthropic format for our extractors
+        const convertedMessages = messages.map((msg, idx) => {
+          if (msg.role === "toolResult") {
+            const content = typeof msg.content === "string"
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? (msg.content as any[]).map(b => b?.text || "").join("\n")
+                : "";
+            return {
+              role: "user",
+              content: [{
+                type: "tool_result",
+                tool_use_id: (msg as any).tool_use_id || (msg as any).toolUseId || `tool_${idx}`,
+                content: content,
+              }],
+            };
           }
+          return msg;
+        });
 
-          const body = structuredClone(request.body) as Record<string, unknown>;
-          const apiFormat = detectApiFormat(body, config.backendProvider);
+        const convertedBody: Record<string, unknown> = {
+          messages: convertedMessages,
+          system: system,
+        };
 
-          const interceptConfig: InterceptConfig = {
-            enabled: true,
-            mode: "auto",
-            tag: "document",
-            separator: "---",
-            alpha: 0.001,
-            linkageMethod: "average",
-            scope: config.scope,
-          };
+        const handler = getFormatHandler("anthropic_messages");
+        const multi = handler.extractAll(convertedBody, interceptConfig);
 
-          const handler = getFormatHandler(apiFormat);
-          const multi = handler.extractAll(body, interceptConfig);
-
-          const reorderDocs = async (docs: string[]): Promise<string[]> => {
-            if (docs.length < 2) {
-              return docs;
-            }
-            if (client) {
-              return reorderWithClient(client, docs);
-            }
-            if (engine) {
-              return reorderWithEngine(engine, docs);
-            }
+        const reorderDocs = (docs: string[]): string[] => {
+          if (docs.length < 2) {
             return docs;
-          };
+          }
+          return reorderWithEngine(engine, docs);
+        };
 
-          if (multi.systemExtraction) {
-            const [extraction, sysIdx] = multi.systemExtraction;
-            if (extraction.documents.length >= 2) {
-              const reordered = await reorderDocs(extraction.documents);
-              handler.reconstructSystem(body, extraction, reordered, sysIdx);
+        // Reorder documents in system prompt
+        if (multi.systemExtraction) {
+          const [extraction, sysIdx] = multi.systemExtraction;
+          if (extraction.documents.length >= 2) {
+            const reordered = reorderDocs(extraction.documents);
+            handler.reconstructSystem(convertedBody, extraction, reordered, sysIdx);
+          }
+        }
+
+        // Reorder documents in tool results
+        for (const [extraction, location] of multi.toolExtractions) {
+          if (extraction.documents.length >= 2) {
+            const reordered = reorderDocs(extraction.documents);
+            handler.reconstructToolResult(convertedBody, extraction, reordered, location);
+          }
+        }
+
+        // Map converted messages back to original format (toolResult role)
+        const finalMessages = (convertedBody.messages as any[]).map((msg, idx) => {
+          const original = messages[idx];
+          if (original?.role === "toolResult") {
+            const block = Array.isArray(msg.content) ? msg.content[0] : null;
+            const extractedContent = block?.content;
+
+            if (Array.isArray(original.content)) {
+              const newContentArray = (original.content as any[]).map(b => {
+                if (b?.type === "text" && typeof extractedContent === "string") {
+                  return { ...b, text: extractedContent };
+                }
+                return b;
+              });
+              return { ...original, content: newContentArray };
+            } else if (typeof extractedContent === "string") {
+              return { ...original, content: extractedContent };
             }
+            return original;
           }
+          return msg;
+        });
 
-          for (const [extraction, location] of multi.toolExtractions) {
-            if (extraction.documents.length >= 2) {
-              const reordered = await reorderDocs(extraction.documents);
-              handler.reconstructToolResult(body, extraction, reordered, location);
-            }
-          }
+        // Build final body with potentially reordered messages
+        const finalBody: Record<string, unknown> = {
+          messages: finalMessages,
+          system: system,
+        };
 
-          if (apiFormat === "openai_chat") {
-            const dedupResult = dedupChatCompletions(body);
-            totalCharsSaved += dedupResult.charsSaved;
-          }
-          if (body.input && Array.isArray(body.input)) {
-            const dedupResult = dedupResponsesApi(body);
-            totalCharsSaved += dedupResult.charsSaved;
-          }
+        // Deduplicate repeated content
+        const dedupResult = dedupChatCompletions(finalBody);
+        totalCharsSaved += dedupResult.charsSaved;
 
-          const optimizedBody = isSglang
-            ? body
-            : injectCacheControl(body, config.backendProvider === "anthropic" ? "anthropic" : "openai");
+        // Inject cache control markers
+        const optimizedBody = injectCacheControl(finalBody, "anthropic");
 
-          requestCount++;
+        assembleCount++;
 
-          return originalStreamFn({
-            ...params,
-            body: optimizedBody,
-          });
+        // Log savings periodically (every 5 requests or when significant savings)
+        if (dedupResult.charsSaved > 0 || assembleCount % 5 === 0) {
+          const estimatedTokensSaved = Math.round(totalCharsSaved / 4);
+          const estimatedCostSaved = (estimatedTokensSaved * 0.003 / 1000).toFixed(4); // $3/MTok input
+          console.error(`[ContextPilot] Stats: ${assembleCount} requests, ${totalCharsSaved.toLocaleString()} chars saved (~${estimatedTokensSaved.toLocaleString()} tokens, ~$${estimatedCostSaved})`);
+        }
+
+        // Return optimized messages
+        return {
+          messages: (optimizedBody.messages as Message[]) || messages,
+          system: optimizedBody.system as string | undefined,
+          estimatedTokens: 0,
         };
       },
-      augmentModelCatalog: () => {
-        if (config.backendProvider === "sglang") {
-          return [
-            { id: "default", name: "SGLang Default (ContextPilot)", provider: PROVIDER_ID },
-          ];
-        }
 
-        const isAnthropic = config.backendProvider === "anthropic";
-        if (isAnthropic) {
-          return [
-            { id: "claude-opus-4-6", name: "Claude Opus 4.6 (ContextPilot)", provider: PROVIDER_ID },
-            {
-              id: "claude-sonnet-4-6",
-              name: "Claude Sonnet 4.6 (ContextPilot)",
-              provider: PROVIDER_ID,
-            },
-          ];
-        }
-        return [
-          { id: "gpt-4o", name: "GPT-4o (ContextPilot)", provider: PROVIDER_ID },
-          { id: "gpt-4o-mini", name: "GPT-4o Mini (ContextPilot)", provider: PROVIDER_ID },
-        ];
+      async compact(params) {
+        return await delegateCompactionToRuntime(params);
       },
-    });
+    }));
 
+    // Register status tool
     api.registerTool({
       name: "contextpilot_status",
       description: "Report ContextPilot engine state",
       parameters: Type.Object({}),
       async execute(_toolCallId: string, _params: unknown) {
+        const stats = engine.getStats();
         const lines = [
           "ContextPilot Engine Status:",
-          `  Backend: ${config.backendProvider}`,
           `  Scope: ${config.scope}`,
-          `  Requests optimized: ${requestCount}`,
+          `  Contexts assembled: ${assembleCount}`,
           `  Total chars saved: ${totalCharsSaved.toLocaleString()}`,
+          `  Live index: ${engine.isLive ? "active" : "warming"}`,
+          `  Nodes: ${Number(stats.num_nodes ?? 0)}`,
+          `  Active nodes: ${Number(stats.active_nodes ?? 0)}`,
+          `  Requests tracked: ${Number(stats.num_requests ?? 0)}`,
+          `  Total searches: ${Number(stats.total_searches ?? 0)}`,
+          `  Total insertions: ${Number(stats.total_insertions ?? 0)}`,
+          `  Total removals: ${Number(stats.total_removals ?? 0)}`,
+          `  Avg search time (us): ${Number(stats.avg_search_time_us ?? 0).toFixed(2)}`,
         ];
-
-        if (engine) {
-          const stats = engine.getStats();
-          lines.push("  Mode: cloud-api (in-process ContextPilot engine)");
-          lines.push(`  Live index: ${engine.isLive ? "active" : "warming"}`);
-          lines.push(`  Nodes: ${Number(stats.num_nodes ?? 0)}`);
-          lines.push(`  Active nodes: ${Number(stats.active_nodes ?? 0)}`);
-          lines.push(`  Requests tracked: ${Number(stats.num_requests ?? 0)}`);
-          lines.push(`  Total searches: ${Number(stats.total_searches ?? 0)}`);
-          lines.push(`  Total insertions: ${Number(stats.total_insertions ?? 0)}`);
-          lines.push(`  Total removals: ${Number(stats.total_removals ?? 0)}`);
-          lines.push(`  Avg search time (us): ${Number(stats.avg_search_time_us ?? 0).toFixed(2)}`);
-        }
-
-        if (client) {
-          const [health, remoteStats] = await Promise.all([client.health(), client.getStats()]);
-          lines.push("  Mode: sglang (remote ContextPilot index)");
-          lines.push(`  Index server URL: ${config.indexServerUrl}`);
-          lines.push(`  Index server health: ${formatJson(health)}`);
-          lines.push(`  Index server stats: ${formatJson(remoteStats)}`);
-        }
 
         return {
           content: [

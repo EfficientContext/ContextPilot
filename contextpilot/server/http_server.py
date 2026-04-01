@@ -25,6 +25,7 @@ import asyncio
 import os
 import re
 import uuid
+from dataclasses import dataclass, field as dc_field
 from typing import List, Dict, Any, Optional, cast
 from contextlib import asynccontextmanager
 
@@ -105,13 +106,9 @@ _intercept_index: Optional[ContextPilot] = None
 # skip-old / dedup-new / reorder-new behaviour.  Single-conversation
 # model (one user at a time).  Resets when the system prompt changes.
 
-from dataclasses import dataclass, field as dc_field
-
-
 @dataclass
 class _InterceptConvState:
-    """Global intercept state for the current conversation."""
-
+    """Per-session intercept state for a single conversation."""
     # Cached copy of the full messages array after modification (reorder/dedup).
     # On subsequent turns, old messages are replaced with these cached versions
     # so the inference engine's prefix cache sees identical tokens.
@@ -132,7 +129,10 @@ class _InterceptConvState:
     last_message_count: int = 0
 
 
-_intercept_state = _InterceptConvState()
+# Per-session state dict keyed by session fingerprint (hash of first user msg).
+# This allows concurrent multi-user sessions to each maintain their own state.
+_intercept_states: dict[str, _InterceptConvState] = {}
+_MAX_TRACKED_SESSIONS = 64  # LRU eviction threshold
 
 # TTFT tracking for averages across a session
 _ttft_history: List[float] = []
@@ -876,19 +876,13 @@ async def reset_index():
 
     After reset, you must call /reorder again before other operations.
     """
-    global \
-        _index, \
-        _str_to_id, \
-        _id_to_str, \
-        _next_str_id, \
-        _intercept_index, \
-        _intercept_state
+    global _index, _str_to_id, _id_to_str, _next_str_id, _intercept_index, _intercept_states
 
     # Reset conversation tracker
     reset_conversation_tracker()
 
-    # Reset intercept conversation state
-    _intercept_state = _InterceptConvState()
+    # Reset all per-session intercept states
+    _intercept_states.clear()
     _intercept_index = None
 
     # Reset string-to-ID mapping
@@ -1186,31 +1180,72 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
+def _session_fingerprint(body: Dict[str, Any]) -> str:
+    """Derive a session fingerprint from the first user message.
+
+    In a multi-turn conversation, messages grow but the first user message
+    stays constant.  Hashing it gives a stable per-session key that lets
+    concurrent users each maintain their own intercept state.
+    """
+    msgs = body.get("messages") or []
+    # Find the first user message (usually msg[0] or msg[1] after system)
+    for msg in msgs[:3]:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # OpenAI format: [{type: text, text: "..."}]
+                parts = [p.get("text", "") for p in content
+                         if isinstance(p, dict)]
+                content = "".join(parts)
+            return _hash_text(str(content))
+    # Fallback: hash all messages (shouldn't happen in practice)
+    return _hash_text(json.dumps(msgs[:2], sort_keys=True))
+
+
 def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
-    """Return the global intercept state, resetting if the conversation changed.
+    """Return per-session intercept state, creating or resetting as needed.
+
+    Uses the first user message as a session fingerprint so concurrent
+    multi-user sessions each get their own state.
 
     Detection: in a multi-turn agent conversation the messages array only
     grows.  If the count drops, either a new session started or the host
-    compacted old messages.  Either way, reset all state: the old KV cache
+    compacted old messages.  Either way, reset state: the old KV cache
     entries are gone (compaction rewrites content), so cached_messages,
     seen_doc_hashes, and reorder state are all invalid.
     """
-    global _intercept_state
+    global _intercept_states
+    session_key = _session_fingerprint(body)
     msg_count = len(body.get("messages") or [])
-    if msg_count < _intercept_state.last_message_count:
+
+    state = _intercept_states.get(session_key)
+
+    if state is None:
+        # New session
+        state = _InterceptConvState()
+        state.system_processed = True
         logger.info(
-            f"Intercept: message count dropped "
-            f"({msg_count} < {_intercept_state.last_message_count}), "
-            f"resetting all state (compaction or new session)"
+            f"Intercept: new session {session_key[:8]}… "
+            f"({msg_count} msgs, {len(_intercept_states)} active sessions)"
         )
-        _intercept_state = _InterceptConvState()
-        # Skip reorder for the first post-compaction tool result:
-        # prefix cache is fully invalidated, nothing to align with.
-        # Go straight to dedup mode so docs are registered for future turns.
-        _intercept_state.first_tool_result_done = True
-        _intercept_state.system_processed = True
-    _intercept_state.last_message_count = msg_count
-    return _intercept_state
+        # Evict oldest sessions if over limit
+        if len(_intercept_states) >= _MAX_TRACKED_SESSIONS:
+            oldest_key = next(iter(_intercept_states))
+            del _intercept_states[oldest_key]
+            logger.info(f"Intercept: evicted session {oldest_key[:8]}…")
+        _intercept_states[session_key] = state
+    elif msg_count < state.last_message_count:
+        logger.info(
+            f"Intercept: session {session_key[:8]}… message count dropped "
+            f"({msg_count} < {state.last_message_count}), "
+            f"resetting state (compaction or restart)"
+        )
+        state = _InterceptConvState()
+        state.system_processed = True
+        _intercept_states[session_key] = state
+
+    state.last_message_count = msg_count
+    return state
 
 
 def _deduplicate_docs(docs: List[str], state: _InterceptConvState) -> tuple:
@@ -1260,6 +1295,16 @@ def _strip_external_content_ids(body: Any) -> Any:
 # API format constants
 _OPENAI_CHAT = "openai_chat"
 _ANTHROPIC_MESSAGES = "anthropic_messages"
+
+# Hop-by-hop headers that must not be forwarded by proxies.
+_HOP_BY_HOP = frozenset((
+    "host", "connection", "keep-alive", "transfer-encoding",
+    "te", "trailer", "upgrade", "proxy-authorization",
+    "proxy-authenticate", "content-length",
+))
+
+# Previous message hashes for prefix divergence detection.
+_debug_prev_msg_hashes: List[str] = []
 
 
 def _doc_preview(doc: str, max_len: int = 60) -> str:
@@ -1368,14 +1413,12 @@ async def _intercept_and_forward(request: Request, api_format: str):
     total_reordered = 0
     total_deduped = 0
     total_slimmed = 0
-    tool_results_skipped = 0  # TODO: never incremented — wire up or remove
-    _chars_before_slim = 0
-    _chars_after_slim = 0
+    chars_before_slim = 0
+    chars_after_slim = 0
     system_count = 0
     tool_result_count = 0
-    reorder_details = []  # collect per-source reorder info
+    reorder_details = []
     _dedup_result = DedupResult()
-    state = _intercept_state
 
     # ── Debug: log conversation shape, divergence, and tool_result details ──
     _debug_messages = body.get("messages") or []
@@ -1383,12 +1426,11 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
     # Per-message hashes for this request
     _debug_msg_hashes = []
-    if logger.isEnabledFor(logging.DEBUG):
-        for m in _debug_messages:
-            h = hashlib.sha256(
-                json.dumps(m, sort_keys=True, ensure_ascii=False).encode()
-            ).hexdigest()[:12]
-            _debug_msg_hashes.append(h)
+    for m in _debug_messages:
+        h = hashlib.sha256(
+            json.dumps(m, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()[:12]
+        _debug_msg_hashes.append(h)
 
     # Build tool_call_id → function name mapping from assistant messages
     _tool_call_names = {}
@@ -1421,7 +1463,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
             _chars = len(_content_str)
             _is_compacted = "[compacted:" in _content_str
             _preview = _content_str[:150].replace("\n", "\\n")
-            logger.info(
+            logger.debug(
                 f"  msg[{idx}] role={_role} fn={_fn_label} "
                 f"tool_call_id={_tc_id} "
                 f"chars={_chars} compacted={_is_compacted} "
@@ -1439,43 +1481,18 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     _chars = len(_tc_str)
                     _is_compacted = "[compacted:" in _tc_str
                     _preview = _tc_str[:150].replace("\n", "\\n")
-                    logger.info(
+                    logger.debug(
                         f"  msg[{idx}].content[{bi}] type=tool_result "
                         f"tool_use_id={_tu_id} chars={_chars} "
                         f"compacted={_is_compacted} preview: {_preview}"
                     )
 
-    global _debug_prev_msg_hashes
-    if "_debug_prev_msg_hashes" not in globals():
-        _debug_prev_msg_hashes = []
-
-    _prev_n = len(_debug_prev_msg_hashes)
-    if _prev_n > 0 and _prev_n <= _debug_msg_count:
-        _first_diff = None
-        for idx in range(_prev_n):
-            if _debug_msg_hashes[idx] != _debug_prev_msg_hashes[idx]:
-                _first_diff = idx
-                break
-        if _first_diff is not None:
-            _diff_msg = _debug_messages[_first_diff]
-            _diff_role = _diff_msg.get("role", "?")
-            _diff_content = str(_diff_msg.get("content", ""))
-            logger.warning(
-                f"Intercept PREFIX MISMATCH at msg[{_first_diff}] "
-                f"(role={_diff_role}), "
-                f"hash was {_debug_prev_msg_hashes[_first_diff]} "
-                f"now {_debug_msg_hashes[_first_diff]}. "
-                f"Content preview ({len(_diff_content)} chars): "
-                f"{_diff_content[:300]}..."
-            )
-        else:
-            logger.info(
-                f"Intercept: {_debug_msg_count} msgs (prev={_prev_n}), "
-                f"prefix[:{_prev_n}] MATCH, "
-                f"{_debug_msg_count - _prev_n} new msgs"
-            )
-    else:
-        logger.info(f"Intercept: {_debug_msg_count} msgs (first request or reset)")
+    # Per-session debug logging (uses session fingerprint, not global state)
+    _session_key = _session_fingerprint(body)
+    _session_tag = _session_key[:8]
+    logger.info(
+        f"Intercept: session={_session_tag} {_debug_msg_count} msgs"
+    )
 
     _debug_prev_msg_hashes = list(_debug_msg_hashes)
 
@@ -1484,7 +1501,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
     if config.enabled:
         try:
-            # body is already a fresh copy from _strip_external_content_ids
+            body = copy.deepcopy(body)
 
             # ── Conversation-aware state (single-conversation model) ──
             state = _get_intercept_state(body)
@@ -1493,15 +1510,44 @@ async def _intercept_and_forward(request: Request, api_format: str):
             # On subsequent turns, the host sends original (unmodified)
             # messages.  Replace them with our cached modified versions
             # so the inference engine's prefix cache sees identical tokens.
+            # IMPORTANT: Only replace if the old messages actually match
+            # (same session/user).  Without this check, concurrent requests
+            # from different sessions would get cross-contaminated.
             old_msg_count = len(state.cached_messages)
             if old_msg_count > 0:
                 msgs = body.get("messages", [])
                 if len(msgs) >= old_msg_count:
-                    msgs[:old_msg_count] = copy.deepcopy(state.cached_messages)
-                    logger.info(
-                        f"Intercept: replaced {old_msg_count} old messages "
-                        f"with cached versions for prefix cache consistency"
-                    )
+                    # Verify prefix match before replacing
+                    prefix_ok = True
+                    for _ci in range(old_msg_count):
+                        _cached_h = hashlib.sha256(
+                            json.dumps(state.cached_messages[_ci],
+                                       sort_keys=True,
+                                       ensure_ascii=False).encode()
+                        ).hexdigest()[:16]
+                        _current_h = hashlib.sha256(
+                            json.dumps(msgs[_ci],
+                                       sort_keys=True,
+                                       ensure_ascii=False).encode()
+                        ).hexdigest()[:16]
+                        if _cached_h != _current_h:
+                            prefix_ok = False
+                            break
+                    if prefix_ok:
+                        msgs[:old_msg_count] = copy.deepcopy(
+                            state.cached_messages)
+                        logger.info(
+                            f"Intercept: replaced {old_msg_count} old "
+                            f"messages with cached versions for prefix "
+                            f"cache consistency"
+                        )
+                    else:
+                        logger.info(
+                            f"Intercept: prefix mismatch at msg[{_ci}], "
+                            f"skipping cached message replay "
+                            f"(different session/user)"
+                        )
+                        old_msg_count = 0
                 handler.restore_system(body, state.cached_system)
 
             multi = handler.extract_all(body, config)
@@ -1523,7 +1569,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                             }
                         )
                         handler.reconstruct_system(
-                            body, extraction, reordered_docs, sys_idx, config
+                            body, extraction, reordered_docs, sys_idx
                         )
                         total_reordered += len(extraction.documents)
                         system_count = 1
@@ -1570,8 +1616,8 @@ async def _intercept_and_forward(request: Request, api_format: str):
                                 f"previous tool result ({orig_chars} chars). "
                                 f"Refer to the earlier result above.]"
                             ]
-                            _chars_before_slim += orig_chars
-                            _chars_after_slim += len(new_docs[0])
+                            chars_before_slim += orig_chars
+                            chars_after_slim += len(new_docs[0])
                             total_slimmed += deduped
                         reorder_details.append(
                             {
@@ -1626,13 +1672,8 @@ async def _intercept_and_forward(request: Request, api_format: str):
                         single_doc.tool_call_id
                     )
 
-            if (
-                total_reordered > 0
-                or total_deduped > 0
-                or total_slimmed > 0
-                or tool_results_skipped > 0
-            ):
-                saved = _chars_before_slim - _chars_after_slim
+            if total_reordered > 0 or total_deduped > 0 or total_slimmed > 0:
+                saved = chars_before_slim - chars_after_slim
                 saved_tokens = saved // 4 if saved > 0 else 0
                 logger.info(
                     f"Intercept ({api_format}): reordered {total_reordered}, "
@@ -1648,8 +1689,8 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     _dedup_result = dedup_responses_api(body, chunk_modulus=_chunk_modulus)
 
                 if _dedup_result.chars_saved > 0:
-                    _chars_before_slim += _dedup_result.chars_before
-                    _chars_after_slim += _dedup_result.chars_after
+                    chars_before_slim += _dedup_result.chars_before
+                    chars_after_slim += _dedup_result.chars_after
                     logger.info(
                         f"Dedup ({api_format}): "
                         f"blocks={_dedup_result.blocks_deduped}/{_dedup_result.blocks_total}, "
@@ -1697,22 +1738,6 @@ async def _intercept_and_forward(request: Request, api_format: str):
     else:
         target_url = f"{infer_api_url}{handler.target_path()}"
 
-    # Build outbound headers: forward everything except X-ContextPilot-*
-    # and hop-by-hop headers that must not be forwarded by proxies.
-    _HOP_BY_HOP = frozenset(
-        (
-            "host",
-            "connection",
-            "keep-alive",
-            "transfer-encoding",
-            "te",
-            "trailer",
-            "upgrade",
-            "proxy-authorization",
-            "proxy-authenticate",
-            "content-length",
-        )
-    )
     if _cloud_mode and _cloud_adapter is not None and _cloud_api_key:
         outbound_headers = _cloud_adapter.get_auth_headers(_cloud_api_key)
     else:
@@ -1732,34 +1757,30 @@ async def _intercept_and_forward(request: Request, api_format: str):
         total_reordered > 0
         or total_deduped > 0
         or total_slimmed > 0
-        or tool_results_skipped > 0
         or _dedup_result.chars_saved > 0
     )
     if _has_activity:
-        cp_response_headers["X-ContextPilot-Result"] = json.dumps(
-            {
-                "intercepted": True,
-                "documents_reordered": total_reordered > 0,
-                "total_documents": total_reordered,
-                "documents_deduplicated": total_deduped,
-                "documents_slimmed": total_slimmed,
-                "chars_before_slim": _chars_before_slim,
-                "chars_after_slim": _chars_after_slim,
-                "chars_saved": _chars_before_slim - _chars_after_slim,
-                "tool_results_skipped": tool_results_skipped,
-                "message_count": state.last_message_count,
-                "sources": {
-                    "system": system_count,
-                    "tool_results": tool_result_count,
-                },
-                "reorder_details": reorder_details,
-                "dedup": {
-                    "blocks_deduped": _dedup_result.blocks_deduped,
-                    "blocks_total": _dedup_result.blocks_total,
-                    "chars_saved": _dedup_result.chars_saved,
-                },
-            }
-        )
+        cp_response_headers["X-ContextPilot-Result"] = json.dumps({
+            "intercepted": True,
+            "documents_reordered": total_reordered > 0,
+            "total_documents": total_reordered,
+            "documents_deduplicated": total_deduped,
+            "documents_slimmed": total_slimmed,
+            "chars_before_slim": chars_before_slim,
+            "chars_after_slim": chars_after_slim,
+            "chars_saved": chars_before_slim - chars_after_slim,
+            "message_count": state.last_message_count,
+            "sources": {
+                "system": system_count,
+                "tool_results": tool_result_count,
+            },
+            "reorder_details": reorder_details,
+            "dedup": {
+                "blocks_deduped": _dedup_result.blocks_deduped,
+                "blocks_total": _dedup_result.blocks_total,
+                "chars_saved": _dedup_result.chars_saved,
+            },
+        })
 
     is_stream = body.get("stream", False)
 
@@ -1785,7 +1806,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     async for chunk in resp.content.iter_any():
                         if not _ttft_logged:
                             _ttft_ms = (time.monotonic() - _request_start) * 1000
-                            _saved = _chars_before_slim - _chars_after_slim
+                            _saved = chars_before_slim - chars_after_slim
                             _log_ttft(_ttft_ms, total_slimmed, _saved)
                             _ttft_logged = True
                         yield chunk
@@ -1795,12 +1816,9 @@ async def _intercept_and_forward(request: Request, api_format: str):
             status, fwd_headers = cast(tuple[int, Dict[str, str]], first_event)
 
             async def _stream_content_only():
-                try:
-                    async for event in stream_iter:
-                        if isinstance(event, bytes):
-                            yield event
-                finally:
-                    await stream_iter.aclose()
+                async for event in stream_iter:
+                    if isinstance(event, bytes):
+                        yield event
 
             return StreamingResponse(
                 _stream_content_only(),
@@ -1814,13 +1832,9 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 target_url, json=body, headers=outbound_headers
             ) as resp:
                 _ttft_ms = (time.monotonic() - _request_start) * 1000
-                _saved = _chars_before_slim - _chars_after_slim
+                _saved = chars_before_slim - chars_after_slim
                 _log_ttft(_ttft_ms, total_slimmed, _saved)
-                try:
-                    result = await resp.json()
-                except (json.JSONDecodeError, aiohttp.ContentTypeError):
-                    text = await resp.text()
-                    raise HTTPException(status_code=resp.status, detail=text[:500])
+                result = await resp.json()
 
                 # ── Cloud mode: track cache metrics from response ──
                 if (
@@ -1858,7 +1872,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
     except aiohttp.ClientError as e:
         logger.error(f"Error forwarding intercepted request: {e}")
-        raise HTTPException(status_code=502, detail="Backend connection error")
+        raise HTTPException(status_code=502, detail=f"Backend error: {str(e)}")
 
 
 @app.post("/v1/chat/completions")
@@ -1938,9 +1952,9 @@ async def proxy_engine(path: str, request: Request):
                     body["rid"] = request_id
                     body["request_id"] = request_id
 
-            body.setdefault("temperature", 0)
+            body["temperature"] = 0
             if _cloud_mode:
-                body.setdefault("top_p", 0)
+                body["top_p"] = 0
 
             dedup_result = DedupResult()
             try:
@@ -2153,7 +2167,7 @@ Cloud proxy mode:
         os.environ["CONTEXTPILOT_CLOUD_API_KEY"] = args.cloud_api_key
 
     # Also set global config for direct access
-    global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode, _chunk_modulus
+    global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode
     _max_tokens = args.max_tokens
     _infer_api_url = args.infer_api_url.rstrip("/")
     _stateless_mode = args.stateless

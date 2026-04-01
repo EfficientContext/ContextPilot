@@ -172,11 +172,22 @@ export function dedupChatCompletions(body: ChatCompletionsBody, opts: DedupOptio
 
     for (let idx = 0; idx < messages.length; idx++) {
         const msg = messages[idx];
-        if (!msg || typeof msg !== 'object' || msg.role !== 'tool') {
+        if (!msg || typeof msg !== 'object') {
+            continue;
+        }
+        // Support both OpenAI 'tool' role and OpenClaw 'toolResult' role
+        if (msg.role !== 'tool' && msg.role !== 'toolResult') {
             continue;
         }
 
-        const content = msg.content || '';
+        // For toolResult role, content might be an array of {type: "text", text: "..."} blocks
+        let content = msg.content || '';
+        if (Array.isArray(content)) {
+            content = content
+                .filter((b: any) => b?.type === 'text')
+                .map((b: any) => b.text || '')
+                .join('\n');
+        }
         if (typeof content !== 'string' || content.length < minContentChars) {
             continue;
         }
@@ -234,7 +245,18 @@ export function dedupChatCompletions(body: ChatCompletionsBody, opts: DedupOptio
         if (dedupedInThis > 0) {
             const originalLen = content.length;
             const newContent = newBlocks.join('\n\n');
-            msg.content = newContent;
+
+            // Preserve original content format
+            if (Array.isArray(msg.content)) {
+                // For array content, update the first text block
+                const textBlockIdx = msg.content.findIndex((b: any) => b?.type === 'text');
+                if (textBlockIdx >= 0) {
+                    (msg.content as any[])[textBlockIdx].text = newContent;
+                }
+            } else {
+                msg.content = newContent;
+            }
+
             const newLen = newContent.length;
             result.charsBefore += originalLen;
             result.charsAfter += newLen;

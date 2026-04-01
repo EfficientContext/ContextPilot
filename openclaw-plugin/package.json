@@ -1,5 +1,5 @@
 {
-  "name": "@contextpilot/openclaw-plugin",
+  "name": "@contextpilot/contextpilot",
   "version": "0.2.0",
   "description": "ContextPilot plugin for OpenClaw — faster long-context inference via in-process context reuse. Zero external dependencies.",
   "type": "module",
@@ -21,11 +21,16 @@
     "llm"
   ],
   "openclaw": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "files": [
     "src/",
     "openclaw.plugin.json",
     "README.md"
-  ]
+  ],
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
+  }
 }

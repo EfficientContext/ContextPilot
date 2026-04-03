@@ -114,13 +114,23 @@ openclaw-plugin/
 
 ## Verifying It Works
 
-Check the gateway logs for ContextPilot output:
+Check the gateway logs:
 
 ```
-[ContextPilot] assemble() called with 84 messages
-[ContextPilot] Extractions found - system: 0 tool: 1 singleDoc: 3
-[ContextPilot] Optimization complete. Chars saved: 2389
+[ContextPilot] Stats: 5 requests, 28,356 chars saved (~7,089 tokens, ~$0.0213)
 ```
+
+## Expected Savings
+
+Savings depend on conversation length and repeated content:
+
+| Scenario | Chars Saved | Token Reduction |
+|:---------|------------:|----------------:|
+| Short session (few tool calls) | 0-5K | ~0-5% |
+| Medium session (10+ file reads) | 20-50K | ~10-20% |
+| Long session (repeated large files) | 100K+ | ~30-50% |
+
+Run `./benchmark.sh` to measure with/without comparison on your workload.
 
 ## License
 

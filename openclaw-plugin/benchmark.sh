@@ -1,183 +1,175 @@
 #!/bin/bash
 #
-# ContextPilot OpenClaw Plugin Benchmark
-# Compares token usage and cache hits with and without the plugin
-#
-# Usage: ./benchmark.sh [num_iterations]
+# ContextPilot Token Usage Benchmark
+# Compares prefill/input tokens with and without the plugin
 #
 
 set -e
 
-NUM_ITERATIONS=${1:-3}
 OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
-BACKUP_CONFIG="$HOME/.openclaw/openclaw.json.backup"
-GATEWAY_LOG="/tmp/gw-benchmark.log"
+BACKUP_CONFIG="$HOME/.openclaw/openclaw.json.bak"
+LOG_WITH="/tmp/gw-with-cp.log"
+LOG_WITHOUT="/tmp/gw-without-cp.log"
 
-# Test that triggers multiple file reads to show dedup benefit
-TEST_FILES=(
-    "/home/ryan/ContextPilot/openclaw-plugin/src/engine/dedup.ts"
-    "/home/ryan/ContextPilot/openclaw-plugin/src/engine/cache-control.ts"
-    "/home/ryan/ContextPilot/openclaw-plugin/src/index.ts"
-)
+TEST_FILE="/home/ryan/ContextPilot/openclaw-plugin/src/engine/dedup.ts"
 
 echo "=========================================="
-echo "ContextPilot OpenClaw Plugin Benchmark"
+echo "ContextPilot Token Usage Benchmark"
 echo "=========================================="
-echo "Iterations: $NUM_ITERATIONS"
-echo ""
 
 # Backup config
 cp "$OPENCLAW_CONFIG" "$BACKUP_CONFIG"
 
 cleanup() {
     echo ""
-    echo "Restoring original config..."
+    echo "Restoring config..."
     cp "$BACKUP_CONFIG" "$OPENCLAW_CONFIG"
     rm -f "$BACKUP_CONFIG"
-    pkill -9 -f "openclaw gateway" 2>/dev/null || true
+    openclaw gateway stop 2>/dev/null || pkill -9 -f "openclaw" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-restart_gateway() {
-    pkill -9 -f "openclaw gateway" 2>/dev/null || true
-    sleep 2
-    openclaw gateway > "$GATEWAY_LOG" 2>&1 &
-    sleep 5
+enable_contextpilot() {
+    python3 << 'PYTHON'
+import json, os
+path = os.path.expanduser("~/.openclaw/openclaw.json")
+with open(path) as f: c = json.load(f)
+c.setdefault('plugins', {}).setdefault('slots', {})['contextEngine'] = 'contextpilot'
+c['plugins'].setdefault('entries', {}).setdefault('contextpilot', {})['enabled'] = True
+with open(path, 'w') as f: json.dump(c, f, indent=2)
+PYTHON
 }
 
-run_multi_read_test() {
-    local label=$1
+disable_contextpilot() {
+    python3 << 'PYTHON'
+import json, os
+path = os.path.expanduser("~/.openclaw/openclaw.json")
+with open(path) as f: c = json.load(f)
+if 'plugins' in c:
+    c['plugins'].get('slots', {}).pop('contextEngine', None)
+    if 'contextpilot' in c['plugins'].get('entries', {}):
+        c['plugins']['entries']['contextpilot']['enabled'] = False
+with open(path, 'w') as f: json.dump(c, f, indent=2)
+PYTHON
+}
 
-    echo "Running $label test..."
-    echo "  Reading ${#TEST_FILES[@]} files multiple times to trigger dedup..."
+restart_gateway() {
+    local logfile=$1
+    echo "  Stopping gateway..."
+    openclaw gateway stop 2>/dev/null || true
+    pkill -9 -f "openclaw" 2>/dev/null || true
+    sleep 3
+    echo "  Starting gateway..."
+    openclaw gateway > "$logfile" 2>&1 &
+    sleep 6
+    if ! pgrep -f "openclaw" > /dev/null; then
+        echo "  ERROR: Gateway failed to start"
+        cat "$logfile" | tail -10
+        exit 1
+    fi
+    echo "  Gateway running."
+}
 
-    # First, read all files
-    for f in "${TEST_FILES[@]}"; do
-        openclaw agent --agent main --message "Read $f" > /dev/null 2>&1
-    done
-
-    # Then read them again (should trigger dedup on second pass)
-    for f in "${TEST_FILES[@]}"; do
-        openclaw agent --agent main --message "Read $f again and count lines" > /dev/null 2>&1
-    done
-
+run_test_sequence() {
+    echo "  Reading file 3 times to build up context..."
+    timeout 60 openclaw agent --agent main --message "Read $TEST_FILE and count functions" > /dev/null 2>&1 || true
+    timeout 60 openclaw agent --agent main --message "Read $TEST_FILE again" > /dev/null 2>&1 || true
+    timeout 60 openclaw agent --agent main --message "Read $TEST_FILE one more time and summarize" > /dev/null 2>&1 || true
     echo "  Done."
 }
 
-extract_stats() {
-    local log_file=$1
+extract_last_usage() {
+    local logfile=$1
+    # Find the last complete usage block and extract values
+    local input=$(grep '"input":' "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+' || echo "0")
+    local cache_read=$(grep '"cacheRead":' "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+' || echo "0")
+    local cache_write=$(grep '"cacheWrite":' "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+' || echo "0")
+    echo "$input $cache_read $cache_write"
+}
 
-    # Extract chars saved
-    local chars_saved=$(grep -oP "Chars saved: \K\d+" "$log_file" 2>/dev/null | tail -1 || echo "0")
-
-    # Extract cache stats from usage blocks
-    local cache_read=$(grep -oP '"cacheRead": \K\d+' "$log_file" 2>/dev/null | tail -1 || echo "0")
-    local cache_write=$(grep -oP '"cacheWrite": \K\d+' "$log_file" 2>/dev/null | tail -1 || echo "0")
-    local input_tokens=$(grep -oP '"input": \K\d+' "$log_file" 2>/dev/null | tail -1 || echo "0")
-
-    echo "$chars_saved $cache_read $cache_write $input_tokens"
+extract_chars_saved() {
+    local logfile=$1
+    # Look for ContextPilot stats line
+    grep "Stats:" "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+(?= chars saved)' || echo "0"
 }
 
 # ==========================================
-# Test WITH ContextPilot enabled
+# Test WITH ContextPilot
 # ==========================================
-echo "----------------------------------------"
+echo ""
 echo "Test 1: WITH ContextPilot enabled"
 echo "----------------------------------------"
+enable_contextpilot
+restart_gateway "$LOG_WITH"
+run_test_sequence
 
-# Ensure plugin is enabled
-python3 << 'PYTHON'
-import json
-config_path = "$HOME/.openclaw/openclaw.json".replace("$HOME", __import__("os").environ["HOME"])
-with open(config_path, 'r') as f:
-    config = json.load(f)
-if 'plugins' not in config:
-    config['plugins'] = {}
-if 'slots' not in config['plugins']:
-    config['plugins']['slots'] = {}
-config['plugins']['slots']['contextEngine'] = 'contextpilot'
-if 'entries' not in config['plugins']:
-    config['plugins']['entries'] = {}
-if 'contextpilot' not in config['plugins']['entries']:
-    config['plugins']['entries']['contextpilot'] = {}
-config['plugins']['entries']['contextpilot']['enabled'] = True
-with open(config_path, 'w') as f:
-    json.dump(config, f, indent=2)
-PYTHON
-
-restart_gateway
-run_multi_read_test "WITH_CONTEXTPILOT"
-
-WITH_STATS=$(extract_stats "$GATEWAY_LOG")
-WITH_CHARS=$(echo $WITH_STATS | cut -d' ' -f1)
-WITH_CACHE_READ=$(echo $WITH_STATS | cut -d' ' -f2)
-WITH_CACHE_WRITE=$(echo $WITH_STATS | cut -d' ' -f3)
-WITH_INPUT=$(echo $WITH_STATS | cut -d' ' -f4)
+WITH_USAGE=$(extract_last_usage "$LOG_WITH")
+WITH_INPUT=$(echo $WITH_USAGE | cut -d' ' -f1)
+WITH_CACHE_READ=$(echo $WITH_USAGE | cut -d' ' -f2)
+WITH_CACHE_WRITE=$(echo $WITH_USAGE | cut -d' ' -f3)
+WITH_CHARS=$(extract_chars_saved "$LOG_WITH")
 
 echo ""
-echo "  Chars saved by dedup: $WITH_CHARS"
-echo "  Cache read tokens: $WITH_CACHE_READ"
-echo "  Cache write tokens: $WITH_CACHE_WRITE"
-echo "  Input tokens: $WITH_INPUT"
+echo "  Results:"
+echo "    Input tokens:  $WITH_INPUT"
+echo "    Cache read:    $WITH_CACHE_READ"
+echo "    Cache write:   $WITH_CACHE_WRITE"
+echo "    Chars deduped: $WITH_CHARS"
 
 # ==========================================
-# Test WITHOUT ContextPilot (disabled)
+# Test WITHOUT ContextPilot
 # ==========================================
 echo ""
+echo "Test 2: WITHOUT ContextPilot"
 echo "----------------------------------------"
-echo "Test 2: WITHOUT ContextPilot (disabled)"
-echo "----------------------------------------"
+disable_contextpilot
+restart_gateway "$LOG_WITHOUT"
+run_test_sequence
 
-# Disable the plugin
-python3 << 'PYTHON'
-import json
-config_path = "$HOME/.openclaw/openclaw.json".replace("$HOME", __import__("os").environ["HOME"])
-with open(config_path, 'r') as f:
-    config = json.load(f)
-if 'plugins' in config:
-    if 'slots' in config['plugins']:
-        config['plugins']['slots'].pop('contextEngine', None)
-    if 'entries' in config['plugins'] and 'contextpilot' in config['plugins']['entries']:
-        config['plugins']['entries']['contextpilot']['enabled'] = False
-with open(config_path, 'w') as f:
-    json.dump(config, f, indent=2)
-PYTHON
-
-restart_gateway
-run_multi_read_test "WITHOUT_CONTEXTPILOT"
-
-WITHOUT_STATS=$(extract_stats "$GATEWAY_LOG")
-WITHOUT_CHARS=$(echo $WITHOUT_STATS | cut -d' ' -f1)
-WITHOUT_CACHE_READ=$(echo $WITHOUT_STATS | cut -d' ' -f2)
-WITHOUT_CACHE_WRITE=$(echo $WITHOUT_STATS | cut -d' ' -f3)
-WITHOUT_INPUT=$(echo $WITHOUT_STATS | cut -d' ' -f4)
+WITHOUT_USAGE=$(extract_last_usage "$LOG_WITHOUT")
+WITHOUT_INPUT=$(echo $WITHOUT_USAGE | cut -d' ' -f1)
+WITHOUT_CACHE_READ=$(echo $WITHOUT_USAGE | cut -d' ' -f2)
+WITHOUT_CACHE_WRITE=$(echo $WITHOUT_USAGE | cut -d' ' -f3)
 
 echo ""
-echo "  Chars saved by dedup: $WITHOUT_CHARS (expected: 0)"
-echo "  Cache read tokens: $WITHOUT_CACHE_READ"
-echo "  Cache write tokens: $WITHOUT_CACHE_WRITE"
-echo "  Input tokens: $WITHOUT_INPUT"
+echo "  Results:"
+echo "    Input tokens:  $WITHOUT_INPUT"
+echo "    Cache read:    $WITHOUT_CACHE_READ"
+echo "    Cache write:   $WITHOUT_CACHE_WRITE"
+echo "    Chars deduped: 0 (plugin disabled)"
 
 # ==========================================
-# Results Summary
+# Summary
 # ==========================================
 echo ""
 echo "=========================================="
-echo "RESULTS SUMMARY"
+echo "COMPARISON"
 echo "=========================================="
 echo ""
-echo "                        WITH      WITHOUT"
-echo "                     ContextPilot  Plugin"
-echo "----------------------------------------"
-printf "Chars deduped:       %8s    %8s\n" "$WITH_CHARS" "$WITHOUT_CHARS"
-printf "Cache read tokens:   %8s    %8s\n" "$WITH_CACHE_READ" "$WITHOUT_CACHE_READ"
-printf "Cache write tokens:  %8s    %8s\n" "$WITH_CACHE_WRITE" "$WITHOUT_CACHE_WRITE"
-printf "Input tokens:        %8s    %8s\n" "$WITH_INPUT" "$WITHOUT_INPUT"
+printf "%-20s %12s %12s\n" "" "WITH CP" "WITHOUT CP"
+printf "%-20s %12s %12s\n" "--------------------" "------------" "------------"
+printf "%-20s %12s %12s\n" "Input tokens" "$WITH_INPUT" "$WITHOUT_INPUT"
+printf "%-20s %12s %12s\n" "Cache read" "$WITH_CACHE_READ" "$WITHOUT_CACHE_READ"
+printf "%-20s %12s %12s\n" "Cache write" "$WITH_CACHE_WRITE" "$WITHOUT_CACHE_WRITE"
+printf "%-20s %12s %12s\n" "Chars deduped" "$WITH_CHARS" "0"
 echo ""
 
-if [ "$WITH_CHARS" -gt "0" ]; then
-    echo "ContextPilot deduplication saved $WITH_CHARS characters"
-    # Rough estimate: 4 chars per token
+# Calculate differences
+if [ "$WITH_INPUT" -gt 0 ] && [ "$WITHOUT_INPUT" -gt 0 ]; then
+    if [ "$WITH_INPUT" -lt "$WITHOUT_INPUT" ]; then
+        diff=$((WITHOUT_INPUT - WITH_INPUT))
+        pct=$((diff * 100 / WITHOUT_INPUT))
+        echo ">>> ContextPilot reduced input tokens by $diff ($pct% savings)"
+    elif [ "$WITH_INPUT" -gt "$WITHOUT_INPUT" ]; then
+        diff=$((WITH_INPUT - WITHOUT_INPUT))
+        pct=$((diff * 100 / WITHOUT_INPUT))
+        echo ">>> ContextPilot added $diff tokens ($pct% overhead)"
+    else
+        echo ">>> No difference in input tokens"
+    fi
+fi
+
+if [ "$WITH_CHARS" -gt 0 ]; then
     tokens_saved=$((WITH_CHARS / 4))
-    echo "Estimated token savings: ~$tokens_saved tokens"
+    echo ">>> Deduplication removed ~$tokens_saved tokens worth of repeated content"
 fi

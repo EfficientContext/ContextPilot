@@ -6,7 +6,7 @@ import { IntraContextOrderer } from './intra-ordering.js';
 import { computeDistanceSingle, computeDistancesBatch } from './compute-distance.js';
 import { ConversationTracker, type DeduplicationResult } from './conversation-tracker.js';
 import { EvictionHeap } from './eviction-heap.js';
-import crypto from 'crypto';
+import * as crypto from 'node:crypto';
 
 export function computePrefixLength(list1: number[], list2: number[]): number {
     let length = 0;
@@ -50,8 +50,8 @@ export class ContextPilot extends ContextIndex {
     
     static readonly _DEFAULT_CONVERSATION = "_default";
 
-    constructor(alpha: number = 0.001, useGpu: boolean = false, linkageMethod: string = "average", batchSize: number = 10000) {
-        super(alpha, useGpu, linkageMethod, batchSize);
+    constructor(alpha: number = 0.001, useGpu: boolean = false, linkageMethod: "single" | "complete" | "average" = "average", batchSize: number = 10000) {
+        super({ alpha, useGpu, linkageMethod, batchSize });
     }
 
     getAllRequestIds(): Set<string> {
@@ -448,14 +448,15 @@ export class ContextPilot extends ContextIndex {
 
         const newNodeId = this.nextNodeId++;
         const content = sourceNode.docIds ? [...sourceNode.docIds] : (sourceNode.content ? [...sourceNode.content] : []);
-        const originalIndices = sourceNode.originalIndices ? new Set(sourceNode.originalIndices) : new Set<number>();
-        
+        const originalIndices: Set<number> = sourceNode.originalIndices ? new Set<number>(sourceNode.originalIndices) : new Set<number>();
+
         const newNode = new ClusterNode(
             newNodeId,
-            content,
+            new Set<number>(content),
+            originalIndices,
+            0.0,
             [],
-            parentId,
-            originalIndices
+            parentId
         );
         
         if (sourceNode.docIds) {
@@ -475,15 +476,14 @@ export class ContextPilot extends ContextIndex {
 
         const parentTokens = this.metadata.has(parentId) ? this.metadata.get(parentId)!.totalTokens : 0;
         
-        const metadata = new NodeMetadata(
-            newNodeId,
-            isLeaf ? initialTokens : 0,
-            isLeaf ? Math.max(0, initialTokens - parentTokens) : 0,
+        const metadata = new NodeMetadata(newNodeId, {
+            totalTokens: isLeaf ? initialTokens : 0,
+            extraTokens: isLeaf ? Math.max(0, initialTokens - parentTokens) : 0,
             searchPath,
-            sourceNode.docIds ? [...sourceNode.docIds] : null,
+            docIds: sourceNode.docIds ? [...sourceNode.docIds] : null,
             isLeaf,
-            requestId
-        );
+            requestId,
+        });
         
         this.metadata.set(newNodeId, metadata);
 
@@ -629,15 +629,14 @@ export class ContextPilot extends ContextIndex {
                 leafDocIds = node.docIds || node.doc_ids;
             }
 
-            const metadata = new NodeMetadata(
-                nodeId,
+            const metadata = new NodeMetadata(nodeId, {
                 totalTokens,
                 extraTokens,
                 searchPath,
-                leafDocIds,
+                docIds: leafDocIds,
                 isLeaf,
-                requestId
-            );
+                requestId,
+            });
 
             this.metadata.set(nodeId, metadata);
 
@@ -767,7 +766,8 @@ export class ContextPilot extends ContextIndex {
             if (!currentNode || currentNode.isLeaf || !currentNode.children || currentNode.children.length === 0) {
                 const docs = this._getNodeDocs(currentId);
                 if (docs && currentId !== this.rootId) {
-                    const overlap = Array.from(contextSet).filter(x => new Set(docs).has(x)).length;
+                    const docsSet = new Set(docs);
+                    const overlap = Array.from(contextSet).filter(x => docsSet.has(x)).length;
                     const hasPrefix = overlap > 0 ? contextSet.has(docs[0]) : false;
                     return [currentPath, currentId, overlap, hasPrefix];
                 }
@@ -798,7 +798,8 @@ export class ContextPilot extends ContextIndex {
 
             for (let j = 0; j < childIds.length; j++) {
                 const docs = childDocsList[j];
-                const overlap = Array.from(contextSet).filter(x => new Set(docs).has(x)).length;
+                const docsSet = new Set(docs);
+                const overlap = Array.from(contextSet).filter(x => docsSet.has(x)).length;
                 if (overlap === 0) continue;
                 
                 const dist = Array.isArray(distances[0]) ? distances[0][j] : distances[j];
@@ -814,7 +815,8 @@ export class ContextPilot extends ContextIndex {
                 if (currentId !== this.rootId) {
                     const docs = this._getNodeDocs(currentId);
                     if (docs) {
-                        const overlap = Array.from(contextSet).filter(x => new Set(docs).has(x)).length;
+                        const docsSet2 = new Set(docs);
+                        const overlap = Array.from(contextSet).filter(x => docsSet2.has(x)).length;
                         return [currentPath, currentId, overlap, true];
                     }
                 }
@@ -930,10 +932,11 @@ export class ContextPilot extends ContextIndex {
         const newNodeId = this.nextNodeId++;
         const newNode = new ClusterNode(
             newNodeId,
-            context,
+            new Set(context),
+            new Set([newNodeId]),
+            0.0,
             [],
-            parentNode.nodeId,
-            new Set([newNodeId])
+            parentNode.nodeId
         );
 
         this.nodes.set(newNodeId, newNode);
@@ -942,15 +945,14 @@ export class ContextPilot extends ContextIndex {
         const parentTokens = this.metadata.has(parentNode.nodeId) ? this.metadata.get(parentNode.nodeId)!.totalTokens : 0;
         const newSearchPath = [...searchPath, parentNode.children.length - 1];
 
-        const metadata = new NodeMetadata(
-            newNodeId,
+        const metadata = new NodeMetadata(newNodeId, {
             totalTokens,
-            Math.max(0, totalTokens - parentTokens),
-            newSearchPath,
-            context,
-            true,
-            requestId
-        );
+            extraTokens: Math.max(0, totalTokens - parentTokens),
+            searchPath: newSearchPath,
+            docIds: context,
+            isLeaf: true,
+            requestId,
+        });
 
         this.metadata.set(newNodeId, metadata);
         this._requestToNode.set(requestId, newNodeId);
@@ -975,10 +977,11 @@ export class ContextPilot extends ContextIndex {
         const newLeafId = this.nextNodeId++;
         const newLeaf = new ClusterNode(
             newLeafId,
-            context,
+            new Set(context),
+            new Set([newLeafId]),
+            0.0,
             [],
-            parentNode.nodeId,
-            new Set([newLeafId])
+            parentNode.nodeId
         );
 
         this.nodes.set(newLeafId, newLeaf);
@@ -987,15 +990,14 @@ export class ContextPilot extends ContextIndex {
         const newSearchPath = [...parentSearchPath, parentNode.children.length - 1];
         const parentTokens = this.metadata.has(parentNode.nodeId) ? this.metadata.get(parentNode.nodeId)!.totalTokens : 0;
 
-        const newMetadata = new NodeMetadata(
-            newLeafId,
+        const newMetadata = new NodeMetadata(newLeafId, {
             totalTokens,
-            Math.max(0, totalTokens - parentTokens),
-            newSearchPath,
-            context,
-            true,
-            requestId
-        );
+            extraTokens: Math.max(0, totalTokens - parentTokens),
+            searchPath: newSearchPath,
+            docIds: context,
+            isLeaf: true,
+            requestId,
+        });
 
         this.metadata.set(newLeafId, newMetadata);
         this._requestToNode.set(requestId, newLeafId);
@@ -1042,10 +1044,11 @@ export class ContextPilot extends ContextIndex {
         
         const newInternal = new ClusterNode(
             newInternalId,
-            Array.from(allContent),
+            allContent,
+            new Set(),
+            0.0,
             [leafNode.nodeId],
-            parentId,
-            new Set()
+            parentId
         );
         newInternal.docIds = [...sharedPrefix];
 
@@ -1066,15 +1069,14 @@ export class ContextPilot extends ContextIndex {
 
         const internalPath = [...parentSearchPath, leafChildIdx];
 
-        const internalMeta = new NodeMetadata(
-            newInternalId,
-            internalTokens,
-            Math.max(0, internalTokens - parentTokens),
-            internalPath,
-            [...sharedPrefix],
-            false,
-            null
-        );
+        const internalMeta = new NodeMetadata(newInternalId, {
+            totalTokens: internalTokens,
+            extraTokens: Math.max(0, internalTokens - parentTokens),
+            searchPath: internalPath,
+            docIds: [...sharedPrefix],
+            isLeaf: false,
+            requestId: null,
+        });
         this.metadata.set(newInternalId, internalMeta);
 
         if (leafMeta) {
@@ -1087,10 +1089,11 @@ export class ContextPilot extends ContextIndex {
 
         const newLeaf = new ClusterNode(
             newLeafId,
-            context,
+            new Set(context),
+            new Set([newLeafId]),
+            0.0,
             [],
-            newInternalId,
-            new Set([newLeafId])
+            newInternalId
         );
         newLeaf.docIds = [...context];
 
@@ -1099,15 +1102,14 @@ export class ContextPilot extends ContextIndex {
 
         const newLeafPath = [...internalPath, 1];
 
-        const newLeafMeta = new NodeMetadata(
-            newLeafId,
+        const newLeafMeta = new NodeMetadata(newLeafId, {
             totalTokens,
-            Math.max(0, totalTokens - internalTokens),
-            newLeafPath,
-            [...context],
-            true,
-            requestId
-        );
+            extraTokens: Math.max(0, totalTokens - internalTokens),
+            searchPath: newLeafPath,
+            docIds: [...context],
+            isLeaf: true,
+            requestId,
+        });
 
         this.metadata.set(newLeafId, newLeafMeta);
         this._requestToNode.set(requestId, newLeafId);

@@ -15,7 +15,7 @@ export class InterContextScheduler {
         const searchPaths = clusteringResult.searchPaths;
 
         const groupsByRoot = this._groupByRootPrefix(searchPaths);
-        const sortedGroups = this._sortGroupsByPathLength(groupsByRoot, searchPaths, reorderedContexts);
+        const sortedGroups = this._sortGroupsByPathLength(groupsByRoot, searchPaths);
 
         const allGroupsWithInfo: Array<[number, number[]]> = [];
         for (const groupIndices of sortedGroups) {
@@ -61,10 +61,8 @@ export class InterContextScheduler {
 
     _sortGroupsByPathLength(
         groupsByRoot: Map<number, number[]>,
-        searchPaths: number[][],
-        contexts: number[][]
+        searchPaths: number[][]
     ): number[][] {
-        void contexts;
         const sortedGroups: number[][] = [];
 
         for (const groupIndices of groupsByRoot.values()) {

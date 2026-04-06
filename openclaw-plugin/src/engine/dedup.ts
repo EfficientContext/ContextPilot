@@ -75,7 +75,8 @@ function emptyDedupResult(): DedupResult {
 export function hashString(str: string): number {
     let h = 5381;
     for (let i = 0; i < str.length; i++) {
-        h = ((h << 5) + h + str.charCodeAt(i)) & 0xFFFFFFFF;
+        // Use Math.imul for safe 32-bit multiplication to avoid float overflow
+        h = (Math.imul(h, 33) + str.charCodeAt(i)) | 0;
     }
     return h >>> 0;
 }

@@ -118,18 +118,19 @@ def client(mock_session):
     original_session = http_mod._aiohttp_session
     original_url = http_mod._infer_api_url
     original_intercept_index = http_mod._intercept_index
-    original_state = http_mod._intercept_state
+    original_states = http_mod._intercept_states.copy()
     http_mod._aiohttp_session = mock_session
     http_mod._infer_api_url = "http://mock-backend:30000"
     http_mod._intercept_index = None  # reset so each test starts fresh
-    http_mod._intercept_state = http_mod._InterceptConvState()
+    http_mod._intercept_states.clear()
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
         http_mod._aiohttp_session = original_session
         http_mod._infer_api_url = original_url
         http_mod._intercept_index = original_intercept_index
-        http_mod._intercept_state = original_state
+        http_mod._intercept_states.clear()
+        http_mod._intercept_states.update(original_states)
 
 
 # ============================================================================
@@ -146,7 +147,7 @@ def _warmup(client, path, body):
     resp = client.post(path, json=body)
     assert resp.status_code == 200
     # Keep _intercept_index primed, but reset conversation tracking.
-    http_mod._intercept_state = http_mod._InterceptConvState()
+    http_mod._intercept_states.clear()
     return resp
 
 
@@ -1005,7 +1006,7 @@ class TestExternalContentIdStripping:
         content1 = mock_session._last_json["messages"][3]["content"]
 
         # Reset intercept state for clean comparison
-        http_mod._intercept_state = http_mod._InterceptConvState()
+        http_mod._intercept_states.clear()
 
         # Request 2 with different id "bbbb"
         resp2 = client.post("/v1/chat/completions", json=_make_body("cccc2222dddd3333"))

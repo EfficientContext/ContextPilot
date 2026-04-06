@@ -60,20 +60,10 @@ export function computeDistancesBatch(
         return Array.from({ length: nQueries }, () => new Array<number>(nTargets).fill(0));
     }
 
-    const totalPairs = nQueries * nTargets;
     const distances: number[][] = Array.from(
         { length: nQueries },
         () => new Array<number>(nTargets).fill(1.0)
     );
-
-    if (totalPairs < 1000) {
-        for (let i = 0; i < nQueries; i += 1) {
-            for (let j = 0; j < nTargets; j += 1) {
-                distances[i][j] = computeDistanceSingle(queries[i], targets[j], alpha);
-            }
-        }
-        return distances;
-    }
 
     for (let i = 0; i < nQueries; i += 1) {
         for (let j = 0; j < nTargets; j += 1) {

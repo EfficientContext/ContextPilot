@@ -11,7 +11,8 @@ BACKUP_CONFIG="$HOME/.openclaw/openclaw.json.bak"
 LOG_WITH="/tmp/gw-with-cp.log"
 LOG_WITHOUT="/tmp/gw-without-cp.log"
 
-TEST_FILE="/home/ryan/ContextPilot/openclaw-plugin/src/engine/dedup.ts"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEST_FILE="${SCRIPT_DIR}/src/engine/dedup.ts"
 
 echo "=========================================="
 echo "ContextPilot Token Usage Benchmark"
@@ -25,7 +26,7 @@ cleanup() {
     echo "Restoring config..."
     cp "$BACKUP_CONFIG" "$OPENCLAW_CONFIG"
     rm -f "$BACKUP_CONFIG"
-    openclaw gateway stop 2>/dev/null || pkill -9 -f "openclaw" 2>/dev/null || true
+    openclaw gateway stop 2>/dev/null || pkill -f "openclaw gateway" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -57,7 +58,7 @@ restart_gateway() {
     local logfile=$1
     echo "  Stopping gateway..."
     openclaw gateway stop 2>/dev/null || true
-    pkill -9 -f "openclaw" 2>/dev/null || true
+    pkill -f "openclaw gateway" 2>/dev/null || true
     sleep 3
     echo "  Starting gateway..."
     openclaw gateway > "$logfile" 2>&1 &
@@ -81,16 +82,16 @@ run_test_sequence() {
 extract_last_usage() {
     local logfile=$1
     # Find the last complete usage block and extract values
-    local input=$(grep '"input":' "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+' || echo "0")
-    local cache_read=$(grep '"cacheRead":' "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+' || echo "0")
-    local cache_write=$(grep '"cacheWrite":' "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+' || echo "0")
+    local input=$(grep '"input":' "$logfile" 2>/dev/null | tail -1 | sed 's/[^0-9]//g' || echo "0")
+    local cache_read=$(grep '"cacheRead":' "$logfile" 2>/dev/null | tail -1 | sed 's/[^0-9]//g' || echo "0")
+    local cache_write=$(grep '"cacheWrite":' "$logfile" 2>/dev/null | tail -1 | sed 's/[^0-9]//g' || echo "0")
     echo "$input $cache_read $cache_write"
 }
 
 extract_chars_saved() {
     local logfile=$1
     # Look for ContextPilot stats line
-    grep "Stats:" "$logfile" 2>/dev/null | tail -1 | grep -oP '\d+(?= chars saved)' || echo "0"
+    grep "Stats:" "$logfile" 2>/dev/null | tail -1 | sed -n 's/.*\([0-9][0-9,]*\) chars saved.*/\1/p' | tr -d ',' || echo "0"
 }
 
 # ==========================================
@@ -104,9 +105,9 @@ restart_gateway "$LOG_WITH"
 run_test_sequence
 
 WITH_USAGE=$(extract_last_usage "$LOG_WITH")
-WITH_INPUT=$(echo $WITH_USAGE | cut -d' ' -f1)
-WITH_CACHE_READ=$(echo $WITH_USAGE | cut -d' ' -f2)
-WITH_CACHE_WRITE=$(echo $WITH_USAGE | cut -d' ' -f3)
+WITH_INPUT=$(echo "$WITH_USAGE" | cut -d' ' -f1)
+WITH_CACHE_READ=$(echo "$WITH_USAGE" | cut -d' ' -f2)
+WITH_CACHE_WRITE=$(echo "$WITH_USAGE" | cut -d' ' -f3)
 WITH_CHARS=$(extract_chars_saved "$LOG_WITH")
 
 echo ""
@@ -127,9 +128,9 @@ restart_gateway "$LOG_WITHOUT"
 run_test_sequence
 
 WITHOUT_USAGE=$(extract_last_usage "$LOG_WITHOUT")
-WITHOUT_INPUT=$(echo $WITHOUT_USAGE | cut -d' ' -f1)
-WITHOUT_CACHE_READ=$(echo $WITHOUT_USAGE | cut -d' ' -f2)
-WITHOUT_CACHE_WRITE=$(echo $WITHOUT_USAGE | cut -d' ' -f3)
+WITHOUT_INPUT=$(echo "$WITHOUT_USAGE" | cut -d' ' -f1)
+WITHOUT_CACHE_READ=$(echo "$WITHOUT_USAGE" | cut -d' ' -f2)
+WITHOUT_CACHE_WRITE=$(echo "$WITHOUT_USAGE" | cut -d' ' -f3)
 
 echo ""
 echo "  Results:"

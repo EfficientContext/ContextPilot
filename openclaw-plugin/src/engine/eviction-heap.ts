@@ -215,9 +215,7 @@ export class EvictionHeap {
             this._metadata.delete(nodeId);
         }
 
-        if (this._inHeap.has(nodeId)) {
-            this._inHeap.set(nodeId, false);
-        }
+        this._inHeap.delete(nodeId);
     }
 
     getNodeByRequestId(requestId: string): NodeMetadata | null {

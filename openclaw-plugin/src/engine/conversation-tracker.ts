@@ -26,16 +26,18 @@ export interface ConversationTrackerStats {
 export class ConversationTracker {
     private _requests: Map<string, RequestHistory>;
     private _hintTemplate: string;
+    private _maxTrackedRequests: number;
     private _stats: {
         totalRequests: number;
         totalDedupCalls: number;
         totalDocsDeduplicated: number;
     };
 
-    constructor(hintTemplate?: string) {
+    constructor(hintTemplate?: string, maxTrackedRequests: number = 256) {
         this._requests = new Map<string, RequestHistory>();
         this._hintTemplate =
             hintTemplate ?? "Please refer to [Doc {doc_id}] from the previous conversation turn.";
+        this._maxTrackedRequests = maxTrackedRequests;
         this._stats = {
             totalRequests: 0,
             totalDedupCalls: 0,
@@ -62,6 +64,14 @@ export class ConversationTracker {
 
         this._requests.set(requestId, history);
         this._stats.totalRequests += 1;
+
+        // LRU eviction: remove oldest entries when over limit
+        if (this._requests.size > this._maxTrackedRequests) {
+            const oldest = this._requests.keys().next().value;
+            if (oldest !== undefined) {
+                this._requests.delete(oldest);
+            }
+        }
 
         return history;
     }

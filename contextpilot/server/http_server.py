@@ -129,9 +129,10 @@ class _InterceptConvState:
     last_message_count: int = 0
 
 
-# Per-session state dict keyed by session fingerprint (hash of first user msg).
+# Per-session state dict keyed by session fingerprint (system prompt + first user msg).
 # This allows concurrent multi-user sessions to each maintain their own state.
 _intercept_states: dict[str, _InterceptConvState] = {}
+_intercept_states_lock = asyncio.Lock()
 _MAX_TRACKED_SESSIONS = 64  # LRU eviction threshold
 
 # TTFT tracking for averages across a session
@@ -1181,32 +1182,47 @@ def _hash_text(text: str) -> str:
 
 
 def _session_fingerprint(body: Dict[str, Any]) -> str:
-    """Derive a session fingerprint from the first user message.
+    """Derive a session fingerprint from the system prompt + first user message.
 
-    In a multi-turn conversation, messages grow but the first user message
-    stays constant.  Hashing it gives a stable per-session key that lets
-    concurrent users each maintain their own intercept state.
+    In a multi-turn conversation, messages grow but the system prompt and
+    first user message stay constant.  Hashing both gives a stable per-session
+    key that lets concurrent users each maintain their own intercept state,
+    even if different users share the same first user message.
     """
     msgs = body.get("messages") or []
+    parts_to_hash: list[str] = []
+
+    # Include system prompt for differentiation between sessions
+    system = body.get("system")
+    if system:
+        parts_to_hash.append(str(system)[:500])
+
     # Find the first user message (usually msg[0] or msg[1] after system)
-    for msg in msgs[:3]:
-        if isinstance(msg, dict) and msg.get("role") == "user":
+    for msg in msgs[:5]:
+        if isinstance(msg, dict) and msg.get("role") == "system":
+            parts_to_hash.append(str(msg.get("content", ""))[:500])
+        elif isinstance(msg, dict) and msg.get("role") == "user":
             content = msg.get("content", "")
             if isinstance(content, list):
                 # OpenAI format: [{type: text, text: "..."}]
-                parts = [p.get("text", "") for p in content
-                         if isinstance(p, dict)]
-                content = "".join(parts)
-            return _hash_text(str(content))
-    # Fallback: hash all messages (shouldn't happen in practice)
-    return _hash_text(json.dumps(msgs[:2], sort_keys=True))
+                text_parts = [p.get("text", "") for p in content
+                              if isinstance(p, dict)]
+                content = "".join(text_parts)
+            parts_to_hash.append(str(content))
+            break
+
+    if not parts_to_hash:
+        # Fallback: hash first two messages
+        return _hash_text(json.dumps(msgs[:2], sort_keys=True))
+
+    return _hash_text("\x00".join(parts_to_hash))
 
 
-def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
+async def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
     """Return per-session intercept state, creating or resetting as needed.
 
-    Uses the first user message as a session fingerprint so concurrent
-    multi-user sessions each get their own state.
+    Uses the system prompt + first user message as a session fingerprint so
+    concurrent multi-user sessions each get their own state.
 
     Detection: in a multi-turn agent conversation the messages array only
     grows.  If the count drops, either a new session started or the host
@@ -1218,31 +1234,32 @@ def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
     session_key = _session_fingerprint(body)
     msg_count = len(body.get("messages") or [])
 
-    state = _intercept_states.get(session_key)
+    async with _intercept_states_lock:
+        state = _intercept_states.get(session_key)
 
-    if state is None:
-        # New session
-        state = _InterceptConvState()
-        state.system_processed = True
-        logger.info(
-            f"Intercept: new session {session_key[:8]}… "
-            f"({msg_count} msgs, {len(_intercept_states)} active sessions)"
-        )
-        # Evict oldest sessions if over limit
-        if len(_intercept_states) >= _MAX_TRACKED_SESSIONS:
-            oldest_key = next(iter(_intercept_states))
-            del _intercept_states[oldest_key]
-            logger.info(f"Intercept: evicted session {oldest_key[:8]}…")
-        _intercept_states[session_key] = state
-    elif msg_count < state.last_message_count:
-        logger.info(
-            f"Intercept: session {session_key[:8]}… message count dropped "
-            f"({msg_count} < {state.last_message_count}), "
-            f"resetting state (compaction or restart)"
-        )
-        state = _InterceptConvState()
-        state.system_processed = True
-        _intercept_states[session_key] = state
+        if state is None:
+            # New session
+            state = _InterceptConvState()
+            state.system_processed = True
+            logger.info(
+                f"Intercept: new session {session_key[:8]}… "
+                f"({msg_count} msgs, {len(_intercept_states)} active sessions)"
+            )
+            # Evict oldest sessions if over limit
+            if len(_intercept_states) >= _MAX_TRACKED_SESSIONS:
+                oldest_key = next(iter(_intercept_states))
+                del _intercept_states[oldest_key]
+                logger.info(f"Intercept: evicted session {oldest_key[:8]}…")
+            _intercept_states[session_key] = state
+        elif msg_count < state.last_message_count:
+            logger.info(
+                f"Intercept: session {session_key[:8]}… message count dropped "
+                f"({msg_count} < {state.last_message_count}), "
+                f"resetting state (compaction or restart)"
+            )
+            state = _InterceptConvState()
+            state.system_processed = True
+            _intercept_states[session_key] = state
 
     state.last_message_count = msg_count
     return state
@@ -1303,8 +1320,6 @@ _HOP_BY_HOP = frozenset((
     "proxy-authenticate", "content-length",
 ))
 
-# Previous message hashes for prefix divergence detection.
-_debug_prev_msg_hashes: List[str] = []
 
 
 def _doc_preview(doc: str, max_len: int = 60) -> str:
@@ -1494,8 +1509,6 @@ async def _intercept_and_forward(request: Request, api_format: str):
         f"Intercept: session={_session_tag} {_debug_msg_count} msgs"
     )
 
-    _debug_prev_msg_hashes = list(_debug_msg_hashes)
-
     # ── Format handler (strategy pattern) ────────────────────────────
     handler = get_format_handler(api_format)
 
@@ -1504,7 +1517,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
             body = copy.deepcopy(body)
 
             # ── Conversation-aware state (single-conversation model) ──
-            state = _get_intercept_state(body)
+            state = await _get_intercept_state(body)
 
             # ── Replace old messages with cached (modified) versions ──
             # On subsequent turns, the host sends original (unmodified)
@@ -1952,9 +1965,9 @@ async def proxy_engine(path: str, request: Request):
                     body["rid"] = request_id
                     body["request_id"] = request_id
 
-            body["temperature"] = 0
+            body.setdefault("temperature", 0)
             if _cloud_mode:
-                body["top_p"] = 0
+                body.setdefault("top_p", 0)
 
             dedup_result = DedupResult()
             try:
@@ -2167,7 +2180,7 @@ Cloud proxy mode:
         os.environ["CONTEXTPILOT_CLOUD_API_KEY"] = args.cloud_api_key
 
     # Also set global config for direct access
-    global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode
+    global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode, _chunk_modulus
     _max_tokens = args.max_tokens
     _infer_api_url = args.infer_api_url.rstrip("/")
     _stateless_mode = args.stateless

@@ -75,7 +75,6 @@ function emptyDedupResult(): DedupResult {
 export function hashString(str: string): number {
     let h = 5381;
     for (let i = 0; i < str.length; i++) {
-        // Use Math.imul for safe 32-bit multiplication to avoid float overflow
         h = (Math.imul(h, 33) + str.charCodeAt(i)) | 0;
     }
     return h >>> 0;
@@ -176,12 +175,10 @@ export function dedupChatCompletions(body: ChatCompletionsBody, opts: DedupOptio
         if (!msg || typeof msg !== 'object') {
             continue;
         }
-        // Support both OpenAI 'tool' role and OpenClaw 'toolResult' role
         if (msg.role !== 'tool' && msg.role !== 'toolResult') {
             continue;
         }
 
-        // For toolResult role, content might be an array of {type: "text", text: "..."} blocks
         let content = msg.content || '';
         if (Array.isArray(content)) {
             content = content
@@ -247,9 +244,7 @@ export function dedupChatCompletions(body: ChatCompletionsBody, opts: DedupOptio
             const originalLen = content.length;
             const newContent = newBlocks.join('\n\n');
 
-            // Preserve original content format
             if (Array.isArray(msg.content)) {
-                // For array content, update the first text block
                 const textBlockIdx = msg.content.findIndex((b: any) => b?.type === 'text');
                 if (textBlockIdx >= 0) {
                     (msg.content as any[])[textBlockIdx].text = newContent;

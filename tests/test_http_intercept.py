@@ -1005,7 +1005,6 @@ class TestExternalContentIdStripping:
         assert resp1.status_code == 200
         content1 = mock_session._last_json["messages"][3]["content"]
 
-        # Reset intercept state for clean comparison
         http_mod._intercept_states.clear()
 
         # Request 2 with different id "bbbb"

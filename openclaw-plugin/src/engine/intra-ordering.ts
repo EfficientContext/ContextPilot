@@ -27,16 +27,13 @@ export class IntraContextOrderer {
         const visited = new Set<number>();
 
         while (queue.length > 0) {
-            const nodeId = queue.shift();
-            if (nodeId === undefined || visited.has(nodeId) || !uniqueNodes.has(nodeId)) {
+            const nodeId = queue.shift()!;
+            if (visited.has(nodeId) || !uniqueNodes.has(nodeId)) {
                 continue;
             }
 
             visited.add(nodeId);
-            const node = uniqueNodes.get(nodeId);
-            if (!node) {
-                continue;
-            }
+            const node = uniqueNodes.get(nodeId)!;
 
             if (!node.isRoot && node.parent !== null) {
                 const parentNode = uniqueNodes.get(node.parent);
@@ -103,12 +100,7 @@ export class IntraContextOrderer {
         }
 
         while (queue.length > 0) {
-            const item = queue.shift();
-            if (!item) {
-                continue;
-            }
-
-            const [nodeId, isChildOfRoot] = item;
+            const [nodeId, isChildOfRoot] = queue.shift()!;
             const node = uniqueNodes.get(nodeId);
             if (!node) {
                 continue;
@@ -220,10 +212,7 @@ export class IntraContextOrderer {
 
         for (let contextIdx = 0; contextIdx < numContexts; contextIdx += 1) {
             const leafId = contextToLeaf.get(contextIdx);
-            if (leafId === undefined) {
-                searchPaths[contextIdx] = [];
-                continue;
-            }
+            if (leafId === undefined) continue;
 
             const childIndices: number[] = [];
             let currentId: number | null = leafId;
@@ -253,7 +242,7 @@ export class IntraContextOrderer {
                 currentId = currentNode.parent;
             }
 
-            searchPaths[contextIdx] = [...childIndices].reverse();
+            searchPaths[contextIdx] = childIndices.reverse();
         }
 
         return searchPaths;

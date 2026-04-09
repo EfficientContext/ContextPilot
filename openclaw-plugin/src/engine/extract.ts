@@ -1,15 +1,5 @@
 import * as crypto from 'crypto';
 
-/**
- * HTTP Intercept Parser for ContextPilot
- * 
- * Pure parsing/extraction/reconstruction logic for intercepting LLM API requests.
- * Extracts documents from system messages, supports reordering, and reconstructs
- * the request body with reordered documents.
- * 
- * No server dependencies — independently testable.
- */
-
 const _KNOWN_WRAPPER_TAGS = new Set(["documents", "contexts", "docs", "passages", "references", "files"]);
 const _KNOWN_ITEM_TAGS = new Set(["document", "context", "doc", "passage", "reference", "file"]);
 
@@ -76,9 +66,6 @@ export class MultiExtractionResult {
     }
 }
 
-/**
- * Parse X-ContextPilot-* headers into an InterceptConfig.
- */
 export function parseInterceptHeaders(headers: Record<string, string>): InterceptConfig {
     const get = (name: string, def: string = ""): string => {
         const key = `x-contextpilot-${name}`;
@@ -112,7 +99,7 @@ export function parseInterceptHeaders(headers: Record<string, string>): Intercep
 // ── Document extraction ─────────────────────────────────────────────────────
 
 function _escapeRegExp(string: string): string {
-    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function extractXmlTags(text: string, config: InterceptConfig): ExtractionResult | null {
@@ -301,13 +288,11 @@ export function extractMarkdownHeaders(text: string, config: InterceptConfig): E
 
 const _JSON_ID_KEYS = ["url", "path", "file", "filename", "uri", "href"];
 
-function _extractJsonId(item: any): string | null {
+function _extractJsonId(item: Record<string, unknown>): string | null {
     for (const key of _JSON_ID_KEYS) {
-        if (item && typeof item === "object" && key in item) {
-            const val = item[key];
-            if (typeof val === "string" && val.trim()) {
-                return val.trim();
-            }
+        const val = item[key];
+        if (typeof val === "string" && val.trim()) {
+            return val.trim();
         }
     }
     return null;
@@ -332,12 +317,7 @@ export function extractJsonResults(text: string, config: InterceptConfig): Extra
     const documents: string[] = [];
     for (const item of results) {
         if (typeof item === "object" && item !== null) {
-            const docId = _extractJsonId(item);
-            if (docId !== null) {
-                documents.push(docId);
-            } else {
-                documents.push(JSON.stringify(item));
-            }
+            documents.push(_extractJsonId(item) ?? JSON.stringify(item));
         } else {
             documents.push(JSON.stringify(item));
         }
@@ -361,23 +341,24 @@ export function extractJsonResults(text: string, config: InterceptConfig): Extra
 export function extractDocuments(text: string, config: InterceptConfig): ExtractionResult | null {
     if (config.mode === "xml_tag") {
         return extractXmlTags(text, config);
-    } else if (config.mode === "numbered") {
-        return extractNumbered(text, config);
-    } else if (config.mode === "json_results") {
-        return extractJsonResults(text, config);
-    } else if (config.mode === "separator") {
-        return extractSeparator(text, config);
-    } else if (config.mode === "markdown_header") {
-        return extractMarkdownHeaders(text, config);
-    } else {
-        let result = extractXmlTags(text, config);
-        if (result) return result;
-        result = extractNumbered(text, config);
-        if (result) return result;
-        result = extractJsonResults(text, config);
-        if (result) return result;
-        return null;
     }
+    if (config.mode === "numbered") {
+        return extractNumbered(text, config);
+    }
+    if (config.mode === "json_results") {
+        return extractJsonResults(text, config);
+    }
+    if (config.mode === "separator") {
+        return extractSeparator(text, config);
+    }
+    if (config.mode === "markdown_header") {
+        return extractMarkdownHeaders(text, config);
+    }
+
+    return extractXmlTags(text, config)
+        ?? extractNumbered(text, config)
+        ?? extractJsonResults(text, config)
+        ?? null;
 }
 
 // ── Reconstruction ───────────────────────────────────────────────────────────
@@ -385,31 +366,28 @@ export function extractDocuments(text: string, config: InterceptConfig): Extract
 export function reconstructContent(extraction: ExtractionResult, reorderedDocs: string[]): string {
     if (extraction.mode === "xml_tag") {
         return reconstructXml(extraction, reorderedDocs);
-    } else if (extraction.mode === "numbered") {
-        return reconstructNumbered(extraction, reorderedDocs);
-    } else if (extraction.mode === "json_results") {
-        return reconstructJsonResults(extraction, reorderedDocs);
-    } else if (extraction.mode === "separator") {
-        return reconstructSeparator(extraction, reorderedDocs);
-    } else if (extraction.mode === "markdown_header") {
-        return reconstructMarkdownHeaders(extraction, reorderedDocs);
-    } else {
-        return extraction.originalContent;
     }
+    if (extraction.mode === "numbered") {
+        return reconstructNumbered(extraction, reorderedDocs);
+    }
+    if (extraction.mode === "json_results") {
+        return reconstructJsonResults(extraction, reorderedDocs);
+    }
+    if (extraction.mode === "separator") {
+        return reconstructSeparator(extraction, reorderedDocs);
+    }
+    if (extraction.mode === "markdown_header") {
+        return reconstructMarkdownHeaders(extraction, reorderedDocs);
+    }
+    return extraction.originalContent;
 }
 
 export function reconstructXml(extraction: ExtractionResult, reorderedDocs: string[]): string {
     const itemTag = extraction.itemTag;
     const items = reorderedDocs.map(doc => `<${itemTag}>${doc}</${itemTag}>`).join("\n");
-
-    let block: string;
-    if (extraction.wrapperTag) {
-        const wrapper = extraction.wrapperTag;
-        block = `<${wrapper}>\n${items}\n</${wrapper}>`;
-    } else {
-        block = items;
-    }
-
+    const block = extraction.wrapperTag
+        ? `<${extraction.wrapperTag}>\n${items}\n</${extraction.wrapperTag}>`
+        : items;
     return extraction.prefix + block + extraction.suffix;
 }
 
@@ -511,7 +489,6 @@ export function reconstructOpenaiChat(
     } else if (Array.isArray(msg.content)) {
         for (const block of msg.content) {
             if (block && typeof block === "object" && block.type === "text") {
-                // Using dummy config since we just check if it was the block with documents
                 if (extractDocuments(block.text || "", parseInterceptHeaders({}))) {
                     block.text = newContent;
                     break;
@@ -530,7 +507,8 @@ export function extractFromAnthropicMessages(body: any, config: InterceptConfig)
 
     if (typeof system === "string") {
         return extractDocuments(system, config);
-    } else if (Array.isArray(system)) {
+    }
+    if (Array.isArray(system)) {
         for (const block of system) {
             if (block && typeof block === "object" && block.type === "text") {
                 const result = extractDocuments(block.text || "", config);
@@ -891,13 +869,11 @@ export class OpenAIChatHandler implements FormatHandler {
         return "/v1/chat/completions";
     }
 
-    cacheSystem(body: any): any {
-        return null; // System prompt is inside messages array
+    cacheSystem(_body: any): any {
+        return null;
     }
 
-    restoreSystem(body: any, cached: any): void {
-        // No-op
-    }
+    restoreSystem(_body: any, _cached: any): void {}
 }
 
 export class AnthropicMessagesHandler implements FormatHandler {

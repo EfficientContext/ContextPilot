@@ -42,13 +42,11 @@ export default definePluginEntry({
       scope: parseScope(api.pluginConfig?.scope),
     };
 
-    // Initialize the ContextPilot engine for reordering
     const engine = new ContextPilot(0.001, false, "average");
 
     let assembleCount = 0;
     let totalCharsSaved = 0;
 
-    // Register as a Context Engine - this intercepts context assembly
     api.registerContextEngine("contextpilot", () => ({
       info: {
         id: "contextpilot",
@@ -71,8 +69,6 @@ export default definePluginEntry({
           scope: config.scope,
         };
 
-        // OpenClaw uses role: "toolResult" instead of Anthropic's user+tool_result blocks
-        // Convert to Anthropic format for our extractors
         const convertedMessages = messages.map((msg, idx) => {
           if (msg.role === "toolResult") {
             const content = typeof msg.content === "string"
@@ -107,7 +103,6 @@ export default definePluginEntry({
           return reorderWithEngine(engine, docs);
         };
 
-        // Reorder documents in system prompt
         if (multi.systemExtraction) {
           const [extraction, sysIdx] = multi.systemExtraction;
           if (extraction.documents.length >= 2) {
@@ -116,7 +111,6 @@ export default definePluginEntry({
           }
         }
 
-        // Reorder documents in tool results
         for (const [extraction, location] of multi.toolExtractions) {
           if (extraction.documents.length >= 2) {
             const reordered = reorderDocs(extraction.documents);
@@ -124,7 +118,6 @@ export default definePluginEntry({
           }
         }
 
-        // Map converted messages back to original format (toolResult role)
         const finalMessages = (convertedBody.messages as any[]).map((msg, idx) => {
           const original = messages[idx];
           if (original?.role === "toolResult") {
@@ -147,29 +140,24 @@ export default definePluginEntry({
           return msg;
         });
 
-        // Build final body with potentially reordered messages
         const finalBody: Record<string, unknown> = {
           messages: finalMessages,
           system: system,
         };
 
-        // Deduplicate repeated content
         const dedupResult = dedupChatCompletions(finalBody);
         totalCharsSaved += dedupResult.charsSaved;
 
-        // Inject cache control markers
         const optimizedBody = injectCacheControl(finalBody, "anthropic");
 
         assembleCount++;
 
-        // Log savings periodically (every 5 requests or when significant savings)
         if (dedupResult.charsSaved > 0 || assembleCount % 5 === 0) {
           const estimatedTokensSaved = Math.round(totalCharsSaved / 4);
-          const estimatedCostSaved = (estimatedTokensSaved * 0.003 / 1000).toFixed(4); // $3/MTok input
+          const estimatedCostSaved = (estimatedTokensSaved * 0.003 / 1000).toFixed(4);
           console.error(`[ContextPilot] Stats: ${assembleCount} requests, ${totalCharsSaved.toLocaleString()} chars saved (~${estimatedTokensSaved.toLocaleString()} tokens, ~$${estimatedCostSaved})`);
         }
 
-        // Return optimized messages
         return {
           messages: (optimizedBody.messages as Message[]) || messages,
           system: optimizedBody.system as string | undefined,
@@ -182,7 +170,6 @@ export default definePluginEntry({
       },
     }));
 
-    // Register status tool
     api.registerTool({
       name: "contextpilot_status",
       description: "Report ContextPilot engine state",

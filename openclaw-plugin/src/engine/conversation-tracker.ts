@@ -48,10 +48,7 @@ export class ConversationTracker {
     registerRequest(requestId: string, docs: number[], parentRequestId?: string | null): RequestHistory {
         let turnNumber = 1;
         if (parentRequestId && this._requests.has(parentRequestId)) {
-            const parent = this._requests.get(parentRequestId);
-            if (parent) {
-                turnNumber = parent.turnNumber + 1;
-            }
+            turnNumber = this._requests.get(parentRequestId)!.turnNumber + 1;
         }
 
         const history: RequestHistory = {
@@ -81,11 +78,7 @@ export class ConversationTracker {
         let currentId: string | null = requestId;
 
         while (currentId && this._requests.has(currentId)) {
-            const history = this._requests.get(currentId);
-            if (!history) {
-                break;
-            }
-
+            const history: RequestHistory = this._requests.get(currentId)!;
             chain.push(history);
             currentId = history.parentRequestId;
         }
@@ -208,12 +201,7 @@ export class ConversationTracker {
     }
 
     removeRequest(requestId: string): boolean {
-        if (this._requests.has(requestId)) {
-            this._requests.delete(requestId);
-            return true;
-        }
-
-        return false;
+        return this._requests.delete(requestId);
     }
 
     clearConversation(requestId: string): number {

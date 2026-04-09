@@ -103,7 +103,6 @@ function injectToolResultCacheControl(
 
         const message = msg as MessageBlock;
 
-        // Handle OpenClaw's toolResult role (content is the tool result itself)
         if (message.role === 'toolResult') {
             const toolResultContent = message.content ?? '';
             let totalChars = 0;
@@ -125,7 +124,6 @@ function injectToolResultCacheControl(
             continue;
         }
 
-        // Handle Anthropic's user message with tool_result blocks
         if (message.role !== 'user' || !Array.isArray(message.content)) {
             continue;
         }
@@ -155,8 +153,6 @@ export function injectAnthropicCacheControl(body: Record<string, unknown>): Reco
 }
 
 export function injectOpenAICacheControl(body: Record<string, unknown>): Record<string, unknown> {
-    // OpenAI prompt caching is automatic and prefix-based, so no explicit
-    // cache_control block injection is required at request construction time.
     return body;
 }
 

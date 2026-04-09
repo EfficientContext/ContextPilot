@@ -10,9 +10,7 @@ export class InterContextScheduler {
     scheduleContexts(
         clusteringResult: ClusteringResult
     ): [number[][], number[][], number[], Array<[number, number[]]>] {
-        const reorderedContexts = clusteringResult.reorderedPrompts;
-        const originalContexts = clusteringResult.originalPrompts;
-        const searchPaths = clusteringResult.searchPaths;
+        const { reorderedPrompts, originalPrompts, searchPaths } = clusteringResult;
 
         const groupsByRoot = this._groupByRootPrefix(searchPaths);
         const sortedGroups = this._sortGroupsByPathLength(groupsByRoot, searchPaths);
@@ -35,8 +33,8 @@ export class InterContextScheduler {
 
         const finalIndexMapping = allGroupsWithInfo.flatMap(([, group]) => group);
 
-        const scheduledReordered = finalIndexMapping.map((idx) => reorderedContexts[idx]);
-        const scheduledOriginals = finalIndexMapping.map((idx) => originalContexts[idx]);
+        const scheduledReordered = finalIndexMapping.map((idx) => reorderedPrompts[idx]);
+        const scheduledOriginals = finalIndexMapping.map((idx) => originalPrompts[idx]);
 
         return [scheduledReordered, scheduledOriginals, finalIndexMapping, allGroupsWithInfo];
     }

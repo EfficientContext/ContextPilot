@@ -19,7 +19,7 @@ export class ClusterNode {
         frequency: number = 1
     ) {
         this.nodeId = nodeId;
-        this.content = content instanceof Set ? new Set(content) : new Set(content);
+        this.content = new Set(content);
         this.originalIndices = originalIndices;
         this.distance = distance;
         this.children = children;
@@ -30,7 +30,7 @@ export class ClusterNode {
     }
 
     get isLeaf(): boolean {
-        return !Array.isArray(this.children) || this.children.length === 0;
+        return this.children.length === 0;
     }
 
     get isRoot(): boolean {
@@ -50,10 +50,6 @@ export class ClusterNode {
     }
 
     addChild(childId: number): void {
-        // Defensive: ensure children is an array
-        if (!Array.isArray(this.children)) {
-            this.children = [];
-        }
         if (!this.children.includes(childId) && childId !== this.nodeId) {
             this.children.push(childId);
         }
@@ -106,7 +102,7 @@ export class NodeManager {
     }
 
     createLeafNode(nodeId: number, promptContent: Iterable<number>): ClusterNode {
-        const contentSet = promptContent instanceof Set ? new Set(promptContent) : new Set(promptContent);
+        const contentSet = new Set(promptContent);
         const key = this.contentKey(contentSet);
 
         const canonicalId = this.contentToNodeId.get(key);

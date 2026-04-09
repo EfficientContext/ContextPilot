@@ -205,14 +205,12 @@ export class ContextPilot extends ContextIndex {
     }
 
     buildIncremental(contexts: any[][], initialTokensPerContext: number = 0): any {
-        // @ts-ignore - Assuming inherited from ContextIndex
-        const convertedContexts = this._convertToInt ? this._convertToInt(contexts) : contexts;
+        const convertedContexts = this._convertToInt(contexts);
 
         if (!this.isLive) {
             const result = this.buildAndSchedule(convertedContexts, initialTokensPerContext);
             const reordered = result.reordered_contexts || convertedContexts;
-            // @ts-ignore
-            const stringReordered = this._convertToStr ? this._convertToStr(reordered) : reordered;
+            const stringReordered = this._convertToStr(reordered);
             
             return {
                 request_ids: result.request_ids || [],
@@ -291,11 +289,8 @@ export class ContextPilot extends ContextIndex {
             
             const tempIndex = new ContextPilot(
                 this.alpha,
-                // @ts-ignore
                 this.useGpu,
-                // @ts-ignore
                 this.linkageMethod,
-                // @ts-ignore
                 this.batchSize
             );
             
@@ -326,8 +321,7 @@ export class ContextPilot extends ContextIndex {
         const scheduledOrder = this._scheduleIncremental(contextInfo);
         const groups = this._groupByPathPrefix(contextInfo);
 
-        // @ts-ignore
-        const finalReorderedStr = this._convertToStr ? this._convertToStr(reorderedContexts) : reorderedContexts;
+        const finalReorderedStr = this._convertToStr(reorderedContexts);
 
         return {
             request_ids: requestIds,
@@ -686,11 +680,10 @@ export class ContextPilot extends ContextIndex {
 
         this.liveStats.totalEvictions += evictedNodes.length;
 
-        const arrayReqs = Array.from(requestIds);
         return {
             removed_count: evictedNodes.length,
             evicted_node_ids: evictedNodes,
-            evicted_request_ids: arrayReqs.filter(id => !notFound.includes(id)),
+            evicted_request_ids: Array.from(requestIds).filter(id => !notFound.includes(id)),
             not_found: notFound,
             nodes_remaining: this.nodes.size,
             requests_remaining: this._requestToNode.size
@@ -834,12 +827,10 @@ export class ContextPilot extends ContextIndex {
                     currentId = bestChildId;
                     currentPath = childPath;
                     continue;
-                } else {
-                    return [childPath, bestChildId, bestOverlap, true];
                 }
-            } else {
-                return [childPath, bestChildId, bestOverlap, false];
+                return [childPath, bestChildId, bestOverlap, true];
             }
+            return [childPath, bestChildId, bestOverlap, false];
         }
     }
 
@@ -1163,9 +1154,7 @@ export class ContextPilot extends ContextIndex {
 
         this.nodes.delete(nodeId);
 
-        if (this.metadata.has(nodeId)) {
-            this.metadata.delete(nodeId);
-        }
+        this.metadata.delete(nodeId);
 
         return nodesPruned;
     }

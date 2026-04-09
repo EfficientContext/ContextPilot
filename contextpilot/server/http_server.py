@@ -103,8 +103,8 @@ _intercept_index: Optional[ContextPilot] = None
 
 # ── Conversation-aware intercept state ────────────────────────────────────
 # Tracks which tool results have already been processed, enabling
-# skip-old / dedup-new / reorder-new behaviour.  Single-conversation
-# model (one user at a time).  Resets when the system prompt changes.
+# skip-old / dedup-new / reorder-new behaviour.  Per-session model
+# keyed by (system prompt + first user message).  Resets on compaction.
 
 @dataclass
 class _InterceptConvState:
@@ -129,8 +129,6 @@ class _InterceptConvState:
     last_message_count: int = 0
 
 
-# Per-session state dict keyed by session fingerprint (system prompt + first user msg).
-# This allows concurrent multi-user sessions to each maintain their own state.
 _intercept_states: dict[str, _InterceptConvState] = {}
 _intercept_states_lock = asyncio.Lock()
 _MAX_TRACKED_SESSIONS = 64  # LRU eviction threshold
@@ -882,7 +880,6 @@ async def reset_index():
     # Reset conversation tracker
     reset_conversation_tracker()
 
-    # Reset all per-session intercept states
     _intercept_states.clear()
     _intercept_index = None
 
@@ -1182,22 +1179,14 @@ def _hash_text(text: str) -> str:
 
 
 def _session_fingerprint(body: Dict[str, Any]) -> str:
-    """Derive a session fingerprint from the system prompt + first user message.
-
-    In a multi-turn conversation, messages grow but the system prompt and
-    first user message stay constant.  Hashing both gives a stable per-session
-    key that lets concurrent users each maintain their own intercept state,
-    even if different users share the same first user message.
-    """
+    """Stable session key from system prompt + first user message."""
     msgs = body.get("messages") or []
     parts_to_hash: list[str] = []
 
-    # Include system prompt for differentiation between sessions
     system = body.get("system")
     if system:
         parts_to_hash.append(str(system)[:500])
 
-    # Find the first user message (usually msg[0] or msg[1] after system)
     for msg in msgs[:5]:
         if isinstance(msg, dict) and msg.get("role") == "system":
             parts_to_hash.append(str(msg.get("content", ""))[:500])
@@ -1212,7 +1201,6 @@ def _session_fingerprint(body: Dict[str, Any]) -> str:
             break
 
     if not parts_to_hash:
-        # Fallback: hash first two messages
         return _hash_text(json.dumps(msgs[:2], sort_keys=True))
 
     return _hash_text("\x00".join(parts_to_hash))
@@ -1221,16 +1209,9 @@ def _session_fingerprint(body: Dict[str, Any]) -> str:
 async def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
     """Return per-session intercept state, creating or resetting as needed.
 
-    Uses the system prompt + first user message as a session fingerprint so
-    concurrent multi-user sessions each get their own state.
-
-    Detection: in a multi-turn agent conversation the messages array only
-    grows.  If the count drops, either a new session started or the host
-    compacted old messages.  Either way, reset state: the old KV cache
-    entries are gone (compaction rewrites content), so cached_messages,
-    seen_doc_hashes, and reorder state are all invalid.
+    If the message count drops, the host compacted old messages or a new
+    session started — either way, reset: the old KV cache entries are gone.
     """
-    global _intercept_states
     session_key = _session_fingerprint(body)
     msg_count = len(body.get("messages") or [])
 
@@ -1238,14 +1219,12 @@ async def _get_intercept_state(body: Dict[str, Any]) -> _InterceptConvState:
         state = _intercept_states.get(session_key)
 
         if state is None:
-            # New session
             state = _InterceptConvState()
             state.system_processed = True
             logger.info(
                 f"Intercept: new session {session_key[:8]}… "
                 f"({msg_count} msgs, {len(_intercept_states)} active sessions)"
             )
-            # Evict oldest sessions if over limit
             if len(_intercept_states) >= _MAX_TRACKED_SESSIONS:
                 oldest_key = next(iter(_intercept_states))
                 del _intercept_states[oldest_key]
@@ -1313,13 +1292,11 @@ def _strip_external_content_ids(body: Any) -> Any:
 _OPENAI_CHAT = "openai_chat"
 _ANTHROPIC_MESSAGES = "anthropic_messages"
 
-# Hop-by-hop headers that must not be forwarded by proxies.
 _HOP_BY_HOP = frozenset((
     "host", "connection", "keep-alive", "transfer-encoding",
     "te", "trailer", "upgrade", "proxy-authorization",
     "proxy-authenticate", "content-length",
 ))
-
 
 
 def _doc_preview(doc: str, max_len: int = 60) -> str:
@@ -1502,11 +1479,9 @@ async def _intercept_and_forward(request: Request, api_format: str):
                         f"compacted={_is_compacted} preview: {_preview}"
                     )
 
-    # Per-session debug logging (uses session fingerprint, not global state)
-    _session_key = _session_fingerprint(body)
-    _session_tag = _session_key[:8]
     logger.info(
-        f"Intercept: session={_session_tag} {_debug_msg_count} msgs"
+        f"Intercept: session={_session_fingerprint(body)[:8]} "
+        f"{_debug_msg_count} msgs"
     )
 
     # ── Format handler (strategy pattern) ────────────────────────────
@@ -1523,14 +1498,10 @@ async def _intercept_and_forward(request: Request, api_format: str):
             # On subsequent turns, the host sends original (unmodified)
             # messages.  Replace them with our cached modified versions
             # so the inference engine's prefix cache sees identical tokens.
-            # IMPORTANT: Only replace if the old messages actually match
-            # (same session/user).  Without this check, concurrent requests
-            # from different sessions would get cross-contaminated.
             old_msg_count = len(state.cached_messages)
             if old_msg_count > 0:
                 msgs = body.get("messages", [])
                 if len(msgs) >= old_msg_count:
-                    # Verify prefix match before replacing
                     prefix_ok = True
                     for _ci in range(old_msg_count):
                         _cached_h = hashlib.sha256(

@@ -146,10 +146,6 @@ export class EvictionHeap {
 
             const [accessTime, nodeId] = entry;
 
-            if (!this._metadata.has(nodeId)) {
-                continue;
-            }
-
             const metadata = this._metadata.get(nodeId);
             if (!metadata) {
                 continue;
@@ -168,11 +164,6 @@ export class EvictionHeap {
     peek(): NodeMetadata | null {
         while (this._heap.length > 0) {
             const [accessTime, nodeId] = this._heap[0];
-
-            if (!this._metadata.has(nodeId)) {
-                this._heapPop();
-                continue;
-            }
 
             const metadata = this._metadata.get(nodeId);
             if (!metadata) {
@@ -196,10 +187,8 @@ export class EvictionHeap {
             return;
         }
 
-        const effectiveTime = newTime ?? Date.now() / 1000;
-        metadata.lastAccessTime = effectiveTime;
-
-        this._heapPush([effectiveTime, nodeId]);
+        metadata.lastAccessTime = newTime ?? Date.now() / 1000;
+        this._heapPush([metadata.lastAccessTime, nodeId]);
     }
 
     remove(nodeId: number): void {
@@ -232,11 +221,8 @@ export class EvictionHeap {
             return false;
         }
 
-        const oldTokens = metadata.totalTokens;
-        const totalNew = inputTokens + outputTokens;
-        const delta = totalNew - oldTokens;
-
-        metadata.totalTokens = totalNew;
+        const delta = (inputTokens + outputTokens) - metadata.totalTokens;
+        metadata.totalTokens = inputTokens + outputTokens;
         metadata.extraTokens = Math.max(0, metadata.extraTokens + delta);
         metadata.updateAccessTime();
 

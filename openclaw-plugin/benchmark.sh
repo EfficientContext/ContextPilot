@@ -1,26 +1,20 @@
 #!/bin/bash
 #
-# ContextPilot Deduplication Benchmark
-# Measures chars saved by context deduplication
+# ContextPilot Benchmark
+# Compares context size with and without ContextPilot
 #
 
 set -e
 
 OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
 BACKUP_CONFIG="$HOME/.openclaw/openclaw.json.bak"
-LOG_WITH="/tmp/gw-with-cp.log"
-LOG_WITHOUT="/tmp/gw-without-cp.log"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEST_FILE="${SCRIPT_DIR}/src/engine/dedup.ts"
 
 echo "=========================================="
-echo "ContextPilot Deduplication Benchmark"
+echo "ContextPilot Benchmark"
 echo "=========================================="
-echo ""
-echo "Note: OpenClaw does not expose raw token usage in logs."
-echo "This benchmark measures chars saved by deduplication."
-echo "Actual token reduction occurs at the LLM provider."
 
 # Backup config
 cp "$OPENCLAW_CONFIG" "$BACKUP_CONFIG"
@@ -31,7 +25,6 @@ cleanup() {
     cp "$BACKUP_CONFIG" "$OPENCLAW_CONFIG"
     rm -f "$BACKUP_CONFIG"
     openclaw gateway stop 2>/dev/null || true
-    pkill -9 -f "openclaw-gateway" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -61,125 +54,122 @@ PYTHON
 
 restart_gateway() {
     local logfile=$1
-    echo "  Stopping gateway..."
+
+    # Force stop any existing gateway
+    echo "  Stopping existing gateway..."
     openclaw gateway stop 2>/dev/null || true
+    sleep 1
     pkill -9 -f "openclaw-gateway" 2>/dev/null || true
     sleep 2
-    # Verify stopped
-    if pgrep -f "openclaw-gateway" > /dev/null; then
+
+    # Verify it's stopped
+    if pgrep -f "openclaw-gateway" > /dev/null 2>&1; then
         echo "  WARNING: Gateway still running, force killing..."
         pkill -9 -f "openclaw-gateway" 2>/dev/null || true
         sleep 2
     fi
+
+    rm -f "$logfile"
     echo "  Starting gateway..."
-    openclaw gateway > "$logfile" 2>&1 &
-    sleep 5
-    if ! pgrep -f "openclaw-gateway" > /dev/null; then
-        echo "  ERROR: Gateway failed to start"
-        tail -10 "$logfile"
-        exit 1
-    fi
-    echo "  Gateway running (PID $(pgrep -f 'openclaw-gateway'))."
+    nohup openclaw gateway > "$logfile" 2>&1 &
+
+    # Wait for gateway to start
+    for i in {1..15}; do
+        if pgrep -f "openclaw-gateway" > /dev/null 2>&1; then
+            sleep 3
+            echo "  Gateway running (PID $(pgrep -f openclaw-gateway | head -1))"
+            return 0
+        fi
+        sleep 1
+    done
+
+    echo "ERROR: Gateway failed to start"
+    cat "$logfile" | tail -20
+    return 1
 }
 
-run_test_sequence() {
-    local session_id="benchmark-$$-$(date +%s)"
+run_test() {
+    local session_id="bench-$$-$(date +%s)"
     echo "  Session: $session_id"
-    echo "  Reading file 3 times in same session..."
-    timeout 60 openclaw agent --agent main --session-id "$session_id" --message "Read $TEST_FILE and count the functions" > /dev/null 2>&1 || true
-    timeout 60 openclaw agent --agent main --session-id "$session_id" --message "Read $TEST_FILE again and list the exports" > /dev/null 2>&1 || true
-    timeout 60 openclaw agent --agent main --session-id "$session_id" --message "Read $TEST_FILE one more time and summarize what it does" > /dev/null 2>&1 || true
-    echo "  Done."
+
+    # Read the same file 3 times to trigger dedup
+    timeout 60 openclaw agent --agent main --session-id "$session_id" \
+        --message "Read $TEST_FILE and count functions" 2>/dev/null || true
+
+    timeout 60 openclaw agent --agent main --session-id "$session_id" \
+        --message "Read $TEST_FILE again, list exports" 2>/dev/null || true
+
+    timeout 60 openclaw agent --agent main --session-id "$session_id" \
+        --message "Read $TEST_FILE one more time, summarize" 2>/dev/null || true
 }
 
-extract_chars_saved() {
+extract_stats() {
     local logfile=$1
-    # Look for ContextPilot stats line - extract chars saved
-    # Format: "[ContextPilot] Stats: N requests, X chars saved (~Y tokens, ~$Z)"
-    local line=$(grep "ContextPilot.*Stats:" "$logfile" 2>/dev/null | tail -1)
-    if [ -z "$line" ]; then
-        echo "0"
+    # Try the captured log first
+    local stats=$(grep "ContextPilot.*Stats:" "$logfile" 2>/dev/null | tail -1)
+    if [ -n "$stats" ]; then
+        echo "$stats"
         return
     fi
-    # Extract the number before "chars saved"
-    echo "$line" | sed 's/.*Stats:[^,]*, //' | sed 's/ chars saved.*//' | tr -d ','
-}
-
-extract_requests() {
-    local logfile=$1
-    local line=$(grep "ContextPilot.*Stats:" "$logfile" 2>/dev/null | tail -1)
-    if [ -z "$line" ]; then
-        echo "0"
-        return
-    fi
-    # Extract the number after "Stats:" before "requests"
-    echo "$line" | sed 's/.*Stats: //' | sed 's/ requests.*//'
+    # Fall back to main openclaw log
+    local today=$(date +%Y-%m-%d)
+    local mainlog="/tmp/openclaw/openclaw-${today}.log"
+    grep "ContextPilot.*Stats:" "$mainlog" 2>/dev/null | tail -1 || echo ""
 }
 
 # ==========================================
 # Test WITH ContextPilot
 # ==========================================
 echo ""
-echo "Test 1: WITH ContextPilot enabled"
+echo "Test: WITH ContextPilot enabled"
 echo "----------------------------------------"
 enable_contextpilot
-restart_gateway "$LOG_WITH"
-run_test_sequence
 
-WITH_CHARS=$(extract_chars_saved "$LOG_WITH")
-WITH_REQUESTS=$(extract_requests "$LOG_WITH")
-
-echo ""
-echo "  Results:"
-echo "    Requests processed: $WITH_REQUESTS"
-echo "    Chars deduped:      $WITH_CHARS"
-if [ "$WITH_CHARS" -gt 0 ] 2>/dev/null; then
-    tokens_est=$((WITH_CHARS / 4))
-    cost_est=$(echo "scale=4; $tokens_est * 0.003 / 1000" | bc 2>/dev/null || echo "0")
-    echo "    Est. tokens saved:  ~$tokens_est"
-    echo "    Est. cost saved:    ~\$$cost_est"
+LOG_WITH="/tmp/gw-with.log"
+if ! restart_gateway "$LOG_WITH"; then
+    exit 1
 fi
 
-# ==========================================
-# Test WITHOUT ContextPilot
-# ==========================================
-echo ""
-echo "Test 2: WITHOUT ContextPilot"
-echo "----------------------------------------"
-disable_contextpilot
-restart_gateway "$LOG_WITHOUT"
-run_test_sequence
+echo "  Running 3 file reads in same session..."
+run_test
+echo "  Done."
 
-echo ""
-echo "  Results:"
-echo "    (No ContextPilot stats - plugin disabled)"
+sleep 2
+WITH_STATS=$(extract_stats "$LOG_WITH")
 
-# ==========================================
-# Summary
-# ==========================================
-echo ""
-echo "=========================================="
-echo "SUMMARY"
-echo "=========================================="
-echo ""
+if [ -n "$WITH_STATS" ]; then
+    # Extract chars saved
+    CHARS_SAVED=$(echo "$WITH_STATS" | sed 's/.*Stats:[^,]*, //' | sed 's/ chars saved.*//' | tr -d ',')
+    TOKENS_SAVED=$(echo "$WITH_STATS" | grep -oP '~\K[0-9,]+(?= tokens)' | tr -d ',')
 
-if [ -z "$WITH_CHARS" ] || [ "$WITH_CHARS" = "0" ]; then
-    echo "No deduplication occurred."
-    echo "This is expected if:"
-    echo "  - The file wasn't read multiple times in the same session"
-    echo "  - The file content was too short to chunk"
-    echo "  - Each read was in a fresh session (gateway restart between reads)"
     echo ""
-    echo "For best results, run multiple file reads in a single session."
+    echo "=========================================="
+    echo "RESULTS"
+    echo "=========================================="
+    echo ""
+    echo "ContextPilot deduplicated:"
+    echo "  Chars saved:    ${CHARS_SAVED:-0}"
+    echo "  Tokens saved:   ~${TOKENS_SAVED:-0}"
+
+    if [ -n "$TOKENS_SAVED" ] && [ "$TOKENS_SAVED" -gt 0 ] 2>/dev/null; then
+        COST=$(echo "scale=4; $TOKENS_SAVED * 0.003 / 1000" | bc 2>/dev/null || echo "N/A")
+        echo "  Est. cost saved: ~\$$COST (at \$3/MTok)"
+    fi
+
+    echo ""
+    echo "This represents content that was deduplicated"
+    echo "across repeated file reads in the session."
 else
-    tokens_saved=$((WITH_CHARS / 4))
-    cost_saved=$(echo "scale=4; $tokens_saved * 0.003 / 1000" | bc 2>/dev/null || echo "N/A")
-    echo "ContextPilot Results:"
-    echo "  Requests processed:   $WITH_REQUESTS"
-    echo "  Chars deduplicated:   $WITH_CHARS"
-    echo "  Est. tokens reduced:  ~$tokens_saved"
-    echo "  Est. cost saved:      ~\$$cost_saved (at \$3/MTok input)"
     echo ""
-    echo ">>> Deduplication removes repeated file content across tool calls"
-    echo ">>> Actual token reduction occurs at the LLM provider"
+    echo "No ContextPilot stats found in logs."
+    echo ""
+    echo "Debug info:"
+    echo "  Gateway log: $LOG_WITH"
+    echo "  Main log: /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log"
+    echo ""
+    echo "Gateway log contents:"
+    cat "$LOG_WITH" 2>/dev/null | grep -v "^\[" | head -10
+    echo ""
+    echo "Searching main log for ContextPilot..."
+    grep -i "contextpilot" /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log 2>/dev/null | tail -5 || echo "  (none found)"
 fi

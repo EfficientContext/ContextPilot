@@ -1,5 +1,5 @@
 {
-  "name": "@contextpilot/contextpilot",
+  "name": "@contextpilot-ai/contextpilot",
   "version": "0.2.1",
   "description": "ContextPilot plugin for OpenClaw — faster long-context inference via in-process context reuse. Zero external dependencies.",
   "type": "module",

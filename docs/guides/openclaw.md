@@ -6,19 +6,35 @@
 <img src="../images/openclaw-cp.png" alt="OpenClaw + ContextPilot Pipeline" width="800"/>
 </div>
 
-ContextPilot acts as a transparent HTTP proxy. OpenClaw sends requests to the proxy instead of directly to the LLM API. The proxy deduplicates shared content across tool results, reorders documents, and forwards to the backend.
+ContextPilot acts as a transparent HTTP proxy or a native plugin. In either mode, it deduplicates shared content across tool results, reorders documents, and maximizes cache hits.
 
-## Why This Matters for OpenClaw
+## Installation
 
-OpenClaw's search and memory retrieval results appear as **tool_result messages** in the conversation history, not in the system prompt. When multiple search results are returned, their ordering affects the LLM's attention and response quality.
+### Plugin (Recommended)
 
-ContextPilot:
-1. **Reorder**: Reorders documents within tool results to maximize prefix cache hits (multi-doc tool results)
-2. **Dedup**: ContextBlock-level and content-level deduplication across tool results — identical content replaced with back-references, reducing prefill tokens
+The native OpenClaw plugin runs in-process with zero external dependencies.
 
-Results from reorder and dedup are cached and reapplied on subsequent turns to keep the prefix consistent across the conversation (prefix cache alignment). See [Cache Synchronization](cache_sync.md) for how ContextPilot stays in sync with the inference engine's cache.
+1. **Install the plugin**:
 
-## Setup
+```bash
+openclaw plugins install @contextpilot-ai/contextpilot
+```
+
+2. **Enable in `~/.openclaw/openclaw.json`**:
+
+```json
+{
+  "plugins": {
+    "slots": { "contextEngine": "contextpilot" },
+    "entries": { "contextpilot": { "enabled": true } }
+  }
+}
+```
+
+3. **Restart OpenClaw**. ContextPilot now intercepts every LLM call, optimizes the context, and injects cache control markers (for Anthropic) automatically.
+
+### Alternative: HTTP Proxy
+
 
 ### Quick Start (one command)
 

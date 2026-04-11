@@ -86,17 +86,37 @@ We also evaluated on academic RAG (Qwen3-32B, 4×A6000) and production MoE infer
 
 ### OpenClaw
 
+**Option A: Native Plugin** (recommended — zero external dependencies)
+
+```bash
+openclaw plugins install @contextpilot-ai/contextpilot
+```
+
+Then enable in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "plugins": {
+    "slots": { "contextEngine": "contextpilot" },
+    "entries": { "contextpilot": { "enabled": true } }
+  }
+}
+```
+
+Restart OpenClaw. Done — ContextPilot runs in-process, no proxy needed.
+
+**Option B: HTTP Proxy** (for self-hosted models or custom backends)
+
 ```bash
 pip install contextpilot
 
-# Start proxy (points to your LLM backend)
 python -m contextpilot.server.http_server \
   --port 8765 --infer-api-url http://localhost:30000   # SGLang
   # or: --infer-api-url https://api.anthropic.com      # Anthropic
   # or: --infer-api-url https://api.openai.com         # OpenAI
 ```
 
-Then set OpenClaw's base URL to `http://localhost:8765/v1`. See the [full OpenClaw integration guide](docs/guides/openclaw.md) for UI setup, config file examples, and self-hosted model instructions.
+Then set OpenClaw's base URL to `http://localhost:8765/v1`. See the [full OpenClaw integration guide](docs/guides/openclaw.md) for details.
 
 ---
 

@@ -1,4 +1,4 @@
-# @contextpilot/contextpilot
+# @contextpilot-ai/contextpilot
 
 OpenClaw plugin for [ContextPilot](https://github.com/EfficientContext/ContextPilot) — faster long-context inference via in-process context optimization. **Zero external dependencies** — no Python, no proxy server, just install and go.
 
@@ -18,7 +18,7 @@ All processing happens in-process — no external services needed.
 ### From npm (when published)
 
 ```bash
-openclaw plugins install @contextpilot/contextpilot
+openclaw plugins install @contextpilot-ai/contextpilot
 ```
 
 ### From local path (development)
@@ -93,7 +93,7 @@ The plugin registers as an OpenClaw Context Engine using `api.registerContextEng
 ```
 openclaw-plugin/
 ├── openclaw.plugin.json   # Plugin manifest (id: "contextpilot")
-├── package.json           # npm package (@contextpilot/contextpilot)
+├── package.json           # npm package (@contextpilot-ai/contextpilot)
 ├── src/
 │   ├── index.ts           # Plugin entry point
 │   └── engine/

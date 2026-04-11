@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { delegateCompactionToRuntime } from "openclaw/plugin-sdk/core";
+import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { injectCacheControl } from "./engine/cache-control.js";
 import { dedupChatCompletions } from "./engine/dedup.js";
@@ -31,6 +31,48 @@ function reorderWithEngine(engine: ContextPilot, docs: string[]): string[] {
 interface Message {
   role: string;
   content: unknown;
+}
+
+interface TextBlock {
+  type?: string;
+  text?: string;
+}
+
+interface ToolUseIdCarrier {
+  tool_use_id?: unknown;
+  toolUseId?: unknown;
+}
+
+function normalizeMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const textBlock = block as TextBlock;
+    if (textBlock.type === "text" && typeof textBlock.text === "string") {
+      parts.push(textBlock.text);
+    }
+  }
+  return parts.join("\n");
+}
+
+function extractToolUseId(message: Message, idx: number): string {
+  const withToolUseId = message as Message & ToolUseIdCarrier;
+  if (typeof withToolUseId.tool_use_id === "string" && withToolUseId.tool_use_id) {
+    return withToolUseId.tool_use_id;
+  }
+  if (typeof withToolUseId.toolUseId === "string" && withToolUseId.toolUseId) {
+    return withToolUseId.toolUseId;
+  }
+  return `tool_${idx}`;
 }
 
 export default definePluginEntry({
@@ -71,16 +113,12 @@ export default definePluginEntry({
 
         const convertedMessages = messages.map((msg, idx) => {
           if (msg.role === "toolResult") {
-            const content = typeof msg.content === "string"
-              ? msg.content
-              : Array.isArray(msg.content)
-                ? (msg.content as any[]).map(b => b?.text || "").join("\n")
-                : "";
+            const content = normalizeMessageContent(msg.content);
             return {
               role: "user",
               content: [{
                 type: "tool_result",
-                tool_use_id: (msg as any).tool_use_id || (msg as any).toolUseId || `tool_${idx}`,
+                tool_use_id: extractToolUseId(msg, idx),
                 content: content,
               }],
             };
@@ -118,18 +156,34 @@ export default definePluginEntry({
           }
         }
 
-        const finalMessages = (convertedBody.messages as any[]).map((msg, idx) => {
+        const convertedMessageList = Array.isArray(convertedBody.messages)
+          ? (convertedBody.messages as Array<{ content?: unknown }>)
+          : [];
+
+        const finalMessages = convertedMessageList.map((msg, idx) => {
           const original = messages[idx];
           if (original?.role === "toolResult") {
-            const block = Array.isArray(msg.content) ? msg.content[0] : null;
-            const extractedContent = block?.content;
+            const block = Array.isArray(msg.content)
+              ? msg.content[0]
+              : null;
+            const extractedContent = block && typeof block === "object"
+              ? (block as { content?: unknown }).content
+              : undefined;
 
             if (Array.isArray(original.content)) {
-              const newContentArray = (original.content as any[]).map(b => {
-                if (b?.type === "text" && typeof extractedContent === "string") {
-                  return { ...b, text: extractedContent };
+              const newContentArray = original.content.map((entry) => {
+                if (
+                  entry
+                  && typeof entry === "object"
+                  && (entry as TextBlock).type === "text"
+                  && typeof extractedContent === "string"
+                ) {
+                  return {
+                    ...(entry as Record<string, unknown>),
+                    text: extractedContent,
+                  };
                 }
-                return b;
+                return entry;
               });
               return { ...original, content: newContentArray };
             } else if (typeof extractedContent === "string") {
@@ -145,7 +199,7 @@ export default definePluginEntry({
           system: system,
         };
 
-        const dedupResult = dedupChatCompletions(finalBody);
+        const dedupResult = dedupChatCompletions(finalBody, system);
         totalCharsSaved += dedupResult.charsSaved;
 
         const optimizedBody = injectCacheControl(finalBody, "anthropic");

@@ -106,9 +106,11 @@ _intercept_index: Optional[ContextPilot] = None
 # skip-old / dedup-new / reorder-new behaviour.  Per-session model
 # keyed by (system prompt + first user message).  Resets on compaction.
 
+
 @dataclass
 class _InterceptConvState:
     """Per-session intercept state for a single conversation."""
+
     # Cached copy of the full messages array after modification (reorder/dedup).
     # On subsequent turns, old messages are replaced with these cached versions
     # so the inference engine's prefix cache sees identical tokens.
@@ -611,10 +613,14 @@ async def _reorder_stateful(request: ReorderRequest):
             if request.deduplicate:
                 tracker = get_conversation_tracker()
                 docs_list = result.get("reordered_contexts") or contexts
-                doc_contents_list = None
+                doc_contents_list: Optional[List[Optional[Dict[int, str]]]] = None
                 if _id_to_str:
                     doc_contents_list = [
-                        {did: _id_to_str[did] for did in ctx if did in _id_to_str}
+                        {
+                            did: _id_to_str[did]
+                            for did in ctx
+                            if isinstance(did, int) and did in _id_to_str
+                        }
                         for ctx in docs_list
                     ]
                 dedup_results = tracker.deduplicate_batch(
@@ -626,6 +632,8 @@ async def _reorder_stateful(request: ReorderRequest):
                 )
                 if doc_contents_list:
                     for dc in doc_contents_list:
+                        if dc is None:
+                            continue
                         for did, content in dc.items():
                             if did in _id_to_str and content != _id_to_str[did]:
                                 _id_to_str[did] = content
@@ -697,10 +705,14 @@ async def _reorder_stateful(request: ReorderRequest):
         if request.deduplicate:
             tracker = get_conversation_tracker()
             reordered_raw = result.get("reordered_contexts") or contexts
-            doc_contents_list = None
+            doc_contents_list: Optional[List[Optional[Dict[int, str]]]] = None
             if _id_to_str:
                 doc_contents_list = [
-                    {did: _id_to_str[did] for did in ctx if did in _id_to_str}
+                    {
+                        did: _id_to_str[did]
+                        for did in ctx
+                        if isinstance(did, int) and did in _id_to_str
+                    }
                     for ctx in reordered_raw
                 ]
             dedup_results = tracker.deduplicate_batch(
@@ -712,6 +724,8 @@ async def _reorder_stateful(request: ReorderRequest):
             )
             if doc_contents_list:
                 for dc in doc_contents_list:
+                    if dc is None:
+                        continue
                     for did, content in dc.items():
                         if did in _id_to_str and content != _id_to_str[did]:
                             _id_to_str[did] = content
@@ -875,7 +889,13 @@ async def reset_index():
 
     After reset, you must call /reorder again before other operations.
     """
-    global _index, _str_to_id, _id_to_str, _next_str_id, _intercept_index, _intercept_states
+    global \
+        _index, \
+        _str_to_id, \
+        _id_to_str, \
+        _next_str_id, \
+        _intercept_index, \
+        _intercept_states
 
     # Reset conversation tracker
     reset_conversation_tracker()
@@ -1178,6 +1198,49 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
+def _extract_system_content_for_dedup(body: Dict[str, Any]) -> Optional[str]:
+    """Extract system prompt text for cross-layer block deduplication."""
+    parts: List[str] = []
+
+    def _append_content(content: Any) -> None:
+        if isinstance(content, str):
+            text = content.strip()
+            if text:
+                parts.append(text)
+            return
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype in ("text", "input_text"):
+                    text = block.get("text", "")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+
+    _append_content(body.get("system"))
+
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                _append_content(msg.get("content"))
+
+    input_items = body.get("input")
+    if isinstance(input_items, list):
+        for item in input_items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("role") == "system" or item.get("type") == "system":
+                _append_content(item.get("content"))
+            elif item.get("type") == "message" and item.get("role") == "system":
+                _append_content(item.get("content"))
+
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def _session_fingerprint(body: Dict[str, Any]) -> str:
     """Stable session key from system prompt + first user message."""
     msgs = body.get("messages") or []
@@ -1194,8 +1257,7 @@ def _session_fingerprint(body: Dict[str, Any]) -> str:
             content = msg.get("content", "")
             if isinstance(content, list):
                 # OpenAI format: [{type: text, text: "..."}]
-                text_parts = [p.get("text", "") for p in content
-                              if isinstance(p, dict)]
+                text_parts = [p.get("text", "") for p in content if isinstance(p, dict)]
                 content = "".join(text_parts)
             parts_to_hash.append(str(content))
             break
@@ -1292,11 +1354,20 @@ def _strip_external_content_ids(body: Any) -> Any:
 _OPENAI_CHAT = "openai_chat"
 _ANTHROPIC_MESSAGES = "anthropic_messages"
 
-_HOP_BY_HOP = frozenset((
-    "host", "connection", "keep-alive", "transfer-encoding",
-    "te", "trailer", "upgrade", "proxy-authorization",
-    "proxy-authenticate", "content-length",
-))
+_HOP_BY_HOP = frozenset(
+    (
+        "host",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+        "proxy-authorization",
+        "proxy-authenticate",
+        "content-length",
+    )
+)
 
 
 def _doc_preview(doc: str, max_len: int = 60) -> str:
@@ -1480,12 +1551,13 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     )
 
     logger.info(
-        f"Intercept: session={_session_fingerprint(body)[:8]} "
-        f"{_debug_msg_count} msgs"
+        f"Intercept: session={_session_fingerprint(body)[:8]} {_debug_msg_count} msgs"
     )
 
     # ── Format handler (strategy pattern) ────────────────────────────
     handler = get_format_handler(api_format)
+    state = _InterceptConvState()
+    state.last_message_count = _debug_msg_count
 
     if config.enabled:
         try:
@@ -1503,23 +1575,26 @@ async def _intercept_and_forward(request: Request, api_format: str):
                 msgs = body.get("messages", [])
                 if len(msgs) >= old_msg_count:
                     prefix_ok = True
+                    mismatch_idx = -1
                     for _ci in range(old_msg_count):
                         _cached_h = hashlib.sha256(
-                            json.dumps(state.cached_messages[_ci],
-                                       sort_keys=True,
-                                       ensure_ascii=False).encode()
+                            json.dumps(
+                                state.cached_messages[_ci],
+                                sort_keys=True,
+                                ensure_ascii=False,
+                            ).encode()
                         ).hexdigest()[:16]
                         _current_h = hashlib.sha256(
-                            json.dumps(msgs[_ci],
-                                       sort_keys=True,
-                                       ensure_ascii=False).encode()
+                            json.dumps(
+                                msgs[_ci], sort_keys=True, ensure_ascii=False
+                            ).encode()
                         ).hexdigest()[:16]
                         if _cached_h != _current_h:
                             prefix_ok = False
+                            mismatch_idx = _ci
                             break
                     if prefix_ok:
-                        msgs[:old_msg_count] = copy.deepcopy(
-                            state.cached_messages)
+                        msgs[:old_msg_count] = copy.deepcopy(state.cached_messages)
                         logger.info(
                             f"Intercept: replaced {old_msg_count} old "
                             f"messages with cached versions for prefix "
@@ -1527,7 +1602,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                         )
                     else:
                         logger.info(
-                            f"Intercept: prefix mismatch at msg[{_ci}], "
+                            f"Intercept: prefix mismatch at msg[{mismatch_idx}], "
                             f"skipping cached message replay "
                             f"(different session/user)"
                         )
@@ -1667,10 +1742,19 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
             _dedup_result = DedupResult()
             try:
+                system_content = _extract_system_content_for_dedup(body)
                 if api_format == _OPENAI_CHAT:
-                    _dedup_result = dedup_chat_completions(body, chunk_modulus=_chunk_modulus)
+                    _dedup_result = dedup_chat_completions(
+                        body,
+                        chunk_modulus=_chunk_modulus,
+                        system_content=system_content,
+                    )
                 elif "input" in body and isinstance(body.get("input"), list):
-                    _dedup_result = dedup_responses_api(body, chunk_modulus=_chunk_modulus)
+                    _dedup_result = dedup_responses_api(
+                        body,
+                        chunk_modulus=_chunk_modulus,
+                        system_content=system_content,
+                    )
 
                 if _dedup_result.chars_saved > 0:
                     chars_before_slim += _dedup_result.chars_before
@@ -1678,6 +1762,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
                     logger.info(
                         f"Dedup ({api_format}): "
                         f"blocks={_dedup_result.blocks_deduped}/{_dedup_result.blocks_total}, "
+                        f"system_matches={_dedup_result.system_blocks_matched}, "
                         f"saved {_dedup_result.chars_saved:,} chars"
                     )
             except Exception as dedup_err:
@@ -1744,27 +1829,30 @@ async def _intercept_and_forward(request: Request, api_format: str):
         or _dedup_result.chars_saved > 0
     )
     if _has_activity:
-        cp_response_headers["X-ContextPilot-Result"] = json.dumps({
-            "intercepted": True,
-            "documents_reordered": total_reordered > 0,
-            "total_documents": total_reordered,
-            "documents_deduplicated": total_deduped,
-            "documents_slimmed": total_slimmed,
-            "chars_before_slim": chars_before_slim,
-            "chars_after_slim": chars_after_slim,
-            "chars_saved": chars_before_slim - chars_after_slim,
-            "message_count": state.last_message_count,
-            "sources": {
-                "system": system_count,
-                "tool_results": tool_result_count,
-            },
-            "reorder_details": reorder_details,
-            "dedup": {
-                "blocks_deduped": _dedup_result.blocks_deduped,
-                "blocks_total": _dedup_result.blocks_total,
-                "chars_saved": _dedup_result.chars_saved,
-            },
-        })
+        cp_response_headers["X-ContextPilot-Result"] = json.dumps(
+            {
+                "intercepted": True,
+                "documents_reordered": total_reordered > 0,
+                "total_documents": total_reordered,
+                "documents_deduplicated": total_deduped,
+                "documents_slimmed": total_slimmed,
+                "chars_before_slim": chars_before_slim,
+                "chars_after_slim": chars_after_slim,
+                "chars_saved": chars_before_slim - chars_after_slim,
+                "message_count": state.last_message_count,
+                "sources": {
+                    "system": system_count,
+                    "tool_results": tool_result_count,
+                },
+                "reorder_details": reorder_details,
+                "dedup": {
+                    "blocks_deduped": _dedup_result.blocks_deduped,
+                    "blocks_total": _dedup_result.blocks_total,
+                    "system_blocks_matched": _dedup_result.system_blocks_matched,
+                    "chars_saved": _dedup_result.chars_saved,
+                },
+            }
+        )
 
     is_stream = body.get("stream", False)
 
@@ -1942,6 +2030,7 @@ async def proxy_engine(path: str, request: Request):
 
             dedup_result = DedupResult()
             try:
+                system_content = _extract_system_content_for_dedup(body)
                 if path == "responses" or (
                     "input" in body and isinstance(body.get("input"), list)
                 ):
@@ -1985,13 +2074,22 @@ async def proxy_engine(path: str, request: Request):
                             f"{len(fco_items)} function_call_output:\n"
                             + "\n".join(fco_summary)
                         )
-                    dedup_result = dedup_responses_api(body, chunk_modulus=_chunk_modulus)
+                    dedup_result = dedup_responses_api(
+                        body,
+                        chunk_modulus=_chunk_modulus,
+                        system_content=system_content,
+                    )
                 elif "messages" in body and isinstance(body.get("messages"), list):
-                    dedup_result = dedup_chat_completions(body, chunk_modulus=_chunk_modulus)
+                    dedup_result = dedup_chat_completions(
+                        body,
+                        chunk_modulus=_chunk_modulus,
+                        system_content=system_content,
+                    )
                 if dedup_result.chars_saved > 0:
                     logger.info(
                         f"Passthrough dedup /v1/{path}: "
                         f"block={dedup_result.blocks_deduped}/{dedup_result.blocks_total} "
+                        f"system_matches={dedup_result.system_blocks_matched} "
                         f"(saved {dedup_result.chars_saved:,} chars)"
                     )
             except Exception as pe:
@@ -2151,7 +2249,13 @@ Cloud proxy mode:
         os.environ["CONTEXTPILOT_CLOUD_API_KEY"] = args.cloud_api_key
 
     # Also set global config for direct access
-    global _max_tokens, _infer_api_url, _tokenizer, _model_name, _stateless_mode, _chunk_modulus
+    global \
+        _max_tokens, \
+        _infer_api_url, \
+        _tokenizer, \
+        _model_name, \
+        _stateless_mode, \
+        _chunk_modulus
     _max_tokens = args.max_tokens
     _infer_api_url = args.infer_api_url.rstrip("/")
     _stateless_mode = args.stateless

@@ -448,7 +448,79 @@ describe("dedup", () => {
     const body = structuredClone(DEDUP_BODY);
     const result = dedupChatCompletions(body, { chunkModulus: 1 });
     expect(result.blocksDeduped).toBeGreaterThan(0);
+    expect(result.systemBlocksMatched).toBe(0);
     expect(result.charsSaved).toBeGreaterThan(0);
+    expect(body.messages[2]?.content).toContain(
+      "identical to earlier read_file result",
+    );
+  });
+
+  it("dedupChatCompletions dedups tool content against pre-scanned system blocks", () => {
+    const shared = makeLargeContent("shared");
+    const body = {
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [{ id: "call_1", function: { name: "read_file" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: shared },
+      ],
+    };
+
+    const result = dedupChatCompletions(body, shared, { chunkModulus: 1 });
+    expect(result.blocksDeduped).toBeGreaterThan(0);
+    expect(result.systemBlocksMatched).toBeGreaterThan(0);
+    expect(body.messages[1]?.content).toContain(
+      "identical to earlier system prompt result",
+    );
+  });
+
+  it("dedupChatCompletions dedups assistant fenced code blocks against seen tool blocks", () => {
+    const shared = makeLargeContent("code-shared");
+    const assistantWithCode = [
+      "Here is the generated code:",
+      "```ts",
+      shared,
+      "```",
+    ].join("\n");
+
+    const body = {
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [{ id: "call_1", function: { name: "read_file" } }],
+        },
+        { role: "tool", tool_call_id: "call_1", content: shared },
+        { role: "assistant", content: assistantWithCode },
+      ],
+    };
+
+    const result = dedupChatCompletions(body, { chunkModulus: 1 });
+    expect(result.blocksDeduped).toBeGreaterThan(0);
+    expect(result.systemBlocksMatched).toBe(0);
+    expect(body.messages[2]?.content).toContain(
+      "identical to earlier read_file result",
+    );
+  });
+
+  it("dedupChatCompletions remains backward-compatible when systemContent is omitted", () => {
+    const body = {
+      messages: [
+        {
+          role: "assistant",
+          tool_calls: [
+            { id: "a", function: { name: "read_file" } },
+            { id: "b", function: { name: "read_file" } },
+          ],
+        },
+        { role: "tool", tool_call_id: "a", content: makeLargeContent("same") },
+        { role: "tool", tool_call_id: "b", content: makeLargeContent("same") },
+      ],
+    };
+
+    const result = dedupChatCompletions(body, { chunkModulus: 1 });
+    expect(result.blocksDeduped).toBeGreaterThan(0);
+    expect(result.systemBlocksMatched).toBe(0);
     expect(body.messages[2]?.content).toContain(
       "identical to earlier read_file result",
     );

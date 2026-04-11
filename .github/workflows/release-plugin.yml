@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   publish-npm:
@@ -34,7 +35,5 @@ jobs:
       - name: Sync package version
         run: npm version ${{ steps.get_version.outputs.VERSION }} --no-git-tag-version
 
-      - name: Publish to npm
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm with provenance
+        run: npm publish --provenance --access public

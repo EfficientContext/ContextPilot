@@ -1,0 +1,18 @@
+{
+  "id": "contextpilot",
+  "name": "ContextPilot",
+  "description": "Faster long-context inference via context reuse — reorders, deduplicates, and injects cache control for maximum prefix cache sharing.",
+  "version": "0.2.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "scope": {
+        "type": "string",
+        "enum": ["all", "tool_results"],
+        "description": "Which messages ContextPilot optimizes",
+        "default": "all"
+      }
+    }
+  }
+}

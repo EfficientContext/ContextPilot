@@ -18,6 +18,7 @@ CHUNK_MAX_LINES = 40
 class DedupResult:
     blocks_deduped: int = 0
     blocks_total: int = 0
+    system_blocks_matched: int = 0
     chars_before: int = 0
     chars_after: int = 0
     chars_saved: int = 0
@@ -94,11 +95,17 @@ def _dedup_text(
     result: DedupResult,
     min_block_chars: int,
     chunk_modulus: int,
+    pre_seen: Optional[Dict[str, Tuple[int, str, int]]] = None,
 ) -> Optional[str]:
     """Core dedup loop shared by all entry points.
 
     Returns the deduped text if any blocks were deduped, or None otherwise.
     """
+    if pre_seen:
+        for h, origin in pre_seen.items():
+            if h not in seen_blocks:
+                seen_blocks[h] = origin
+
     blocks = _content_defined_chunking(text, chunk_modulus)
     if len(blocks) < 2:
         for b in blocks:
@@ -121,9 +128,11 @@ def _dedup_text(
         result.blocks_total += 1
 
         if h in seen_blocks and seen_blocks[h][0] != msg_idx:
-            _, orig_fn, _ = seen_blocks[h]
+            orig_msg_idx, orig_fn, _ = seen_blocks[h]
             first_line = block.strip().split("\n")[0][:80]
             ref = f'[... "{first_line}" — identical to earlier {orig_fn} result, see above ...]'
+            if orig_msg_idx == -1:
+                result.system_blocks_matched += 1
             chars_saved = len(block) - len(ref)
             if chars_saved > 0:
                 new_blocks.append(ref)
@@ -148,11 +157,32 @@ def _dedup_text(
     return None
 
 
+def _prescan_system_blocks(
+    system_content: Optional[str],
+    min_block_chars: int,
+    chunk_modulus: int,
+) -> Dict[str, Tuple[int, str, int]]:
+    """Hash and register dedup-eligible blocks from system prompt content."""
+    pre_seen: Dict[str, Tuple[int, str, int]] = {}
+    if not isinstance(system_content, str) or not system_content.strip():
+        return pre_seen
+
+    blocks = _content_defined_chunking(system_content, chunk_modulus)
+    for block_idx, block in enumerate(blocks):
+        if len(block.strip()) < min_block_chars:
+            continue
+        h = _hash_block(block)
+        if h not in pre_seen:
+            pre_seen[h] = (-1, "system prompt", block_idx)
+    return pre_seen
+
+
 def dedup_chat_completions(
     body: dict,
     min_block_chars: int = MIN_BLOCK_CHARS,
     min_content_chars: int = MIN_CONTENT_CHARS,
     chunk_modulus: int = CHUNK_MODULUS,
+    system_content: Optional[str] = None,
 ) -> DedupResult:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -160,6 +190,7 @@ def dedup_chat_completions(
 
     tool_names = _build_tool_name_map_openai(messages)
     seen_blocks: Dict[str, Tuple[int, str, int]] = {}
+    pre_seen = _prescan_system_blocks(system_content, min_block_chars, chunk_modulus)
     result = DedupResult()
 
     for idx, msg in enumerate(messages):
@@ -174,8 +205,14 @@ def dedup_chat_completions(
         fn_name = tool_names.get(tc_id, msg.get("name", "")) or "tool"
 
         new_content = _dedup_text(
-            content, seen_blocks, idx, fn_name, result,
-            min_block_chars, chunk_modulus,
+            content,
+            seen_blocks,
+            idx,
+            fn_name,
+            result,
+            min_block_chars,
+            chunk_modulus,
+            pre_seen=pre_seen,
         )
         if new_content is not None:
             original_len = len(content)
@@ -190,7 +227,13 @@ def dedup_chat_completions(
             )
 
     _dedup_assistant_code_blocks(
-        messages, seen_blocks, result, min_block_chars, min_content_chars, chunk_modulus
+        messages,
+        seen_blocks,
+        result,
+        min_block_chars,
+        min_content_chars,
+        chunk_modulus,
+        pre_seen=pre_seen,
     )
 
     return result
@@ -206,6 +249,7 @@ def _dedup_assistant_code_blocks(
     min_block_chars: int,
     min_content_chars: int,
     chunk_modulus: int,
+    pre_seen: Optional[Dict[str, Tuple[int, str, int]]] = None,
 ) -> None:
     for idx, msg in enumerate(messages):
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -249,8 +293,14 @@ def _dedup_assistant_code_blocks(
                 continue
 
             new_code = _dedup_text(
-                code, seen_blocks, idx, "assistant", result,
-                min_block_chars, chunk_modulus,
+                code,
+                seen_blocks,
+                idx,
+                "assistant",
+                result,
+                min_block_chars,
+                chunk_modulus,
+                pre_seen=pre_seen,
             )
             if new_code is not None:
                 start, end = match.start(2), match.end(2)
@@ -273,6 +323,7 @@ def dedup_responses_api(
     min_block_chars: int = MIN_BLOCK_CHARS,
     min_content_chars: int = MIN_CONTENT_CHARS,
     chunk_modulus: int = CHUNK_MODULUS,
+    system_content: Optional[str] = None,
 ) -> DedupResult:
     input_items = body.get("input")
     if not isinstance(input_items, list) or not input_items:
@@ -280,6 +331,7 @@ def dedup_responses_api(
 
     fn_names = _build_tool_name_map_responses(input_items)
     seen_blocks: Dict[str, Tuple[int, str, int]] = {}
+    pre_seen = _prescan_system_blocks(system_content, min_block_chars, chunk_modulus)
     result = DedupResult()
 
     for idx, item in enumerate(input_items):
@@ -294,8 +346,14 @@ def dedup_responses_api(
         fn_name = fn_names.get(call_id, call_id) or "tool"
 
         new_output = _dedup_text(
-            output, seen_blocks, idx, fn_name, result,
-            min_block_chars, chunk_modulus,
+            output,
+            seen_blocks,
+            idx,
+            fn_name,
+            result,
+            min_block_chars,
+            chunk_modulus,
+            pre_seen=pre_seen,
         )
         if new_output is not None:
             original_len = len(output)

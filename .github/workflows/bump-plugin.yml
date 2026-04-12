@@ -1,0 +1,55 @@
+name: Bump Plugin Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: Version bump type
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+jobs:
+  bump-plugin-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump plugin version
+        run: cd openclaw-plugin && npm version ${{ github.event.inputs.bump_type }} --no-git-tag-version
+
+      - name: Extract new version
+        run: |
+          VERSION=$(node -p "require('./openclaw-plugin/package.json').version")
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Commit version bump
+        run: |
+          git add openclaw-plugin/package.json openclaw-plugin/package-lock.json
+          git commit -m "chore(plugin): bump to v${VERSION}"
+
+      - name: Create plugin tag
+        run: git tag "plugin-v${VERSION}"
+
+      - name: Push commit and tags
+        run: git push origin "HEAD:${{ github.ref_name }}" --tags

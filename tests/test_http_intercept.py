@@ -118,18 +118,19 @@ def client(mock_session):
     original_session = http_mod._aiohttp_session
     original_url = http_mod._infer_api_url
     original_intercept_index = http_mod._intercept_index
-    original_state = http_mod._intercept_state
+    original_states = http_mod._intercept_states.copy()
     http_mod._aiohttp_session = mock_session
     http_mod._infer_api_url = "http://mock-backend:30000"
     http_mod._intercept_index = None  # reset so each test starts fresh
-    http_mod._intercept_state = http_mod._InterceptConvState()
+    http_mod._intercept_states.clear()
     try:
         yield TestClient(app, raise_server_exceptions=False)
     finally:
         http_mod._aiohttp_session = original_session
         http_mod._infer_api_url = original_url
         http_mod._intercept_index = original_intercept_index
-        http_mod._intercept_state = original_state
+        http_mod._intercept_states.clear()
+        http_mod._intercept_states.update(original_states)
 
 
 # ============================================================================
@@ -146,7 +147,7 @@ def _warmup(client, path, body):
     resp = client.post(path, json=body)
     assert resp.status_code == 200
     # Keep _intercept_index primed, but reset conversation tracking.
-    http_mod._intercept_state = http_mod._InterceptConvState()
+    http_mod._intercept_states.clear()
     return resp
 
 
@@ -431,6 +432,44 @@ class TestHeaderForwarding:
 
 
 class TestToolResultIntercept:
+    def test_cross_layer_block_dedup_with_system_prompt(self, client, mock_session):
+        """Tool result blocks are deduped against system prompt content."""
+        shared = "\n".join(
+            [
+                f"memory chunk line {i:03d}: repeated text for cross-layer dedup"
+                for i in range(70)
+            ]
+        )
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": shared},
+                {"role": "user", "content": "read file"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "tc_sys",
+                            "type": "function",
+                            "function": {"name": "read", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "tc_sys", "content": shared},
+            ],
+        }
+
+        resp = client.post("/v1/chat/completions", json=body)
+        assert resp.status_code == 200
+
+        forwarded = mock_session._last_json
+        assert "earlier system prompt result" in forwarded["messages"][3]["content"]
+
+        meta = _cp_meta(resp)
+        dedup_meta = meta.get("dedup", {})
+        assert dedup_meta.get("system_blocks_matched", 0) > 0
+
     def test_openai_tool_result_forwarded(self, client, mock_session):
         """OpenAI tool results with docs are extracted and forwarded."""
         body = {
@@ -1004,8 +1043,7 @@ class TestExternalContentIdStripping:
         assert resp1.status_code == 200
         content1 = mock_session._last_json["messages"][3]["content"]
 
-        # Reset intercept state for clean comparison
-        http_mod._intercept_state = http_mod._InterceptConvState()
+        http_mod._intercept_states.clear()
 
         # Request 2 with different id "bbbb"
         resp2 = client.post("/v1/chat/completions", json=_make_body("cccc2222dddd3333"))

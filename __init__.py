@@ -14,12 +14,18 @@ from typing import Any, Dict, List, Tuple
 
 logger = logging.getLogger("contextpilot.hermes_plugin")
 
-# Add the repo root to sys.path so contextpilot package is importable
 _REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from agent.context_engine import ContextEngine
+try:
+    from agent.context_engine import ContextEngine
+
+    _HERMES_AVAILABLE = True
+except ImportError:
+    ContextEngine = object
+    _HERMES_AVAILABLE = False
+
 from contextpilot.dedup import dedup_chat_completions, DedupResult
 from contextpilot.server.intercept_parser import get_format_handler, InterceptConfig
 
@@ -372,4 +378,6 @@ class ContextPilotEngine(ContextEngine):
 
 def register(ctx):
     """Hermes plugin entry point — called by PluginManager.discover_and_load()."""
+    if not _HERMES_AVAILABLE:
+        return
     ctx.register_context_engine(ContextPilotEngine())

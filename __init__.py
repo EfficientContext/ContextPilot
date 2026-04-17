@@ -368,3 +368,8 @@ class ContextPilotEngine(ContextEngine):
         status["contextpilot_chars_saved"] = self._total_chars_saved
         status["contextpilot_docs_reordered"] = self._total_reordered
         return status
+
+
+def register(ctx):
+    """Hermes plugin entry point — called by PluginManager.discover_and_load()."""
+    ctx.register_context_engine(ContextPilotEngine())

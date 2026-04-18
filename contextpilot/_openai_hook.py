@@ -32,7 +32,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field as dc_field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger("contextpilot.openai_hook")
 
@@ -406,3 +406,8 @@ if _ENABLED:
 
     sys.meta_path.insert(0, _OpenAIImportHook())
     logger.debug("[ContextPilot] OpenAI import hook registered (CONTEXTPILOT=1)")
+
+    # Patch eagerly if openai was already imported before us
+    _already_loaded = sys.modules.get("openai.resources.chat.completions")
+    if _already_loaded is not None:
+        _apply_openai_patches(_already_loaded)

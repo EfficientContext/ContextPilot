@@ -26,8 +26,39 @@ except ImportError:
     ContextEngine = object
     _HERMES_AVAILABLE = False
 
-from contextpilot.dedup import dedup_chat_completions, DedupResult
-from contextpilot.server.intercept_parser import get_format_handler, InterceptConfig
+import importlib.util as _ilu
+
+def _load_submodule(name: str, file_path: Path):
+    """Load a .py file directly, bypassing contextpilot/__init__.py."""
+    spec = _ilu.spec_from_file_location(name, str(file_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load {file_path}")
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+try:
+    _cp_root = _REPO_ROOT / "contextpilot"
+    _dedup_mod = _load_submodule(
+        "_contextpilot_block_dedup", _cp_root / "dedup" / "block_dedup.py"
+    )
+    _parser_mod = _load_submodule(
+        "_contextpilot_intercept_parser", _cp_root / "server" / "intercept_parser.py"
+    )
+
+    dedup_chat_completions = _dedup_mod.dedup_chat_completions
+    DedupResult = _dedup_mod.DedupResult
+    get_format_handler = _parser_mod.get_format_handler
+    InterceptConfig = _parser_mod.InterceptConfig
+
+    _CONTEXTPILOT_AVAILABLE = True
+except Exception as e:
+    dedup_chat_completions = None
+    DedupResult = None
+    get_format_handler = None
+    InterceptConfig = None
+    _CONTEXTPILOT_AVAILABLE = False
+    logger.debug("[ContextPilot] Could not import submodules: %s", e)
 
 _has_reorder = None
 _intercept_index = None
@@ -93,6 +124,7 @@ class ContextPilotEngine(ContextEngine):
         self._total_chars_saved = 0
         self._total_reordered = 0
         self._optimize_count = 0
+        self.threshold_percent = 0.75
 
     @staticmethod
     def is_available() -> bool:
@@ -322,7 +354,8 @@ class ContextPilotEngine(ContextEngine):
             )
 
     def on_session_reset(self) -> None:
-        super().on_session_reset()
+        if hasattr(super(), "on_session_reset"):
+            super().on_session_reset()
         if self._compressor:
             self._compressor.on_session_reset()
         self.on_context_compressed(0, 0)
@@ -379,5 +412,11 @@ class ContextPilotEngine(ContextEngine):
 def register(ctx):
     """Hermes plugin entry point — called by PluginManager.discover_and_load()."""
     if not _HERMES_AVAILABLE:
+        return
+    if not _CONTEXTPILOT_AVAILABLE:
+        logger.warning(
+            "[ContextPilot] contextpilot package not importable — "
+            "pip install -e <path-to-ContextPilot> in the Hermes venv"
+        )
         return
     ctx.register_context_engine(ContextPilotEngine())

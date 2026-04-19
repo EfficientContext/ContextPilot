@@ -99,17 +99,35 @@ def _bootstrap_contextpilot_install():
     env = os.environ.copy()
     env["CONTEXTPILOT_PLUGIN_BOOTSTRAP"] = "1"
 
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", str(_REPO_ROOT)],
+    def _run(cmd: List[str]):
+        return subprocess.run(
+            cmd,
             capture_output=True,
             text=True,
             env=env,
             timeout=300,
         )
+
+    try:
+        result = _run([sys.executable, "-m", "pip", "install", "-e", str(_REPO_ROOT)])
     except Exception as e:
         logger.warning("[ContextPilot] Self-install failed: %s", e)
         return False
+
+    if result.returncode != 0 and "No module named pip" in ((result.stderr or "") + (result.stdout or "")):
+        logger.info("[ContextPilot] pip missing in Hermes environment, bootstrapping with ensurepip")
+        try:
+            ensurepip_result = _run([sys.executable, "-m", "ensurepip", "--upgrade"])
+        except Exception as e:
+            logger.warning("[ContextPilot] ensurepip failed: %s", e)
+            return False
+        if ensurepip_result.returncode != 0:
+            stderr = (ensurepip_result.stderr or "").strip()
+            stdout = (ensurepip_result.stdout or "").strip()
+            detail = stderr or stdout or f"exit code {ensurepip_result.returncode}"
+            logger.warning("[ContextPilot] ensurepip failed: %s", detail)
+            return False
+        result = _run([sys.executable, "-m", "pip", "install", "-e", str(_REPO_ROOT)])
 
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()

@@ -6,8 +6,12 @@ Enable:  hermes plugins → Context Engine → contextpilot
 
 import copy
 import hashlib
+import importlib
+import importlib.util as _ilu
 import json
 import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -26,8 +30,6 @@ except ImportError:
     ContextEngine = object
     _HERMES_AVAILABLE = False
 
-import importlib.util as _ilu
-
 def _load_submodule(name: str, file_path: Path):
     """Load a .py file directly, bypassing contextpilot/__init__.py."""
     spec = _ilu.spec_from_file_location(name, str(file_path))
@@ -37,32 +39,101 @@ def _load_submodule(name: str, file_path: Path):
     spec.loader.exec_module(mod)
     return mod
 
-try:
-    _cp_root = _REPO_ROOT / "contextpilot"
-    _dedup_mod = _load_submodule(
-        "_contextpilot_block_dedup", _cp_root / "dedup" / "block_dedup.py"
-    )
-    _parser_mod = _load_submodule(
-        "_contextpilot_intercept_parser", _cp_root / "server" / "intercept_parser.py"
-    )
-
-    dedup_chat_completions = _dedup_mod.dedup_chat_completions
-    DedupResult = _dedup_mod.DedupResult
-    get_format_handler = _parser_mod.get_format_handler
-    InterceptConfig = _parser_mod.InterceptConfig
-
-    _CONTEXTPILOT_AVAILABLE = True
-except Exception as e:
-    dedup_chat_completions = None
-    DedupResult = None
-    get_format_handler = None
-    InterceptConfig = None
-    _CONTEXTPILOT_AVAILABLE = False
-    logger.debug("[ContextPilot] Could not import submodules: %s", e)
+dedup_chat_completions = None
+DedupResult = None
+get_format_handler = None
+InterceptConfig = None
+_CONTEXTPILOT_AVAILABLE = False
+_CONTEXTPILOT_IMPORT_ERROR = None
 
 _has_reorder = None
 _intercept_index = None
 _hermes_sanitizer_patched = False
+_bootstrap_attempted = False
+
+
+def _import_contextpilot_submodules():
+    global dedup_chat_completions
+    global DedupResult
+    global get_format_handler
+    global InterceptConfig
+    global _CONTEXTPILOT_AVAILABLE
+    global _CONTEXTPILOT_IMPORT_ERROR
+
+    try:
+        _cp_root = _REPO_ROOT / "contextpilot"
+        _dedup_mod = _load_submodule(
+            "_contextpilot_block_dedup", _cp_root / "dedup" / "block_dedup.py"
+        )
+        _parser_mod = _load_submodule(
+            "_contextpilot_intercept_parser", _cp_root / "server" / "intercept_parser.py"
+        )
+
+        dedup_chat_completions = _dedup_mod.dedup_chat_completions
+        DedupResult = _dedup_mod.DedupResult
+        get_format_handler = _parser_mod.get_format_handler
+        InterceptConfig = _parser_mod.InterceptConfig
+        _CONTEXTPILOT_AVAILABLE = True
+        _CONTEXTPILOT_IMPORT_ERROR = None
+        return True
+    except Exception as e:
+        dedup_chat_completions = None
+        DedupResult = None
+        get_format_handler = None
+        InterceptConfig = None
+        _CONTEXTPILOT_AVAILABLE = False
+        _CONTEXTPILOT_IMPORT_ERROR = e
+        logger.debug("[ContextPilot] Could not import submodules: %s", e)
+        return False
+
+
+def _bootstrap_contextpilot_install():
+    global _bootstrap_attempted
+    if _bootstrap_attempted or os.environ.get("CONTEXTPILOT_PLUGIN_BOOTSTRAP") == "1":
+        return False
+    if not (_REPO_ROOT / "pyproject.toml").exists():
+        return False
+
+    _bootstrap_attempted = True
+    logger.info("[ContextPilot] Installing plugin package into Hermes environment")
+    env = os.environ.copy()
+    env["CONTEXTPILOT_PLUGIN_BOOTSTRAP"] = "1"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", str(_REPO_ROOT)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=300,
+        )
+    except Exception as e:
+        logger.warning("[ContextPilot] Self-install failed: %s", e)
+        return False
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        detail = stderr or stdout or f"exit code {result.returncode}"
+        logger.warning("[ContextPilot] Self-install failed: %s", detail)
+        return False
+
+    importlib.invalidate_caches()
+    logger.info("[ContextPilot] Self-install completed")
+    return True
+
+
+def _ensure_contextpilot_available():
+    if _CONTEXTPILOT_AVAILABLE:
+        return True
+    if _import_contextpilot_submodules():
+        return True
+    if _bootstrap_contextpilot_install() and _import_contextpilot_submodules():
+        return True
+    return False
+
+
+_import_contextpilot_submodules()
 
 
 def _check_reorder():
@@ -74,6 +145,14 @@ def _check_reorder():
 
         _has_reorder = True
     except Exception as e:
+        if _bootstrap_contextpilot_install():
+            try:
+                from contextpilot.server.live_index import ContextPilot as _CP  # noqa: F401
+
+                _has_reorder = True
+                return _has_reorder
+            except Exception as retry_error:
+                e = retry_error
         _has_reorder = False
         logger.warning("[ContextPilot] Reorder unavailable, dedup-only mode: %s", e)
     return _has_reorder
@@ -472,10 +551,10 @@ def register(ctx):
     """Hermes plugin entry point — called by PluginManager.discover_and_load()."""
     if not _HERMES_AVAILABLE:
         return
-    if not _CONTEXTPILOT_AVAILABLE:
+    if not _ensure_contextpilot_available():
         logger.warning(
-            "[ContextPilot] contextpilot package not importable — "
-            "pip install -e <path-to-ContextPilot> in the Hermes venv"
+            "[ContextPilot] contextpilot package not importable after self-install: %s",
+            _CONTEXTPILOT_IMPORT_ERROR,
         )
         return
     _patch_hermes_sanitizer()

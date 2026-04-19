@@ -262,6 +262,7 @@ def _patch_hermes_sanitizer():
     _patched_sanitize_api_messages._contextpilot_original = original
     AIAgent._sanitize_api_messages = _patched_sanitize_api_messages
     _hermes_sanitizer_patched = True
+    logger.info("[ContextPilot] Installed Hermes API-message hook")
 
 
 class ContextPilotEngine(ContextEngine):
@@ -336,6 +337,8 @@ class ContextPilotEngine(ContextEngine):
         system_content: str = "",
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         self._optimize_count += 1
+        if self._optimize_count == 1:
+            logger.info("[ContextPilot] Per-turn API optimizer active")
         has_reorder = _check_reorder()
 
         # Step 1: Prefix replay
@@ -468,6 +471,8 @@ class ContextPilotEngine(ContextEngine):
                 dedup_result.blocks_deduped,
                 self._total_reordered,
             )
+        elif self._optimize_count == 1:
+            logger.info("[ContextPilot] Turn 1: optimizer ran, no dedup/reorder changes")
 
         return api_messages, {
             "chars_saved": dedup_result.chars_saved,

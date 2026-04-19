@@ -73,9 +73,9 @@ def _check_reorder():
         from contextpilot.server.live_index import ContextPilot as _CP  # noqa: F401
 
         _has_reorder = True
-    except (ImportError, Exception):
+    except Exception as e:
         _has_reorder = False
-        logger.info("[ContextPilot] Reorder unavailable (numpy?), dedup-only mode")
+        logger.warning("[ContextPilot] Reorder unavailable, dedup-only mode: %s", e)
     return _has_reorder
 
 
@@ -478,4 +478,5 @@ def register(ctx):
             "pip install -e <path-to-ContextPilot> in the Hermes venv"
         )
         return
+    _patch_hermes_sanitizer()
     ctx.register_context_engine(ContextPilotEngine())

@@ -1,4 +1,9 @@
-from .bm25 import BM25Retriever
+try:
+    from .bm25 import BM25Retriever
+    BM25_AVAILABLE = True
+except ImportError:
+    BM25Retriever = None
+    BM25_AVAILABLE = False
 
 # FAISS is optional - only import if available
 try:
@@ -26,6 +31,7 @@ except ImportError:
 
 __all__ = [
     "BM25Retriever",
+    "BM25_AVAILABLE",
     "FAISSRetriever",
     "FAISS_AVAILABLE",
     "Mem0Retriever",

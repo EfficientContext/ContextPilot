@@ -279,6 +279,7 @@ class ContextPilotEngine(ContextEngine):
         self._system_processed = False
         self._total_chars_saved = 0
         self._total_reordered = 0
+        self._total_docs_deduped = 0
         self._optimize_count = 0
         self.threshold_percent = 0.75
 
@@ -362,8 +363,15 @@ class ContextPilotEngine(ContextEngine):
         # Step 2-4: Extract, reorder & dedup
         # Extraction and dedup always run (pure Python, no numpy needed).
         # Reordering only runs when has_reorder is True (requires numpy + live_index).
+        doc_chars_saved = 0
         if _CONTEXTPILOT_AVAILABLE:
             try:
+                def _tool_chars(msgs):
+                    return sum(
+                        len(m.get("content", "") or "")
+                        for m in msgs if isinstance(m, dict) and m.get("role") == "tool"
+                    )
+
                 config = InterceptConfig(
                     enabled=True,
                     mode="auto",
@@ -375,6 +383,7 @@ class ContextPilotEngine(ContextEngine):
                 )
                 handler = get_format_handler("openai_chat")
                 body = {"messages": api_messages}
+                chars_before_extract = _tool_chars(body["messages"])
                 multi = handler.extract_all(body, config)
 
                 if has_reorder:
@@ -418,6 +427,7 @@ class ContextPilotEngine(ContextEngine):
                                 self._seen_doc_hashes.add(h)
                                 new_docs.append(doc)
                         if deduped > 0:
+                            self._total_docs_deduped += deduped
                             if not new_docs:
                                 new_docs = [
                                     f"[All {deduped} documents identical to a previous tool result. "
@@ -436,6 +446,7 @@ class ContextPilotEngine(ContextEngine):
                             single_doc.tool_call_id != prev_id
                             and handler.tool_call_present(body, prev_id)
                         ):
+                            self._total_docs_deduped += 1
                             handler.replace_single_doc(
                                 body,
                                 location,
@@ -450,6 +461,7 @@ class ContextPilotEngine(ContextEngine):
                         )
 
                 api_messages = body["messages"]
+                doc_chars_saved = chars_before_extract - _tool_chars(api_messages)
             except Exception as e:
                 logger.debug("[ContextPilot] Extract/reorder failed: %s", e)
 
@@ -466,7 +478,8 @@ class ContextPilotEngine(ContextEngine):
             {"messages": api_messages},
             system_content=sys_content,
         )
-        self._total_chars_saved += dedup_result.chars_saved
+        turn_chars_saved = doc_chars_saved + dedup_result.chars_saved
+        self._total_chars_saved += turn_chars_saved
 
         # Step 6: Cache for next turn
         self._cached_messages = copy.deepcopy(api_messages)
@@ -480,30 +493,32 @@ class ContextPilotEngine(ContextEngine):
                 c = msg.get("content", "")
                 tool_chars += len(c) if isinstance(c, str) else 0
 
-        single_doc_deduped = len([
-            h for h in self._single_doc_hashes
-        ]) if self._single_doc_hashes else 0
-
         logger.info(
-            "[ContextPilot] Turn %d: %d chars saved, %d blocks deduped, %d docs reordered "
-            "(cumulative: %d chars, %d docs) | %d tool results (%d chars), "
-            "%d single-doc hashes tracked, reorder=%s",
+            "[ContextPilot] Turn %d: %d chars saved (%d doc-dedup, %d block-dedup), "
+            "%d docs deduped, %d docs reordered "
+            "(cumulative: %d chars, %d docs deduped, %d reordered) | "
+            "%d tool results (%d chars), reorder=%s",
             self._optimize_count,
+            turn_chars_saved,
+            doc_chars_saved,
             dedup_result.chars_saved,
-            dedup_result.blocks_deduped,
+            self._total_docs_deduped,
             turn_reordered,
             self._total_chars_saved,
+            self._total_docs_deduped,
             self._total_reordered,
             tool_count,
             tool_chars,
-            single_doc_deduped,
             has_reorder,
         )
 
         return api_messages, {
-            "chars_saved": dedup_result.chars_saved,
+            "chars_saved": turn_chars_saved,
+            "doc_chars_saved": doc_chars_saved,
+            "block_chars_saved": dedup_result.chars_saved,
             "blocks_deduped": dedup_result.blocks_deduped,
             "blocks_total": dedup_result.blocks_total,
+            "docs_deduped": self._total_docs_deduped,
             "system_blocks_matched": dedup_result.system_blocks_matched,
             "cumulative_chars_saved": self._total_chars_saved,
         }
@@ -548,6 +563,7 @@ class ContextPilotEngine(ContextEngine):
         self.on_context_compressed(0, 0)
         self._total_chars_saved = 0
         self._total_reordered = 0
+        self._total_docs_deduped = 0
         self._optimize_count = 0
 
     def update_model(

@@ -6,11 +6,11 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-MIN_BLOCK_CHARS = 80
-MIN_CONTENT_CHARS = 500
+MIN_BLOCK_CHARS = 40
+MIN_CONTENT_CHARS = 200
 
 CHUNK_MODULUS = 13
-CHUNK_MIN_LINES = 5
+CHUNK_MIN_LINES = 3
 CHUNK_MAX_LINES = 40
 
 

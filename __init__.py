@@ -359,8 +359,10 @@ class ContextPilotEngine(ContextEngine):
             if prefix_ok:
                 api_messages[:old_count] = copy.deepcopy(self._cached_messages)
 
-        # Step 2-4: Extract & reorder
-        if has_reorder:
+        # Step 2-4: Extract, reorder & dedup
+        # Extraction and dedup always run (pure Python, no numpy needed).
+        # Reordering only runs when has_reorder is True (requires numpy + live_index).
+        if _CONTEXTPILOT_AVAILABLE:
             try:
                 config = InterceptConfig(
                     enabled=True,
@@ -375,15 +377,16 @@ class ContextPilotEngine(ContextEngine):
                 body = {"messages": api_messages}
                 multi = handler.extract_all(body, config)
 
-                if multi.system_extraction and not self._system_processed:
-                    extraction, sys_idx = multi.system_extraction
-                    if len(extraction.documents) >= 2:
-                        reordered = _reorder_docs(extraction.documents)
-                        if reordered != extraction.documents:
-                            handler.reconstruct_system(
-                                body, extraction, reordered, sys_idx
-                            )
-                    self._system_processed = True
+                if has_reorder:
+                    if multi.system_extraction and not self._system_processed:
+                        extraction, sys_idx = multi.system_extraction
+                        if len(extraction.documents) >= 2:
+                            reordered = _reorder_docs(extraction.documents)
+                            if reordered != extraction.documents:
+                                handler.reconstruct_system(
+                                    body, extraction, reordered, sys_idx
+                                )
+                        self._system_processed = True
 
                 for extraction, location in multi.tool_extractions:
                     if location.msg_index < old_count:
@@ -392,10 +395,13 @@ class ContextPilotEngine(ContextEngine):
                         continue
                     if not self._first_tool_result_done:
                         self._first_tool_result_done = True
-                        reordered = _reorder_docs(extraction.documents)
+                        if has_reorder:
+                            reordered = _reorder_docs(extraction.documents)
+                        else:
+                            reordered = extraction.documents
                         for doc in extraction.documents:
                             self._seen_doc_hashes.add(_hash_text(doc))
-                        if reordered != extraction.documents:
+                        if has_reorder and reordered != extraction.documents:
                             handler.reconstruct_tool_result(
                                 body, extraction, reordered, location
                             )
@@ -465,15 +471,33 @@ class ContextPilotEngine(ContextEngine):
         # Step 6: Cache for next turn
         self._cached_messages = copy.deepcopy(api_messages)
 
+        # Count tool results for diagnostics
+        tool_count = 0
+        tool_chars = 0
+        for msg in api_messages:
+            if isinstance(msg, dict) and msg.get("role") == "tool":
+                tool_count += 1
+                c = msg.get("content", "")
+                tool_chars += len(c) if isinstance(c, str) else 0
+
+        single_doc_deduped = len([
+            h for h in self._single_doc_hashes
+        ]) if self._single_doc_hashes else 0
+
         logger.info(
             "[ContextPilot] Turn %d: %d chars saved, %d blocks deduped, %d docs reordered "
-            "(cumulative: %d chars, %d docs)",
+            "(cumulative: %d chars, %d docs) | %d tool results (%d chars), "
+            "%d single-doc hashes tracked, reorder=%s",
             self._optimize_count,
             dedup_result.chars_saved,
             dedup_result.blocks_deduped,
             turn_reordered,
             self._total_chars_saved,
             self._total_reordered,
+            tool_count,
+            tool_chars,
+            single_doc_deduped,
+            has_reorder,
         )
 
         return api_messages, {

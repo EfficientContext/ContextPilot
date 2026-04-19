@@ -62,6 +62,7 @@ except Exception as e:
 
 _has_reorder = None
 _intercept_index = None
+_hermes_sanitizer_patched = False
 
 
 def _check_reorder():
@@ -107,6 +108,63 @@ def _reorder_docs(docs: List[str], alpha: float = 0.001) -> List[str]:
                 used.add(idx)
                 break
     return [docs[i] for i in order]
+
+
+def _patch_hermes_sanitizer():
+    global _hermes_sanitizer_patched
+    if _hermes_sanitizer_patched:
+        return
+    try:
+        import run_agent
+    except Exception as e:
+        logger.debug("[ContextPilot] Could not import run_agent for patching: %s", e)
+        return
+
+    AIAgent = getattr(run_agent, "AIAgent", None)
+    if AIAgent is None:
+        return
+
+    current = getattr(AIAgent, "_sanitize_api_messages", None)
+    if current is None:
+        return
+    if getattr(current, "_contextpilot_patched", False):
+        _hermes_sanitizer_patched = True
+        return
+
+    original = current
+
+    def _patched_sanitize_api_messages(self_or_messages, maybe_messages=None):
+        if maybe_messages is None:
+            agent = None
+            messages = self_or_messages
+        else:
+            agent = self_or_messages
+            messages = maybe_messages
+
+        sanitized = original(messages)
+        if agent is None:
+            return sanitized
+
+        engine = getattr(agent, "context_compressor", None)
+        optimize = getattr(engine, "optimize_api_messages", None)
+        if not callable(optimize):
+            return sanitized
+
+        try:
+            optimized, _stats = optimize(
+                sanitized,
+                system_content=getattr(agent, "_cached_system_prompt", "") or "",
+            )
+        except Exception as e:
+            logger.debug("[ContextPilot] Hermes sanitize hook failed: %s", e)
+            return sanitized
+
+        return optimized if isinstance(optimized, list) else sanitized
+
+    _patched_sanitize_api_messages._contextpilot_patched = True
+    _patched_sanitize_api_messages._contextpilot_original = original
+    AIAgent._sanitize_api_messages = _patched_sanitize_api_messages
+    _hermes_sanitizer_patched = True
 
 
 class ContextPilotEngine(ContextEngine):
@@ -332,6 +390,7 @@ class ContextPilotEngine(ContextEngine):
             _intercept_index = None
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
+        _patch_hermes_sanitizer()
         self._model = kwargs.get("model", "")
         self._base_url = ""
         self._api_key = ""

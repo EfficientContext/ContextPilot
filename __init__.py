@@ -340,6 +340,7 @@ class ContextPilotEngine(ContextEngine):
         if self._optimize_count == 1:
             logger.info("[ContextPilot] Per-turn API optimizer active")
         has_reorder = _check_reorder()
+        turn_reordered = 0
 
         # Step 1: Prefix replay
         old_count = len(self._cached_messages)
@@ -398,6 +399,7 @@ class ContextPilotEngine(ContextEngine):
                             handler.reconstruct_tool_result(
                                 body, extraction, reordered, location
                             )
+                            turn_reordered += len(extraction.documents)
                             self._total_reordered += len(extraction.documents)
                     else:
                         new_docs = []
@@ -463,16 +465,16 @@ class ContextPilotEngine(ContextEngine):
         # Step 6: Cache for next turn
         self._cached_messages = copy.deepcopy(api_messages)
 
-        if dedup_result.chars_saved > 0 or self._total_reordered > 0:
-            logger.info(
-                "[ContextPilot] Turn %d: %d chars saved, %d blocks deduped, %d docs reordered",
-                self._optimize_count,
-                dedup_result.chars_saved,
-                dedup_result.blocks_deduped,
-                self._total_reordered,
-            )
-        elif self._optimize_count == 1:
-            logger.info("[ContextPilot] Turn 1: optimizer ran, no dedup/reorder changes")
+        logger.info(
+            "[ContextPilot] Turn %d: %d chars saved, %d blocks deduped, %d docs reordered "
+            "(cumulative: %d chars, %d docs)",
+            self._optimize_count,
+            dedup_result.chars_saved,
+            dedup_result.blocks_deduped,
+            turn_reordered,
+            self._total_chars_saved,
+            self._total_reordered,
+        )
 
         return api_messages, {
             "chars_saved": dedup_result.chars_saved,

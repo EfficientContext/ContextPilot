@@ -62,7 +62,7 @@ CONTEXTPILOT_BACKEND_URL=https://api.openai.com docker compose up -d
 ```bash
 pip install contextpilot
 python -m contextpilot.server.http_server \
-  --stateless --port 8765 \
+  --port 8765 \
   --infer-api-url https://api.anthropic.com
 ```
 

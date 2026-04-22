@@ -31,8 +31,8 @@ _NUMBERED_RE = re.compile(r"\[(\d+)\]\s*")
 _SEPARATOR_PATTERNS = ["---", "==="]
 
 # Minimum content length to track a single-doc tool_result for dedup.
-# Skips tiny results like "ok", error messages, short status outputs.
-_SINGLE_DOC_MIN_CHARS = 200
+# Skips tiny results like "ok", short error messages.
+_SINGLE_DOC_MIN_CHARS = 100
 
 
 @dataclass

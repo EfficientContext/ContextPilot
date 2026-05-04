@@ -51,6 +51,7 @@ _ENABLED = os.environ.get("CONTEXTPILOT", "").lower() in (
 @dataclass
 class _ConvState:
     cached_messages: list = dc_field(default_factory=list)
+    cached_original_messages: list = dc_field(default_factory=list)
     first_tool_result_done: bool = False
     seen_doc_hashes: set = dc_field(default_factory=set)
     single_doc_hashes: dict = dc_field(default_factory=dict)
@@ -186,14 +187,20 @@ def _optimize_messages(kwargs):
     has_reorder = _check_reorder()
     chars_saved = 0
     docs_reordered = 0
+    original_messages = copy.deepcopy(messages)
+    replayed_count = 0
 
     # ── Step 1: Prefix replay (replace old msgs with cached modified copies) ──
-    old_count = len(state.cached_messages)
+    old_count = min(len(state.cached_original_messages), len(state.cached_messages))
     if old_count > 0 and len(messages) >= old_count:
         prefix_ok = True
         for i in range(old_count):
             cached_h = _hash_text(
-                json.dumps(state.cached_messages[i], sort_keys=True, default=str)
+                json.dumps(
+                    state.cached_original_messages[i],
+                    sort_keys=True,
+                    default=str,
+                )
             )
             current_h = _hash_text(json.dumps(messages[i], sort_keys=True, default=str))
             if cached_h != current_h:
@@ -202,6 +209,7 @@ def _optimize_messages(kwargs):
         if prefix_ok:
             messages[:old_count] = copy.deepcopy(state.cached_messages)
             kwargs["messages"] = messages
+            replayed_count = old_count
 
     # ── Step 2-4: Extract & reorder (if intercept_parser available) ──
     if has_reorder:
@@ -236,7 +244,7 @@ def _optimize_messages(kwargs):
 
             # Reorder/dedup tool results
             for extraction, location in multi.tool_extractions:
-                if location.msg_index < old_count:
+                if location.msg_index < replayed_count:
                     continue
                 if len(extraction.documents) < 2:
                     continue
@@ -276,7 +284,7 @@ def _optimize_messages(kwargs):
 
             # Cross-turn single-doc dedup
             for single_doc, location in multi.single_doc_extractions:
-                if location.msg_index < old_count:
+                if location.msg_index < replayed_count:
                     continue
                 if single_doc.content_hash in state.single_doc_hashes:
                     prev_id = state.single_doc_hashes[single_doc.content_hash]
@@ -320,6 +328,7 @@ def _optimize_messages(kwargs):
 
     # ── Step 6: Cache for next turn ──
     state.cached_messages = copy.deepcopy(messages)
+    state.cached_original_messages = original_messages
 
     _total_chars_saved += chars_saved
     _total_reordered += docs_reordered
@@ -337,6 +346,38 @@ def _optimize_messages(kwargs):
         )
 
 
+def _optimize_responses(kwargs):
+    """Apply block-level dedup to OpenAI Responses API input items."""
+    global _total_chars_saved, _total_calls
+
+    items = kwargs.get("input")
+    if not items or not isinstance(items, list):
+        return
+
+    _total_calls += 1
+    from contextpilot.dedup import dedup_responses_api
+
+    system_content = kwargs.get("instructions")
+    if not isinstance(system_content, str):
+        system_content = None
+
+    dedup_result = dedup_responses_api(
+        {"input": items},
+        system_content=system_content,
+    )
+    _total_chars_saved += dedup_result.chars_saved
+    if dedup_result.chars_saved > 0:
+        logger.info(
+            "[ContextPilot] Responses call #%d: %d chars saved, %d blocks deduped "
+            "(cumulative: %d chars ≈ %d tokens)",
+            _total_calls,
+            dedup_result.chars_saved,
+            dedup_result.blocks_deduped,
+            _total_chars_saved,
+            _total_chars_saved // 4,
+        )
+
+
 # ---------------------------------------------------------------------------
 # OpenAI SDK monkey-patch (identical pattern to _sglang_hook / _vllm_hook)
 # ---------------------------------------------------------------------------
@@ -345,6 +386,8 @@ def _optimize_messages(kwargs):
 def _apply_openai_patches(module):
     Completions = getattr(module, "Completions", None)
     AsyncCompletions = getattr(module, "AsyncCompletions", None)
+    Responses = getattr(module, "Responses", None)
+    AsyncResponses = getattr(module, "AsyncResponses", None)
 
     if Completions and not getattr(Completions, "_contextpilot_patched", False):
         _orig_create = Completions.create
@@ -370,6 +413,42 @@ def _apply_openai_patches(module):
         AsyncCompletions._contextpilot_patched = True
         logger.info("[ContextPilot] Patched openai AsyncCompletions.create")
 
+    if Responses and not getattr(Responses, "_contextpilot_patched", False):
+        _orig_responses_create = Responses.create
+        _orig_responses_stream = getattr(Responses, "stream", None)
+
+        def _patched_responses_create(self, *args, **kwargs):
+            _optimize_responses(kwargs)
+            return _orig_responses_create(self, *args, **kwargs)
+
+        Responses.create = _patched_responses_create
+        if _orig_responses_stream is not None:
+            def _patched_responses_stream(self, *args, **kwargs):
+                _optimize_responses(kwargs)
+                return _orig_responses_stream(self, *args, **kwargs)
+
+            Responses.stream = _patched_responses_stream
+        Responses._contextpilot_patched = True
+        logger.info("[ContextPilot] Patched openai Responses")
+
+    if AsyncResponses and not getattr(AsyncResponses, "_contextpilot_patched", False):
+        _orig_async_responses_create = AsyncResponses.create
+        _orig_async_responses_stream = getattr(AsyncResponses, "stream", None)
+
+        async def _patched_async_responses_create(self, *args, **kwargs):
+            _optimize_responses(kwargs)
+            return await _orig_async_responses_create(self, *args, **kwargs)
+
+        AsyncResponses.create = _patched_async_responses_create
+        if _orig_async_responses_stream is not None:
+            def _patched_async_responses_stream(self, *args, **kwargs):
+                _optimize_responses(kwargs)
+                return _orig_async_responses_stream(self, *args, **kwargs)
+
+            AsyncResponses.stream = _patched_async_responses_stream
+        AsyncResponses._contextpilot_patched = True
+        logger.info("[ContextPilot] Patched openai AsyncResponses")
+
 
 if _ENABLED:
 
@@ -387,13 +466,16 @@ if _ENABLED:
             _apply_openai_patches(module)
 
     class _OpenAIImportHook(importlib.abc.MetaPathFinder):
-        _target = "openai.resources.chat.completions"
-        _done = False
+        _targets = {
+            "openai.resources.chat.completions",
+            "openai.resources.responses.responses",
+        }
+        _done = set()
 
         def find_spec(self, fullname, path, target=None):
-            if fullname != self._target or self._done:
+            if fullname not in self._targets or fullname in self._done:
                 return None
-            self._done = True
+            self._done.add(fullname)
             sys.meta_path.remove(self)
             try:
                 real_spec = importlib.util.find_spec(fullname)
@@ -408,6 +490,10 @@ if _ENABLED:
     logger.debug("[ContextPilot] OpenAI import hook registered (CONTEXTPILOT=1)")
 
     # Patch eagerly if openai was already imported before us
-    _already_loaded = sys.modules.get("openai.resources.chat.completions")
-    if _already_loaded is not None:
-        _apply_openai_patches(_already_loaded)
+    for _module_name in (
+        "openai.resources.chat.completions",
+        "openai.resources.responses.responses",
+    ):
+        _already_loaded = sys.modules.get(_module_name)
+        if _already_loaded is not None:
+            _apply_openai_patches(_already_loaded)

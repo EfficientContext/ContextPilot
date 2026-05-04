@@ -1,4 +1,5 @@
 import importlib.util
+from types import SimpleNamespace
 import sys
 import types
 from pathlib import Path
@@ -131,3 +132,55 @@ def test_patch_preserves_class_level_sanitizer_usage(monkeypatch):
         {"role": "user", "content": "hello"},
         {"role": "tool", "content": "sanitized"},
     ]
+
+
+def test_prefix_replay_matches_original_and_reuses_optimized_prefix(monkeypatch):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+
+    calls = []
+
+    def dedup(body, **kwargs):
+        messages = body["messages"]
+        calls.append([m.copy() for m in messages])
+        saved = 0
+        for msg in messages:
+            if msg.get("role") == "tool" and msg.get("content") == "FULL TOOL RESULT":
+                msg["content"] = "DEDUPED TOOL RESULT"
+                saved += len("FULL TOOL RESULT") - len("DEDUPED TOOL RESULT")
+        return SimpleNamespace(
+            chars_saved=saved,
+            blocks_deduped=1 if saved else 0,
+            blocks_total=1,
+            system_blocks_matched=0,
+        )
+
+    monkeypatch.setattr(module, "dedup_chat_completions", dedup)
+
+    engine = module.ContextPilotEngine()
+    first = [
+        {"role": "user", "content": "read file"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+    ]
+    first_out, _ = engine.optimize_api_messages(first)
+
+    assert first_out[1]["content"] == "DEDUPED TOOL RESULT"
+    assert engine._cached_original_messages[1]["content"] == "FULL TOOL RESULT"
+    assert engine._cached_messages[1]["content"] == "DEDUPED TOOL RESULT"
+
+    already_optimized = {"messages": [m.copy() for m in first_out]}
+    engine._intercept_chat_kwargs(already_optimized)
+    assert engine._cached_original_messages[1]["content"] == "FULL TOOL RESULT"
+    assert already_optimized["messages"][1]["content"] == "DEDUPED TOOL RESULT"
+
+    second = [
+        {"role": "user", "content": "read file"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+        {"role": "user", "content": "now summarize it"},
+    ]
+    second_out, _ = engine.optimize_api_messages(second)
+
+    assert second_out[1]["content"] == "DEDUPED TOOL RESULT"
+    assert second_out[2]["content"] == "now summarize it"
+    assert calls[-1][1]["content"] == "DEDUPED TOOL RESULT"

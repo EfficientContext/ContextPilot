@@ -40,6 +40,7 @@ def _load_submodule(name: str, file_path: Path):
     return mod
 
 dedup_chat_completions = None
+dedup_responses_api = None
 DedupResult = None
 get_format_handler = None
 InterceptConfig = None
@@ -54,6 +55,7 @@ _bootstrap_attempted = False
 
 def _import_contextpilot_submodules():
     global dedup_chat_completions
+    global dedup_responses_api
     global DedupResult
     global get_format_handler
     global InterceptConfig
@@ -70,6 +72,7 @@ def _import_contextpilot_submodules():
         )
 
         dedup_chat_completions = _dedup_mod.dedup_chat_completions
+        dedup_responses_api = _dedup_mod.dedup_responses_api
         DedupResult = _dedup_mod.DedupResult
         get_format_handler = _parser_mod.get_format_handler
         InterceptConfig = _parser_mod.InterceptConfig
@@ -78,6 +81,7 @@ def _import_contextpilot_submodules():
         return True
     except Exception as e:
         dedup_chat_completions = None
+        dedup_responses_api = None
         DedupResult = None
         get_format_handler = None
         InterceptConfig = None
@@ -273,6 +277,7 @@ class ContextPilotEngine(ContextEngine):
     def __init__(self):
         self._compressor = None
         self._cached_messages: list = []
+        self._cached_original_messages: list = []
         self._seen_doc_hashes: set = set()
         self._single_doc_hashes: dict = {}
         self._first_tool_result_done = False
@@ -311,6 +316,115 @@ class ContextPilotEngine(ContextEngine):
         self.protect_first_n = self._compressor.protect_first_n
         self.protect_last_n = self._compressor.protect_last_n
 
+    def _activate_openai_hook(self):
+        """Patch OpenAI SDK calls that bypass Hermes' sanitizer path."""
+        engine = self
+
+        def _patch_chat_module(module):
+            for class_name, is_async in (
+                ("Completions", False),
+                ("AsyncCompletions", True),
+            ):
+                cls = getattr(module, class_name, None)
+                if cls is None or getattr(cls, "_contextpilot_patched", False):
+                    continue
+                original = cls.create
+                if is_async:
+                    async def _patched(self, *args, _orig=original, **kwargs):
+                        engine._intercept_chat_kwargs(kwargs)
+                        return await _orig(self, *args, **kwargs)
+                else:
+                    def _patched(self, *args, _orig=original, **kwargs):
+                        engine._intercept_chat_kwargs(kwargs)
+                        return _orig(self, *args, **kwargs)
+
+                cls.create = _patched
+                cls._contextpilot_patched = True
+                logger.info("[ContextPilot] Patched OpenAI %s.create", class_name)
+
+        def _patch_responses_module(module):
+            for class_name, is_async in (
+                ("Responses", False),
+                ("AsyncResponses", True),
+            ):
+                cls = getattr(module, class_name, None)
+                if cls is None or getattr(cls, "_contextpilot_patched", False):
+                    continue
+                original_create = getattr(cls, "create", None)
+                original_stream = getattr(cls, "stream", None)
+                if original_create is not None:
+                    if is_async:
+                        async def _patched_create(self, *args, _orig=original_create, **kwargs):
+                            engine._intercept_responses_kwargs(kwargs)
+                            return await _orig(self, *args, **kwargs)
+                    else:
+                        def _patched_create(self, *args, _orig=original_create, **kwargs):
+                            engine._intercept_responses_kwargs(kwargs)
+                            return _orig(self, *args, **kwargs)
+                    cls.create = _patched_create
+                if original_stream is not None:
+                    def _patched_stream(self, *args, _orig=original_stream, **kwargs):
+                        engine._intercept_responses_kwargs(kwargs)
+                        return _orig(self, *args, **kwargs)
+                    cls.stream = _patched_stream
+                cls._contextpilot_patched = True
+                logger.info("[ContextPilot] Patched OpenAI %s", class_name)
+
+        for module_name, patcher in (
+            ("openai.resources.chat.completions", _patch_chat_module),
+            ("openai.resources.responses.responses", _patch_responses_module),
+            ("openai.resources.responses", _patch_responses_module),
+        ):
+            try:
+                module = importlib.import_module(module_name)
+            except Exception:
+                continue
+            patcher(module)
+
+    def _matches_cached_optimized_payload(self, api_messages: List[Dict[str, Any]]) -> bool:
+        if len(api_messages) != len(self._cached_messages):
+            return False
+        for current, cached in zip(api_messages, self._cached_messages):
+            current_h = _hash_text(json.dumps(current, sort_keys=True, default=str))
+            cached_h = _hash_text(json.dumps(cached, sort_keys=True, default=str))
+            if current_h != cached_h:
+                return False
+        return bool(api_messages)
+
+    def _intercept_chat_kwargs(self, kwargs: Dict[str, Any]) -> None:
+        messages = kwargs.get("messages")
+        if not messages or not isinstance(messages, list):
+            return
+        if self._matches_cached_optimized_payload(messages):
+            return
+        try:
+            optimized, _stats = self.optimize_api_messages(messages, system_content="")
+        except Exception as e:
+            logger.debug("[ContextPilot] OpenAI chat hook failed: %s", e)
+            return
+        if isinstance(optimized, list):
+            kwargs["messages"] = optimized
+
+    def _intercept_responses_kwargs(self, kwargs: Dict[str, Any]) -> None:
+        items = kwargs.get("input")
+        if not items or not isinstance(items, list) or not callable(dedup_responses_api):
+            return
+        system_content = kwargs.get("instructions")
+        if not isinstance(system_content, str):
+            system_content = None
+        try:
+            result = dedup_responses_api({"input": items}, system_content=system_content)
+        except Exception as e:
+            logger.debug("[ContextPilot] OpenAI Responses hook failed: %s", e)
+            return
+        if getattr(result, "chars_saved", 0) > 0:
+            self._total_chars_saved += result.chars_saved
+            logger.info(
+                "[ContextPilot] Responses hook: %d chars saved, %d blocks deduped",
+                result.chars_saved,
+                result.blocks_deduped,
+            )
+
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         self._ensure_compressor()
         self._compressor.update_from_response(usage)
@@ -340,17 +454,32 @@ class ContextPilotEngine(ContextEngine):
         self._optimize_count += 1
         if self._optimize_count == 1:
             logger.info("[ContextPilot] Per-turn API optimizer active")
+        if self._matches_cached_optimized_payload(api_messages):
+            return api_messages, {
+                "chars_saved": 0,
+                "doc_chars_saved": 0,
+                "block_chars_saved": 0,
+                "blocks_deduped": 0,
+                "blocks_total": 0,
+                "docs_deduped": self._total_docs_deduped,
+                "system_blocks_matched": 0,
+                "cumulative_chars_saved": self._total_chars_saved,
+            }
         has_reorder = _check_reorder()
         turn_reordered = 0
+        original_messages = copy.deepcopy(api_messages)
+        replayed_count = 0
 
         # Step 1: Prefix replay
-        old_count = len(self._cached_messages)
+        old_count = min(len(self._cached_original_messages), len(self._cached_messages))
         if old_count > 0 and len(api_messages) >= old_count:
             prefix_ok = True
             for i in range(old_count):
-                cached_h = _hash_text(
-                    json.dumps(self._cached_messages[i], sort_keys=True, default=str)
-                )
+                cached_h = _hash_text(json.dumps(
+                    self._cached_original_messages[i],
+                    sort_keys=True,
+                    default=str,
+                ))
                 current_h = _hash_text(
                     json.dumps(api_messages[i], sort_keys=True, default=str)
                 )
@@ -359,6 +488,7 @@ class ContextPilotEngine(ContextEngine):
                     break
             if prefix_ok:
                 api_messages[:old_count] = copy.deepcopy(self._cached_messages)
+                replayed_count = old_count
 
         # Step 2-4: Extract, reorder & dedup
         # Extraction and dedup always run (pure Python, no numpy needed).
@@ -398,7 +528,7 @@ class ContextPilotEngine(ContextEngine):
                         self._system_processed = True
 
                 for extraction, location in multi.tool_extractions:
-                    if location.msg_index < old_count:
+                    if location.msg_index < replayed_count:
                         continue
                     if len(extraction.documents) < 2:
                         continue
@@ -438,7 +568,7 @@ class ContextPilotEngine(ContextEngine):
                             )
 
                 for single_doc, location in multi.single_doc_extractions:
-                    if location.msg_index < old_count:
+                    if location.msg_index < replayed_count:
                         continue
                     if single_doc.content_hash in self._single_doc_hashes:
                         prev_id = self._single_doc_hashes[single_doc.content_hash]
@@ -483,6 +613,7 @@ class ContextPilotEngine(ContextEngine):
 
         # Step 6: Cache for next turn
         self._cached_messages = copy.deepcopy(api_messages)
+        self._cached_original_messages = original_messages
 
         # Count tool results for diagnostics
         tool_count = 0
@@ -526,6 +657,7 @@ class ContextPilotEngine(ContextEngine):
     def on_context_compressed(self, old_count: int, new_count: int) -> None:
         global _intercept_index
         self._cached_messages.clear()
+        self._cached_original_messages.clear()
         self._seen_doc_hashes.clear()
         self._single_doc_hashes.clear()
         self._first_tool_result_done = False
@@ -542,6 +674,7 @@ class ContextPilotEngine(ContextEngine):
         self._ensure_compressor()
         if self._compressor and hasattr(self._compressor, "on_session_start"):
             self._compressor.on_session_start(session_id, **kwargs)
+        self._activate_openai_hook()
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         if self._compressor and hasattr(self._compressor, "on_session_end"):

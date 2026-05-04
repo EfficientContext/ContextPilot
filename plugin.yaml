@@ -1,0 +1,4 @@
+name: contextpilot
+type: context_engine
+version: "0.1.0"
+description: "Per-turn context optimization — prefix alignment, document reordering, and block-level deduplication for KV cache sharing."

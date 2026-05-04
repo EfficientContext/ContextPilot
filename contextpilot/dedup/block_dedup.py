@@ -6,12 +6,15 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-MIN_BLOCK_CHARS = 80
-MIN_CONTENT_CHARS = 500
+MIN_BLOCK_CHARS = 40
+MIN_CONTENT_CHARS = 200
 
 CHUNK_MODULUS = 13
-CHUNK_MIN_LINES = 5
+CHUNK_MIN_LINES = 3
 CHUNK_MAX_LINES = 40
+
+# Matches line-number prefixes like "     1|", "    42|", "   100|" etc.
+_LINE_NUM_PREFIX_RE = re.compile(r"^\s*\d+\|")
 
 
 @dataclass
@@ -50,6 +53,11 @@ def _build_tool_name_map_responses(items: list) -> Dict[str, str]:
     return mapping
 
 
+def _strip_line_prefix(line: str) -> str:
+    """Strip line-number prefixes (e.g. '     1|') for normalization."""
+    return _LINE_NUM_PREFIX_RE.sub("", line)
+
+
 def _content_defined_chunking(
     text: str, chunk_modulus: int = CHUNK_MODULUS
 ) -> List[str]:
@@ -62,8 +70,12 @@ def _content_defined_chunking(
 
     for line in lines:
         current.append(line)
+        # Strip line-number prefixes before hashing for boundary detection
+        # so the same source line produces the same boundary decision
+        # regardless of its position in different files.
+        normalized_line = _strip_line_prefix(line).strip()
         line_hash = int.from_bytes(
-            hashlib.md5(line.strip().encode("utf-8", errors="replace")).digest()[:4],
+            hashlib.md5(normalized_line.encode("utf-8", errors="replace")).digest()[:4],
             "little",
         )
         is_boundary = (
@@ -83,7 +95,13 @@ def _content_defined_chunking(
 
 
 def _hash_block(block: str) -> str:
-    normalized = block.strip()
+    """Hash a block for dedup comparison.
+
+    Strips line-number prefixes before hashing so identical source code
+    at different line offsets produces the same hash.
+    """
+    lines = block.strip().split("\n")
+    normalized = "\n".join(_strip_line_prefix(line) for line in lines)
     return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:20]
 
 
@@ -177,6 +195,43 @@ def _prescan_system_blocks(
     return pre_seen
 
 
+def _extract_text_for_dedup(content: str) -> Tuple[Optional[str], Optional[str]]:
+    """Extract the dedupable text from a tool result.
+
+    Many tools return JSON like {"content": "...", "path": "..."}.
+    The content field is the actual multi-line text we want to dedup.
+
+    Returns (text_to_dedup, json_key) or (None, None) if not JSON-wrapped.
+    """
+    stripped = content.strip()
+    if not stripped.startswith("{"):
+        return None, None
+    try:
+        import json as _json
+        obj = _json.loads(stripped)
+        if not isinstance(obj, dict):
+            return None, None
+        # Look for the primary text field
+        for key in ("content", "output", "result", "text", "stdout"):
+            val = obj.get(key)
+            if isinstance(val, str) and len(val) >= MIN_CONTENT_CHARS:
+                return val, key
+    except (ValueError, TypeError):
+        pass
+    return None, None
+
+
+def _rebuild_json_content(original: str, key: str, new_text: str) -> str:
+    """Replace the text field in a JSON tool result with deduped version."""
+    import json as _json
+    try:
+        obj = _json.loads(original)
+        obj[key] = new_text
+        return _json.dumps(obj, ensure_ascii=False)
+    except (ValueError, TypeError):
+        return original
+
+
 def dedup_chat_completions(
     body: dict,
     min_block_chars: int = MIN_BLOCK_CHARS,
@@ -204,8 +259,12 @@ def dedup_chat_completions(
         tc_id = msg.get("tool_call_id", "")
         fn_name = tool_names.get(tc_id, msg.get("name", "")) or "tool"
 
+        # Extract text from JSON-wrapped tool results for proper chunking
+        extracted_text, json_key = _extract_text_for_dedup(content)
+        dedup_target = extracted_text if extracted_text else content
+
         new_content = _dedup_text(
-            content,
+            dedup_target,
             seen_blocks,
             idx,
             fn_name,
@@ -215,9 +274,15 @@ def dedup_chat_completions(
             pre_seen=pre_seen,
         )
         if new_content is not None:
-            original_len = len(content)
-            msg["content"] = new_content
-            new_len = len(new_content)
+            if json_key and extracted_text:
+                # Rebuild the JSON with shortened content field
+                original_len = len(content)
+                msg["content"] = _rebuild_json_content(content, json_key, new_content)
+                new_len = len(msg["content"])
+            else:
+                original_len = len(content)
+                msg["content"] = new_content
+                new_len = len(new_content)
             result.chars_before += original_len
             result.chars_after += new_len
             result.chars_saved += original_len - new_len
@@ -345,8 +410,11 @@ def dedup_responses_api(
         call_id = item.get("call_id", "")
         fn_name = fn_names.get(call_id, call_id) or "tool"
 
+        extracted_text, json_key = _extract_text_for_dedup(output)
+        dedup_target = extracted_text if extracted_text else output
+
         new_output = _dedup_text(
-            output,
+            dedup_target,
             seen_blocks,
             idx,
             fn_name,
@@ -356,9 +424,14 @@ def dedup_responses_api(
             pre_seen=pre_seen,
         )
         if new_output is not None:
-            original_len = len(output)
-            item["output"] = new_output
-            new_len = len(new_output)
+            if json_key and extracted_text:
+                original_len = len(output)
+                item["output"] = _rebuild_json_content(output, json_key, new_output)
+                new_len = len(item["output"])
+            else:
+                original_len = len(output)
+                item["output"] = new_output
+                new_len = len(new_output)
             result.chars_before += original_len
             result.chars_after += new_len
             result.chars_saved += original_len - new_len

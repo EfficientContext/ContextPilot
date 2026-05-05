@@ -567,14 +567,29 @@ class ContextPilotEngine(ContextEngine):
                                 body, extraction, new_docs, location
                             )
 
+                logger.info(
+                    "[ContextPilot] single_doc candidates: %d, replayed_count: %d, known hashes: %d",
+                    len(multi.single_doc_extractions), replayed_count, len(self._single_doc_hashes),
+                )
                 for single_doc, location in multi.single_doc_extractions:
+                    logger.info(
+                        "[ContextPilot]   doc idx=%d tcid=%s hash=%s skip=%s known=%s",
+                        location.msg_index, single_doc.tool_call_id[:16] if single_doc.tool_call_id else "(empty)",
+                        single_doc.content_hash[:12], location.msg_index < replayed_count,
+                        single_doc.content_hash in self._single_doc_hashes,
+                    )
                     if location.msg_index < replayed_count:
                         continue
                     if single_doc.content_hash in self._single_doc_hashes:
                         prev_id = self._single_doc_hashes[single_doc.content_hash]
+                        present = handler.tool_call_present(body, prev_id)
+                        logger.info(
+                            "[ContextPilot]   MATCH prev_id=%s same_id=%s present=%s",
+                            prev_id[:16] if prev_id else "(empty)", single_doc.tool_call_id == prev_id, present,
+                        )
                         if (
                             single_doc.tool_call_id != prev_id
-                            and handler.tool_call_present(body, prev_id)
+                            and present
                         ):
                             self._total_docs_deduped += 1
                             handler.replace_single_doc(

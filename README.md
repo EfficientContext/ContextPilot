@@ -17,7 +17,7 @@
 
 ## News
 
-- [2026/03] Supports [Hermes Agent](https://github.com/NousResearch/hermes-agent) as a native context engine plugin — [guide](docs/guides/hermes.md)
+- [2026/05] Supports [Hermes Agent](https://github.com/NousResearch/hermes-agent) as a native context engine plugin — [guide](docs/guides/hermes.md)
 - [2026/03] Supports [OpenClaw](https://openclaw.ai) — [guide](docs/guides/openclaw.md) | [benchmark](docs/benchmarks/openclaw.md)
 - [2026/03] Supports cloud APIs (OpenAI, Anthropic, MiniMax) — [cache sync](docs/guides/cache_sync.md)
 - [2026/03] ContextPilot now can run on **macOS / Apple Silicon** via [llama.cpp](docs/guides/mac_llama_cpp.md).

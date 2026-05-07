@@ -16,21 +16,21 @@ This clones ContextPilot into `~/.hermes/plugins/ContextPilot/`. Hermes's plugin
 
 ## Activation
 
-ContextPilot auto-configures itself as the active context engine on first load — no manual setup needed. On startup you'll see:
+After installing, enable the plugin in the Hermes plugins menu:
+
+```bash
+hermes plugins
+```
+
+Navigate to **General Plugins** → toggle **contextpilot** to enabled.
+
+Restart Hermes. On startup you'll see:
 
 ```
 Plugin 'contextpilot' registered context engine: contextpilot
-[ContextPilot] Auto-configured as active context engine
 ```
 
-To verify or change the setting manually, edit `~/.hermes/config.yaml`:
-
-```yaml
-context:
-  engine: contextpilot
-```
-
-> **Note:** The context engine TUI menu may show "contextpilot (not found)" — this is a cosmetic issue in Hermes's TUI discovery. The engine is fully functional regardless.
+> **Note:** The context engine TUI submenu may show "contextpilot (not found)" — this is cosmetic. The engine is fully functional.
 
 ## What it does
 

@@ -16,26 +16,21 @@ This clones ContextPilot into `~/.hermes/plugins/ContextPilot/`. Hermes's plugin
 
 ## Activation
 
-Open the plugin configuration TUI:
+ContextPilot auto-configures itself as the active context engine on first load — no manual setup needed. On startup you'll see:
 
-```bash
-hermes plugins
+```
+Plugin 'contextpilot' registered context engine: contextpilot
+[ContextPilot] Auto-configured as active context engine
 ```
 
-Navigate to **Context Engine** → select **contextpilot** → press Enter.
-
-Alternatively, edit `~/.hermes/config.yaml` directly:
+To verify or change the setting manually, edit `~/.hermes/config.yaml`:
 
 ```yaml
 context:
   engine: contextpilot
 ```
 
-Start a new session. Hermes will log the engine on startup:
-
-```
-Plugin 'contextpilot' registered context engine: contextpilot
-```
+> **Note:** The context engine TUI menu may show "contextpilot (not found)" — this is a cosmetic issue in Hermes's TUI discovery. The engine is fully functional regardless.
 
 ## What it does
 
@@ -54,10 +49,10 @@ Steps 2–3 require `numpy` (already a Hermes dependency). If numpy is unavailab
 
 ## Verifying it works
 
-After a session with several tool calls, check the Hermes log:
+After a session with repeated tool calls (e.g. reading the same file twice), check the Hermes log:
 
 ```
-[ContextPilot] Turn 3: 2814 chars saved, 12 blocks deduped, 4 docs reordered
+[ContextPilot] Turn 14: saved 4408 chars (~1102 tokens) | cumulative: 19574 chars (~4893 tokens)
 ```
 
 Or query the engine status programmatically:
@@ -106,6 +101,6 @@ ContextPilot runs *before* the threshold-based compressor, reducing how often th
 
 **Plugin not discovered after install.** Check `~/.hermes/plugins/ContextPilot/plugin.yaml` exists and contains `type: context_engine`. Run `hermes plugins list` to confirm.
 
-**Engine loads but `optimize_api_messages` is not called.** Your Hermes version may be older than the plugin hook interface. ContextPilot's engine still works — it wraps the built-in compressor transparently — but per-turn optimization requires Hermes's `optimize_api_messages` hook.
+**No token savings logged.** Dedup only fires when the LLM reads the same file content more than once in a session. On first reads, content is indexed but not deduplicated.
 
-**`ModuleNotFoundError: No module named 'numpy'`.** Reorder requires numpy. Install it in the Hermes venv, or accept dedup-only mode (still provides 30–40% savings on most workloads).
+**`ModuleNotFoundError: No module named 'numpy'`.** Reorder requires numpy. If unavailable, ContextPilot silently falls back to dedup-only mode.

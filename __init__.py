@@ -728,15 +728,20 @@ class ContextPilotEngine(ContextEngine):
 
 
 def _auto_set_context_engine():
-    """Set context.engine to 'contextpilot' in config.yaml if still default."""
+    """Set context.engine to 'contextpilot' on first install only."""
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        current = config.get("context", {}).get("engine", "compressor")
-        if current == "compressor":
-            config.setdefault("context", {})["engine"] = "contextpilot"
-            save_config(config)
-            logger.info("[ContextPilot] Auto-configured as active context engine")
+        ctx = config.get("context", {})
+        current = ctx.get("engine", "compressor")
+        if current != "compressor":
+            return  # User has explicitly chosen something (including switching back)
+        if ctx.get("_contextpilot_offered"):
+            return  # Already offered once, user reverted to compressor — respect that
+        config.setdefault("context", {})["engine"] = "contextpilot"
+        config["context"]["_contextpilot_offered"] = True
+        save_config(config)
+        logger.info("[ContextPilot] Auto-configured as active context engine")
     except Exception as e:
         logger.debug("[ContextPilot] Could not auto-set config: %s", e)
 

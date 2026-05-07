@@ -734,10 +734,12 @@ def _auto_set_context_engine():
         config = load_config()
         ctx = config.get("context", {})
         current = ctx.get("engine", "compressor")
+        if current == "contextpilot":
+            return  # Already set
         if current != "compressor":
-            return  # User has explicitly chosen something (including switching back)
+            return  # User chose a different engine — don't override
         if ctx.get("_contextpilot_offered"):
-            return  # Already offered once, user reverted to compressor — respect that
+            return  # Offered before, user switched back to compressor — respect that
         config.setdefault("context", {})["engine"] = "contextpilot"
         config["context"]["_contextpilot_offered"] = True
         save_config(config)

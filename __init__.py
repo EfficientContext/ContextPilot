@@ -176,7 +176,7 @@ def _check_reorder():
             except Exception as retry_error:
                 e = retry_error
         _has_reorder = False
-        logger.warning("[ContextPilot] Reorder unavailable, dedup-only mode: %s", e)
+        logger.debug("[ContextPilot] Reorder unavailable, dedup-only mode: %s", e)
     return _has_reorder
 
 
@@ -567,29 +567,14 @@ class ContextPilotEngine(ContextEngine):
                                 body, extraction, new_docs, location
                             )
 
-                logger.info(
-                    "[ContextPilot] single_doc candidates: %d, replayed_count: %d, known hashes: %d",
-                    len(multi.single_doc_extractions), replayed_count, len(self._single_doc_hashes),
-                )
                 for single_doc, location in multi.single_doc_extractions:
-                    logger.info(
-                        "[ContextPilot]   doc idx=%d tcid=%s hash=%s skip=%s known=%s",
-                        location.msg_index, single_doc.tool_call_id[:16] if single_doc.tool_call_id else "(empty)",
-                        single_doc.content_hash[:12], location.msg_index < replayed_count,
-                        single_doc.content_hash in self._single_doc_hashes,
-                    )
                     if location.msg_index < replayed_count:
                         continue
                     if single_doc.content_hash in self._single_doc_hashes:
                         prev_id = self._single_doc_hashes[single_doc.content_hash]
-                        present = handler.tool_call_present(body, prev_id)
-                        logger.info(
-                            "[ContextPilot]   MATCH prev_id=%s same_id=%s present=%s",
-                            prev_id[:16] if prev_id else "(empty)", single_doc.tool_call_id == prev_id, present,
-                        )
                         if (
                             single_doc.tool_call_id != prev_id
-                            and present
+                            and handler.tool_call_present(body, prev_id)
                         ):
                             self._total_docs_deduped += 1
                             handler.replace_single_doc(
@@ -630,33 +615,15 @@ class ContextPilotEngine(ContextEngine):
         self._cached_messages = copy.deepcopy(api_messages)
         self._cached_original_messages = original_messages
 
-        # Count tool results for diagnostics
-        tool_count = 0
-        tool_chars = 0
-        for msg in api_messages:
-            if isinstance(msg, dict) and msg.get("role") == "tool":
-                tool_count += 1
-                c = msg.get("content", "")
-                tool_chars += len(c) if isinstance(c, str) else 0
-
-        logger.info(
-            "[ContextPilot] Turn %d: %d chars saved (%d doc-dedup, %d block-dedup), "
-            "%d docs deduped, %d docs reordered "
-            "(cumulative: %d chars, %d docs deduped, %d reordered) | "
-            "%d tool results (%d chars), reorder=%s",
-            self._optimize_count,
-            turn_chars_saved,
-            doc_chars_saved,
-            dedup_result.chars_saved,
-            self._total_docs_deduped,
-            turn_reordered,
-            self._total_chars_saved,
-            self._total_docs_deduped,
-            self._total_reordered,
-            tool_count,
-            tool_chars,
-            has_reorder,
-        )
+        if turn_chars_saved > 0:
+            logger.info(
+                "[ContextPilot] Turn %d: saved %d chars (~%d tokens) | cumulative: %d chars (~%d tokens)",
+                self._optimize_count,
+                turn_chars_saved,
+                turn_chars_saved // 4,
+                self._total_chars_saved,
+                self._total_chars_saved // 4,
+            )
 
         return api_messages, {
             "chars_saved": turn_chars_saved,
@@ -760,6 +727,20 @@ class ContextPilotEngine(ContextEngine):
         return status
 
 
+def _auto_set_context_engine():
+    """Set context.engine to 'contextpilot' in config.yaml if still default."""
+    try:
+        from hermes_cli.config import load_config, save_config
+        config = load_config()
+        current = config.get("context", {}).get("engine", "compressor")
+        if current == "compressor":
+            config.setdefault("context", {})["engine"] = "contextpilot"
+            save_config(config)
+            logger.info("[ContextPilot] Auto-configured as active context engine")
+    except Exception as e:
+        logger.debug("[ContextPilot] Could not auto-set config: %s", e)
+
+
 def register(ctx):
     """Hermes plugin entry point — called by PluginManager.discover_and_load()."""
     if not _HERMES_AVAILABLE:
@@ -771,4 +752,5 @@ def register(ctx):
         )
         return
     _patch_hermes_sanitizer()
+    _auto_set_context_engine()
     ctx.register_context_engine(ContextPilotEngine())

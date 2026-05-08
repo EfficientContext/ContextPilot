@@ -6,9 +6,10 @@ import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-const LOG_FILE = path.join(process.env.HOME || "/tmp", ".contextpilot.log")
+const LOG_DIR = path.join(process.env.XDG_DATA_HOME || path.join(process.env.HOME || "/tmp", ".local/share"), "opencode/log")
+const LOG_FILE = path.join(LOG_DIR, "contextpilot.log")
 function log(msg: string) {
-  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`)
+  try { fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`) } catch {}
 }
 
 // ── Types mirroring OpenCode's message format ────────────────────────────
@@ -205,7 +206,7 @@ class SessionState {
 
     this.totalCharsSaved += charsSaved
 
-    log(`[ContextPilot] Turn ${this.optimizeCount}: saved ${charsSaved} chars (~${Math.round(charsSaved / 4)} tokens) | cumulative: ${this.totalCharsSaved} chars (~${Math.round(this.totalCharsSaved / 4)} tokens)`)
+    log(`[ContextPilot] Turn ${this.optimizeCount}: saved ${charsSaved} chars (~${Math.round(charsSaved / 4)} tokens) | docs deduped: ${this.totalDocsDeduped} | tracked: ${this.singleDocHashes.size} | cumulative: ${this.totalCharsSaved} chars (~${Math.round(this.totalCharsSaved / 4)} tokens)`)
   }
 
   getStats() {

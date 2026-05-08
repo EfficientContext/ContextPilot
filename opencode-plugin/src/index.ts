@@ -3,6 +3,13 @@ import { tool } from "@opencode-ai/plugin"
 import { dedupChatCompletions } from "../../openclaw-plugin/src/engine/dedup.js"
 import { ContextPilot } from "../../openclaw-plugin/src/engine/live-index.js"
 import * as crypto from "node:crypto"
+import * as fs from "node:fs"
+import * as path from "node:path"
+
+const LOG_FILE = path.join(process.env.HOME || "/tmp", ".contextpilot.log")
+function log(msg: string) {
+  fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`)
+}
 
 // ── Types mirroring OpenCode's message format ────────────────────────────
 
@@ -198,11 +205,7 @@ class SessionState {
 
     this.totalCharsSaved += charsSaved
 
-    if (charsSaved > 0) {
-      console.error(
-        `[ContextPilot] Turn ${this.optimizeCount}: saved ${charsSaved} chars (~${Math.round(charsSaved / 4)} tokens) | cumulative: ${this.totalCharsSaved} chars (~${Math.round(this.totalCharsSaved / 4)} tokens)`,
-      )
-    }
+    log(`[ContextPilot] Turn ${this.optimizeCount}: saved ${charsSaved} chars (~${Math.round(charsSaved / 4)} tokens) | cumulative: ${this.totalCharsSaved} chars (~${Math.round(this.totalCharsSaved / 4)} tokens)`)
   }
 
   getStats() {
@@ -221,13 +224,16 @@ class SessionState {
 
 export const ContextPilotPlugin: Plugin = async () => {
   const state = new SessionState()
+  log("[ContextPilot] Plugin loaded successfully")
 
   return {
     "experimental.chat.messages.transform": async (_input, output) => {
       try {
-        state.optimize(output.messages as unknown as OpenCodeMessage[])
+        const msgs = output.messages as unknown as OpenCodeMessage[]
+        log(`[ContextPilot] Transform called — ${msgs.length} messages, ${msgs.reduce((n, m) => n + m.parts.length, 0)} parts`)
+        state.optimize(msgs)
       } catch (e) {
-        console.error("[ContextPilot] Transform error:", e)
+        log(`[ContextPilot] Transform error: ${e}`)
       }
     },
     tool: {
@@ -251,4 +257,7 @@ export const ContextPilotPlugin: Plugin = async () => {
   }
 }
 
-export default ContextPilotPlugin
+export default {
+  id: "contextpilot",
+  server: ContextPilotPlugin,
+}

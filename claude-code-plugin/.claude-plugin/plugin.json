@@ -1,0 +1,12 @@
+{
+  "name": "contextpilot",
+  "description": "Prevents duplicate file reads to reduce context bloat. Tracks what Claude has already read and blocks redundant re-reads when file content hasn't changed.",
+  "version": "0.1.0",
+  "author": {
+    "name": "ContextPilot Contributors"
+  },
+  "homepage": "https://github.com/EfficientContext/ContextPilot",
+  "repository": "https://github.com/EfficientContext/ContextPilot",
+  "license": "Apache-2.0",
+  "keywords": ["context", "optimization", "dedup", "kv-cache", "token-savings"]
+}

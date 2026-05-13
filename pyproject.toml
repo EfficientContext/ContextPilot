@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "contextpilot"
-version = "0.4.1"
+version = "0.4.2"
 description = "Fast Long-Context Inference via Context Reuse"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Yinsicheng Jiang" }, { name = "Yeqi Huang" }, { name = "Cheng Deng" }, { name = "Luo Mai" }]
+authors = [{ name = "Yinsicheng Jiang" }, { name = "Yeqi Huang" }, { name = "Liang Cheng" }，{ name = "Cheng Deng" }, { name = "Xuan Sun" }，{ name = "Luo Mai" }]
 license = { text = "Apache-2.0" }
 keywords = ["rag", "llm", "context-reuse", "kv-cache", "retrieval-augmented-generation", "agentic-memory", "agents"]
 classifiers = [
@@ -68,7 +68,7 @@ filterwarnings = [
 ]
 
 [tool.bumpver]
-current_version = "0.4.1"
+current_version = "0.4.2"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message  = "Bump version {old_version} -> {new_version}"
 commit          = true

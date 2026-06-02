@@ -26,7 +26,7 @@ jobs:
         run: |
           # Skip GPU tests as GitHub Actions runners don't have CUDA
           # To run GPU tests locally: pytest tests/ -v -m "gpu"
-          pytest tests/ -v --tb=short -m "not slow and not gpu and not integration"
+          python -m pytest tests/ -v --tb=short -m "not slow and not gpu and not integration"
 
   lint:
     runs-on: ubuntu-latest

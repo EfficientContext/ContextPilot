@@ -8,3 +8,7 @@ dist/
 */.DS_Store
 *.DS_Store
 
+# Evaluation/Profiling ignores
+*.prof
+evaluation/sandbox/results/*
+!evaluation/sandbox/results/.gitkeep

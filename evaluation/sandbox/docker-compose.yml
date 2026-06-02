@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  bigcodebench-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bigcodebench-sandbox
+    # Security: Disable network access to prevent data exfiltration or external attacks
+    network_mode: "none"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+    volumes:
+      # Mount results directory to extract benchmark data
+      - ./results:/app/results
+    working_dir: /app
+    stdin_open: true # docker run -i
+    tty: true        # docker run -t

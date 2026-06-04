@@ -11,3 +11,5 @@ fastapi[all]>=0.115.0
 uvicorn[standard]>=0.32.0
 httpx>=0.28.0
 pytest
+pyzmq
+msgspec

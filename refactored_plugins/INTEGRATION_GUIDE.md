@@ -1,11 +1,10 @@
+# Token Proxy Integration Guide (Reuse & Routing Plugins)
 
-# Token Proxy Integration Guide (Reuse Plugins)
-
-This guide explains how to integrate the **ContextReorder** and **ContextDedup** plugins into the Token Proxy Middleware.
+This guide explains how to integrate the **ContextReorder**, **ContextDedup**, and **KVCacheLookup** plugins into the Token Proxy Middleware.
 
 ## Overview
 
-The plugins are designed to sit between the Agent Framework (OpenClaw) and the LLM Server (SGLang). They process standard OpenAI-formatted JSON payloads to maximize KV cache hits.
+The plugins are designed to sit between the Agent Framework (OpenClaw) and the LLM Server (SGLang). They process standard OpenAI-formatted JSON payloads to maximize KV cache hits and dynamically route requests to the workers with the highest prefix sharing.
 
 ## Installation
 
@@ -76,3 +75,10 @@ if __name__ == "__main__":
 - **Input**: `Dict` (Single OpenAI request).
 - **Output**: `Dict` (Modified request with history replaced by reference hints).
 - **Logic**: Tracks conversation state via `user_id` and `parent_id`. Replaces previously seen messages with strings like `[Reference to Turn 1]`.
+
+### KVCacheLookupPlugin
+- **Input**: `Dict` (Single OpenAI request).
+- **Output**: `Dict` (Modified request with `_route_to` key injected containing the target worker endpoint).
+- **Logic**: Subscribes to individual worker ZMQ event streams (listening for `BlockStored` and `BlockRemoved` events) to build and maintain a real-time, in-memory **Shadow Radix Tree** representing each worker's GPU KV cache. Upon receiving a request, it tokenizes the prompt, runs a longest-prefix-match search across all worker shadow trees, and routes the request to the worker with the most cached tokens.
+- **Dependencies**: Requires `pyzmq` and `msgspec` (installed via core dependencies).
+

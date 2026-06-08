@@ -82,3 +82,9 @@ if __name__ == "__main__":
 - **Logic**: Subscribes to individual worker ZMQ event streams (listening for `BlockStored` and `BlockRemoved` events) to build and maintain a real-time, in-memory **Shadow Radix Tree** representing each worker's GPU KV cache. Upon receiving a request, it tokenizes the prompt, runs a longest-prefix-match search across all worker shadow trees, and routes the request to the worker with the most cached tokens.
 - **Dependencies**: Requires `pyzmq` and `msgspec` (installed via core dependencies).
 
+### SkillAwareContextPlugin
+- **Input**: `Dict` (Single OpenAI request).
+- **Output**: `Dict` (Modified request with a filtered `tools` array).
+- **Logic**: Inspects the request for `_required_skills` (a list of skill names requested by the router). It maps these requested skills to function/tool schemas in a pre-registered `tool_registry` and injects only the relevant tools into the payload's `tools` array, dynamically trimming unused tools to minimize context size.
+- **Telemetry**: Tracks the total number of tools filtered out and the last execution duration in milliseconds.
+

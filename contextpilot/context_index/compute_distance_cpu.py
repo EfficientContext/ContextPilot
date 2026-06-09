@@ -306,13 +306,13 @@ def compute_distance_matrix_cpu_optimized(contexts: List[List[int]],
     start_time = time.time()
     processed = 0
     
-    with Pool(num_workers) as pool:
-        for batch_results in pool.imap_unordered(compute_batch_worker, worker_args):
+    if num_workers == 1:
+        # Bypass multiprocessing Pool entirely to save initialization overhead
+        for args in worker_args:
+            batch_results = compute_batch_worker(args)
             for i, j, dist in batch_results:
-                # Convert (i, j) to condensed index
                 condensed_idx = n * i - i * (i + 1) // 2 + j - i - 1
                 condensed_distances[condensed_idx] = dist
-                
                 processed += 1
                 
                 # Progress update
@@ -326,6 +326,27 @@ def compute_distance_matrix_cpu_optimized(contexts: List[List[int]],
                           f"Rate: {rate:,.0f} pairs/sec | "
                           f"Elapsed: {elapsed:.1f}s | "
                           f"ETA: {eta:.1f}s ({eta/60:.1f} min)")
+    else:
+        with Pool(num_workers) as pool:
+            for batch_results in pool.imap_unordered(compute_batch_worker, worker_args):
+                for i, j, dist in batch_results:
+                    # Convert (i, j) to condensed index
+                    condensed_idx = n * i - i * (i + 1) // 2 + j - i - 1
+                    condensed_distances[condensed_idx] = dist
+                    
+                    processed += 1
+                    
+                    # Progress update
+                    if processed % 100000 == 0 or processed == num_pairs:
+                        elapsed = time.time() - start_time
+                        rate = processed / elapsed if elapsed > 0 else 0
+                        eta = (num_pairs - processed) / rate if rate > 0 else 0
+                        progress_pct = processed / num_pairs * 100
+                        
+                        print(f"  {processed:,}/{num_pairs:,} ({progress_pct:.1f}%) | "
+                              f"Rate: {rate:,.0f} pairs/sec | "
+                              f"Elapsed: {elapsed:.1f}s | "
+                              f"ETA: {eta:.1f}s ({eta/60:.1f} min)")
     
     compute_time = time.time() - start_time
     total_time = compute_time + prep_time

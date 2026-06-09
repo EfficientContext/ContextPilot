@@ -20,7 +20,8 @@ class ContextReorderPlugin(BasePlugin):
         from contextpilot.server.live_index import ContextPilot
         from contextpilot.utils.prompt_generator import get_tokenizer
         
-        self.pilot = ContextPilot(alpha=alpha, use_gpu=use_gpu)
+        self.pilot = ContextPilot(alpha=alpha, use_gpu=use_gpu, linkage_method="single")
+        self.pilot.num_workers = 1
         self.tokenizer = get_tokenizer(model_name)
         if self.tokenizer is None:
             logger.warning(f"Could not load tokenizer for {model_name}. Using fallback char-split.")

@@ -32,7 +32,7 @@ def check_server():
     try:
         response = requests.get(f"{BASE_URL}/health", timeout=2.0)
         health = response.json()
-        print(f"✓ Server status: {health['status']}")
+        print(f"+ Server status: {health['status']}")
         return health
     except Exception as e:
         print(f"✗ Server not running: {e}")
@@ -81,7 +81,7 @@ def build_index():
     )
     
     result = response.json()
-    print(f"✓ Index built: {len(result['request_ids'])} request IDs")
+    print(f"+ Index built: {len(result['request_ids'])} request IDs")
     print(f"  Reordered contexts for optimal cache sharing")
     
     return result
@@ -140,7 +140,7 @@ def stateless_schedule():
     )
     
     result = response.json()
-    print(f"✓ Reordered into {len(result['groups'])} groups")
+    print(f"+ Reordered into {len(result['groups'])} groups")
     
     return result
 
@@ -219,7 +219,7 @@ def main():
     print()
     
     print("=" * 70)
-    print("✓ Example complete!")
+    print("+ Example complete!")
     print("=" * 70)
 
 

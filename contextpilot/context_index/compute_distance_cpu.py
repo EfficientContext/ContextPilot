@@ -272,7 +272,7 @@ def compute_distance_matrix_cpu_optimized(contexts: List[List[int]],
     start = time.time()
     chunk_ids, original_positions, lengths, offsets = prepare_contexts_for_cpu(contexts)
     prep_time = time.time() - start
-    print(f"✓ Prepared in {prep_time:.1f}s")
+    print(f"+ Prepared in {prep_time:.1f}s")
     
     # Generate batches of pair indices
     print(f"\nGenerating pair batches...")
@@ -290,7 +290,7 @@ def compute_distance_matrix_cpu_optimized(contexts: List[List[int]],
     if current_batch:
         batches.append(current_batch)
     
-    print(f"✓ Generated {len(batches):,} batches")
+    print(f"+ Generated {len(batches):,} batches")
     
     # Prepare arguments for workers
     worker_args = [

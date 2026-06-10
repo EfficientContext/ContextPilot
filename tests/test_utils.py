@@ -20,6 +20,6 @@ def generate_contexts(num_contexts: int,
         chunk_ids = list(set(chunk_ids))
         contexts.append(chunk_ids)
     
-    print(f"✓ Generated {num_contexts:,} contexts")
+    print(f"+ Generated {num_contexts:,} contexts")
     print(f"  Avg chunks per context: {np.mean([len(c) for c in contexts]):.1f}")
     return contexts

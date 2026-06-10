@@ -44,7 +44,7 @@ def example_with_client():
     result = client.reorder_raw(contexts)
     
     if result:
-        print(f"\n✓ Batch reordered successfully!")
+        print(f"\n+ Batch reordered successfully!")
         print(f"  Mode: {result.get('mode', 'stateless')}")
         print(f"  Number of contexts: {result['num_contexts']}")
         print(f"  Number of execution groups: {result['num_groups']}")
@@ -87,7 +87,7 @@ def example_with_function():
     )
     
     if result:
-        print(f"✓ Reordered {result['num_contexts']} contexts into {result['num_groups']} groups")
+        print(f"+ Reordered {result['num_contexts']} contexts into {result['num_groups']} groups")
         print(f"Original indices order: {result['original_indices']}")
     else:
         print("Failed to reorder batch")
@@ -122,7 +122,7 @@ def example_direct_http():
     
     if response.status_code == 200:
         result = response.json()
-        print(f"✓ Reordered successfully!")
+        print(f"+ Reordered successfully!")
         print(f"  Groups: {result['num_groups']}")
         print(f"  Order: {result['original_indices']}")
     else:
@@ -173,8 +173,8 @@ def batch_processing_workflow():
         return
     
     execution_order = result['original_indices']
-    print(f"   ✓ Optimal order: {execution_order}")
-    print(f"   ✓ {result['num_groups']} execution groups")
+    print(f"   + Optimal order: {execution_order}")
+    print(f"   + {result['num_groups']} execution groups")
     
     # Step 3: Reorder your data according to the execution order
     print("\n3. Reordering data for inference...")
@@ -219,7 +219,7 @@ if __name__ == "__main__":
         response = requests.get("http://localhost:8765/health", timeout=2)
         if response.status_code == 200:
             health = response.json()
-            print(f"\n✓ Server is running (mode: {health.get('mode', 'unknown')})")
+            print(f"\n+ Server is running (mode: {health.get('mode', 'unknown')})")
         else:
             print(f"\n✗ Server returned status {response.status_code}")
             sys.exit(1)

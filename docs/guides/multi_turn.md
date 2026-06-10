@@ -256,10 +256,10 @@ print(f"New docs:    {result['new_docs']}")           # [2]
 
 | Operation | `/reorder` | `/deduplicate` |
 |-----------|----------|----------------|
-| Index build | ✓ | ✗ |
-| Clustering | ✓ | ✗ |
-| Search | ✓ | ✗ |
-| Deduplication | ✓ | ✓ |
+| Index build | + | ✗ |
+| Clustering | + | ✗ |
+| Search | + | ✗ |
+| Deduplication | + | + |
 | **Latency** | ~50-200ms | ~1-5ms |
 
 For multi-turn conversations, Turn 2+ typically doesn't need index operations — just deduplication against conversation history. The `/deduplicate` endpoint is **10-100x faster**.

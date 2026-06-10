@@ -172,15 +172,15 @@ class ContextPilot(ContextIndex):
         print("\n1. Building static index...")
         self.initial_result = self.fit_transform(contexts)
         
-        print(f"   ✓ Built tree with {self.initial_result.stats['total_nodes']} nodes")
-        print(f"   ✓ Leaf nodes: {self.initial_result.stats['leaf_nodes']}")
+        print(f"   + Built tree with {self.initial_result.stats['total_nodes']} nodes")
+        print(f"   + Leaf nodes: {self.initial_result.stats['leaf_nodes']}")
         
         # Step 2: Inter-context scheduling
         print("\n2. Scheduling contexts for optimal execution...")
         scheduled_reordered, scheduled_originals, final_mapping, groups = \
             self.inter_scheduler.schedule_contexts(self.initial_result)
         
-        print(f"   ✓ Created {len(groups)} execution groups")
+        print(f"   + Created {len(groups)} execution groups")
         
         self.scheduled_result = {
             'reordered_contexts': scheduled_reordered,
@@ -197,8 +197,8 @@ class ContextPilot(ContextIndex):
             num_input_contexts=len(contexts)
         )
         
-        print(f"   ✓ Initialized {len(self.metadata)} nodes with metadata")
-        print(f"   ✓ Auto-assigned {len(request_id_mapping)} request IDs")
+        print(f"   + Initialized {len(self.metadata)} nodes with metadata")
+        print(f"   + Auto-assigned {len(request_id_mapping)} request IDs")
         
         # Add request_id mapping to result (dict and ordered list)
         self.scheduled_result['request_id_mapping'] = request_id_mapping
@@ -208,7 +208,7 @@ class ContextPilot(ContextIndex):
         self.is_live = True
         
         print("\n" + "=" * 80)
-        print("✓ INDEX IS NOW LIVE - Ready for dynamic operations")
+        print("+ INDEX IS NOW LIVE - Ready for dynamic operations")
         print("=" * 80 + "\n")
         
         return self.scheduled_result
@@ -534,8 +534,8 @@ class ContextPilot(ContextIndex):
                 # No match - will build new index for these
                 unmatched_contexts.append((i, context))
         
-        print(f"   ✓ Found {len(matched_contexts)} contexts with matches")
-        print(f"   ✓ Found {len(unmatched_contexts)} contexts without matches")
+        print(f"   + Found {len(matched_contexts)} contexts with matches")
+        print(f"   + Found {len(unmatched_contexts)} contexts without matches")
         
         # Prepare result arrays (will fill in order)
         request_ids = [None] * len(contexts)
@@ -585,7 +585,7 @@ class ContextPilot(ContextIndex):
             )
             temp_result = temp_index.fit_transform(unmatched_only)
             
-            print(f"   ✓ Built temp index with {temp_result.stats['total_nodes']} nodes")
+            print(f"   + Built temp index with {temp_result.stats['total_nodes']} nodes")
             
             # Step 4: Merge temp index into global index
             print("\n4. Merging temp index into global index...")
@@ -606,16 +606,16 @@ class ContextPilot(ContextIndex):
                 context_info.append((orig_idx, merged_request_ids[i], merged_search_paths[i]))
             
             merged_count = len(unmatched_contexts)
-            print(f"   ✓ Merged {merged_count} new subtrees under global root")
+            print(f"   + Merged {merged_count} new subtrees under global root")
         
         # Step 5: Schedule execution order
         print("\n5. Scheduling execution order for cache reuse...")
         scheduled_order = self._schedule_incremental(context_info)
         groups = self._group_by_path_prefix(context_info)
-        print(f"   ✓ Scheduled {len(scheduled_order)} contexts into {len(groups)} groups")
+        print(f"   + Scheduled {len(scheduled_order)} contexts into {len(groups)} groups")
         
         print("\n" + "=" * 80)
-        print(f"✓ INCREMENTAL BUILD COMPLETE")
+        print(f"+ INCREMENTAL BUILD COMPLETE")
         print(f"   Matched & inserted: {len(matched_contexts)}")
         print(f"   Built & merged: {merged_count}")
         print("=" * 80 + "\n")
@@ -906,15 +906,15 @@ class ContextPilot(ContextIndex):
         print("\n1. Building static index...")
         result = self.fit_transform(contexts)
         
-        print(f"   ✓ Built tree with {result.stats['total_nodes']} nodes")
-        print(f"   ✓ Leaf nodes: {result.stats['leaf_nodes']}")
+        print(f"   + Built tree with {result.stats['total_nodes']} nodes")
+        print(f"   + Leaf nodes: {result.stats['leaf_nodes']}")
         
         # Step 2: Inter-context scheduling
         print("\n2. Scheduling contexts for optimal execution...")
         scheduled_reordered, scheduled_originals, final_mapping, groups = \
             self.inter_scheduler.schedule_contexts(result)
         
-        print(f"   ✓ Created {len(groups)} execution groups")
+        print(f"   + Created {len(groups)} execution groups")
         
         # Return results without going live (stateless)
         scheduled_result = {
@@ -931,7 +931,7 @@ class ContextPilot(ContextIndex):
         }
         
         print("\n" + "=" * 80)
-        print("✓ BATCH SCHEDULED (Stateless - no cache tracking)")
+        print("+ BATCH SCHEDULED (Stateless - no cache tracking)")
         print("=" * 80 + "\n")
         
         return scheduled_result

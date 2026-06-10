@@ -177,9 +177,9 @@ def run_rag_with_contextpilot(
             #   2. IDs within each context reordered (shared IDs as prefix)
             reordered_contexts = schedule_result['reordered_contexts']
             num_groups = schedule_result['num_groups']
-            print(f"   ✓ Optimal order: {scheduled_order}")
-            print(f"   ✓ Grouped into {num_groups} execution groups")
-            print(f"   ✓ Document IDs reordered within each context for prefix sharing")
+            print(f"   + Optimal order: {scheduled_order}")
+            print(f"   + Grouped into {num_groups} execution groups")
+            print(f"   + Document IDs reordered within each context for prefix sharing")
         else:
             print("   ⚠ ContextPilot unavailable, using original order")
             scheduled_order = list(range(n))
@@ -214,7 +214,7 @@ def run_rag_with_contextpilot(
         print(f"   Generating response {i+1}/{len(prompts)}...", end=" ")
         response = llm_generate(prompt)
         responses.append(response)
-        print("✓")
+        print("+")
 
     # Option B: Batch (uncomment to use)
     # responses = llm_generate_batch(prompts)
@@ -236,7 +236,7 @@ def run_rag_with_contextpilot(
             'scheduled_position': scheduled_pos,
         })
     
-    print("   ✓ Results reordered to match original query order")
+    print("   + Results reordered to match original query order")
     
     return results
 
@@ -255,7 +255,7 @@ def main():
     
     try:
         r = requests.get(f"{CONTEXTPILOT_URL}/health", timeout=2)
-        print(f"   ContextPilot: ✓ ({r.json().get('mode', 'unknown')} mode)")
+        print(f"   ContextPilot: + ({r.json().get('mode', 'unknown')} mode)")
         contextpilot_available = True
     except:
         print(f"   ContextPilot: ✗ Not available at {CONTEXTPILOT_URL}")
@@ -263,7 +263,7 @@ def main():
     
     try:
         r = requests.get(f"{INFERENCE_URL}/health", timeout=2)
-        print(f"   Inference engine: ✓ Ready")
+        print(f"   Inference engine: + Ready")
         engine_available = True
     except:
         print(f"   Inference engine: ✗ Not available at {INFERENCE_URL}")

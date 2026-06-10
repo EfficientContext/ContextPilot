@@ -545,7 +545,7 @@ If the answer cannot be found in the context, say so.
                 'num_contexts': len(contexts),
             })
             
-            self._log(f"    ✓ {sr['qid']}: {sr['search_time']:.2f}s search, {gen_time:.2f}s gen")
+            self._log(f"    + {sr['qid']}: {sr['search_time']:.2f}s search, {gen_time:.2f}s gen")
         
         return {
             'results': results,

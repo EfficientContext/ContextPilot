@@ -53,6 +53,41 @@ Then read the generated Markdown report for today and send a short Chinese summa
 )
 ```
 
+## Opportunity scanning
+
+`scripts/analyze_hermes_context_opportunities.py` is a companion scanner meant
+for a continuous cron job. Where the monitor stays metadata-only, this analyzer
+*does* read message content and tool outputs — but only in-memory, to compute
+salted SHA-256 fingerprints and aggregate counters. Reports never contain raw
+message/tool text, system prompts, reasoning, or raw session ids.
+
+It surfaces concrete token-reduction opportunities:
+
+- exact duplicate tool outputs (identical payloads re-sent across turns),
+- repeated line/block fingerprints (shared boilerplate across outputs),
+- large tool outputs grouped by `tool_name`,
+- heavy sessions by input-token / tool-call / message counts (hashed ids),
+- ContextPilot telemetry coverage and savings ratios.
+
+```bash
+python scripts/analyze_hermes_context_opportunities.py \
+  --state-db /root/.hermes/state.db \
+  --telemetry-file ~/.hermes/contextpilot/telemetry.jsonl \
+  --out-dir ~/contextpilot/opportunities \
+  --since-hours 24
+```
+
+Outputs:
+
+- `~/contextpilot/opportunities/opportunities_YYYY-MM-DD.json`
+- `~/contextpilot/opportunities/opportunities_YYYY-MM-DD.md`
+
+Each estimated "wasted tokens" figure is a heuristic (chars / 4); treat the
+report as a prioritized list of candidates and validate against the accuracy
+gate below before changing ContextPilot config or code. A defensive guard in
+`write_report` refuses to emit any forbidden raw-content key, so the reports are
+safe to ship from an unattended cron job.
+
 ## Accuracy gate
 
 This monitor only measures token/cost savings and operational signals. Before shipping ContextPilot changes, run a fixed golden eval set and require:

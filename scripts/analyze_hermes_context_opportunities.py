@@ -86,6 +86,54 @@ class RepeatedBlock:
     est_wasted_tokens: int  # (n-1) * est_tokens
 
 
+# Recognized LLM-bound block types. These are low-cardinality enums, safe to
+# emit verbatim (they describe the *origin* of a block, never its text).
+BLOCK_TYPES = (
+    "system_prompt",
+    "skill_prompt",
+    "user_prompt",
+    "assistant_context",
+    "tool_result",
+    "unknown",
+)
+
+
+@dataclass
+class TypeCount:
+    block_type: str
+    count: int
+
+
+@dataclass
+class BlockTypeStat:
+    """Aggregate redundancy within a single LLM-bound block type."""
+
+    block_type: str
+    item_count: int            # source items (prompts/messages) of this type
+    block_count: int           # total fingerprintable block instances
+    unique_block_count: int    # distinct fingerprints
+    repeated_block_count: int  # fingerprints recurring >= min_repeat within type
+    est_redundant_tokens: int  # sum over repeats of (occ-1) * est_tokens
+
+
+@dataclass
+class CrossTypeBlockGroup:
+    """A single block fingerprint observed in 2+ distinct block types.
+
+    This is the headline signal: the same chunk of text is being shipped to the
+    LLM from, e.g., a skill/system prompt *and* a tool result, so it is paying
+    for the same tokens twice from different sources.
+    """
+
+    block_hash: str
+    block_types: list[str]               # sorted distinct types this block spans
+    type_occurrences: list[TypeCount]    # per-type occurrence counts
+    occurrences: int                     # total occurrences across all types
+    char_length: int
+    est_tokens: int
+    est_wasted_tokens: int               # (occurrences - 1) * est_tokens
+
+
 @dataclass
 class ToolSizeStat:
     tool_name: str
@@ -122,6 +170,7 @@ class TelemetryCoverage:
 class OpportunityReport:
     date: str
     since_hours: int
+    all_sessions: bool
     salt_fingerprint: str
     tool_message_count: int
     total_tool_output_chars: int
@@ -135,6 +184,11 @@ class OpportunityReport:
     large_tool_outputs_by_tool: list[ToolSizeStat]
     heavy_sessions: list[HeavySession]
     telemetry: TelemetryCoverage
+    # LLM-bound block analysis (system/skill prompts, prompts, tool results).
+    llm_bound_item_count: int
+    llm_block_types: list[BlockTypeStat]
+    cross_type_block_groups: list[CrossTypeBlockGroup]
+    cross_type_wasted_tokens: int
     notes: list[str] = field(default_factory=list)
 
 
@@ -149,16 +203,75 @@ class _ToolMessage:
     content: str
 
 
+@dataclass
+class _LLMContent:
+    """A chunk of content that Hermes would actually send to the LLM.
+
+    Held in-memory only for hashing; ``content`` must never be emitted.
+    """
+
+    block_type: str
+    content: str
+
+
+def _window_cutoff(since_hours: int, all_sessions: bool) -> float | None:
+    """Return the epoch cutoff, or ``None`` to scan all history.
+
+    ``all_sessions=True`` disables the time window so old sessions/messages are
+    included regardless of ``since_hours``.
+    """
+    if all_sessions:
+        return None
+    return dt.datetime.now(dt.timezone.utc).timestamp() - since_hours * 3600
+
+
+def _classify_system_prompt(text: str) -> str:
+    """Heuristically label a system prompt as skill material or a plain prompt.
+
+    Operates on in-memory text only; returns a low-cardinality enum, never the
+    text itself.
+    """
+    low = text.lower()
+    stripped = low.lstrip()
+    # Skill-style frontmatter block (e.g. "---\nname: ...\ndescription: ...").
+    if stripped.startswith("---") and "name:" in low[:300]:
+        return "skill_prompt"
+    cues = (
+        "use this skill",
+        "available skills",
+        "when to use",
+        "invoke it via skill",
+        "<skill",
+        "# skill",
+        "skill tool",
+    )
+    if any(c in low for c in cues):
+        return "skill_prompt"
+    return "system_prompt"
+
+
+def _message_block_type(role: str | None, tool_name: str | None) -> str:
+    if role == "tool" or tool_name is not None:
+        return "tool_result"
+    if role == "user":
+        return "user_prompt"
+    if role == "assistant":
+        return "assistant_context"
+    if role == "system":
+        return "system_prompt"
+    return "unknown"
+
+
 def load_tool_messages(
-    db_path: Path, *, since_hours: int
+    db_path: Path, *, since_hours: int, all_sessions: bool = False
 ) -> list[_ToolMessage]:
     """Load tool-output messages within the window.
 
     Content is returned for in-memory hashing only; callers must not emit it.
     A message is treated as tool output when ``role='tool'`` or ``tool_name``
-    is set.
+    is set. With ``all_sessions=True`` the time window is ignored.
     """
-    cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - since_hours * 3600
+    cutoff = _window_cutoff(since_hours, all_sessions)
     conn = _connect_readonly(db_path)
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
@@ -169,9 +282,11 @@ def load_tool_messages(
         select_tool = "tool_name" if has_tool_name else "NULL AS tool_name"
         where = []
         params: list[object] = []
-        if has_ts:
+        if has_ts and cutoff is not None:
             where.append("timestamp >= ?")
             params.append(cutoff)
+        if "active" in cols:
+            where.append("active = 1")
         tool_pred = "role = 'tool'"
         if has_tool_name:
             tool_pred = "(role = 'tool' OR tool_name IS NOT NULL)"
@@ -192,10 +307,92 @@ def load_tool_messages(
     return out
 
 
+def load_llm_bound_content(
+    db_path: Path, *, since_hours: int, all_sessions: bool = False
+) -> list[_LLMContent]:
+    """Load only content Hermes would actually send to an LLM.
+
+    Sources, all read in-memory for hashing (never emitted):
+      * ``sessions.system_prompt`` -> ``system_prompt`` or ``skill_prompt``,
+      * ``messages.content`` for active messages with role in
+        ``system``/``user``/``assistant``/``tool`` -> per-role block type,
+      * tool-result messages (role=tool or ``tool_name`` set) -> ``tool_result``.
+
+    Inactive messages are skipped when an ``active`` column exists; archived
+    sessions (and their messages) are skipped when an ``archived`` column
+    exists. With ``all_sessions=True`` the time window is ignored.
+    """
+    cutoff = _window_cutoff(since_hours, all_sessions)
+    conn = _connect_readonly(db_path)
+    out: list[_LLMContent] = []
+    try:
+        scols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        mcols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+
+        # --- system / skill prompts from sessions -------------------------
+        if "system_prompt" in scols:
+            where = ["system_prompt IS NOT NULL"]
+            params: list[object] = []
+            if cutoff is not None and "started_at" in scols:
+                where.append("started_at >= ?")
+                params.append(cutoff)
+            if "archived" in scols:
+                where.append("archived = 0")
+            sql = f"SELECT system_prompt FROM sessions WHERE {' AND '.join(where)}"
+            for (sp,) in conn.execute(sql, params):
+                if sp is None:
+                    continue
+                text = str(sp)
+                out.append(
+                    _LLMContent(block_type=_classify_system_prompt(text), content=text)
+                )
+
+        # --- active messages bound for the LLM ----------------------------
+        if "content" in mcols:
+            has_role = "role" in mcols
+            has_tool_name = "tool_name" in mcols
+            select = [
+                "messages.role" if has_role else "NULL AS role",
+                "messages.content",
+                "messages.tool_name" if has_tool_name else "NULL AS tool_name",
+            ]
+            where = ["messages.content IS NOT NULL"]
+            params = []
+            if has_role:
+                where.append(
+                    "messages.role IN ('system', 'user', 'assistant', 'tool')"
+                )
+            if cutoff is not None and "timestamp" in mcols:
+                where.append("messages.timestamp >= ?")
+                params.append(cutoff)
+            if "active" in mcols:
+                where.append("messages.active = 1")
+            join = ""
+            if "archived" in scols and "session_id" in mcols and "id" in scols:
+                join = " JOIN sessions ON sessions.id = messages.session_id"
+                where.append("sessions.archived = 0")
+            sql = (
+                f"SELECT {', '.join(select)} FROM messages{join} "
+                f"WHERE {' AND '.join(where)}"
+            )
+            for role, content, tool_name in conn.execute(sql, params):
+                if content is None:
+                    continue
+                out.append(
+                    _LLMContent(
+                        block_type=_message_block_type(role, tool_name),
+                        content=str(content),
+                    )
+                )
+    finally:
+        conn.close()
+    return out
+
+
 def load_heavy_sessions(
-    db_path: Path, *, since_hours: int, salt: str, top_n: int
+    db_path: Path, *, since_hours: int, salt: str, top_n: int, all_sessions: bool = False
 ) -> list[HeavySession]:
-    cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - since_hours * 3600
+    cutoff = _window_cutoff(since_hours, all_sessions)
     conn = _connect_readonly(db_path)
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
@@ -213,7 +410,7 @@ def load_heavy_sessions(
         select_cols = [c if c in cols else f"NULL AS {c}" for c in wanted]
         where = []
         params: list[object] = []
-        if "started_at" in cols:
+        if cutoff is not None and "started_at" in cols:
             where.append("started_at >= ?")
             params.append(cutoff)
         if "archived" in cols:
@@ -243,9 +440,11 @@ def load_heavy_sessions(
     return sessions[:top_n]
 
 
-def total_input_tokens(db_path: Path, *, since_hours: int) -> int:
+def total_input_tokens(
+    db_path: Path, *, since_hours: int, all_sessions: bool = False
+) -> int:
     """Sum input tokens across ALL in-window sessions (not just the top-N)."""
-    cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - since_hours * 3600
+    cutoff = _window_cutoff(since_hours, all_sessions)
     conn = _connect_readonly(db_path)
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
@@ -253,7 +452,7 @@ def total_input_tokens(db_path: Path, *, since_hours: int) -> int:
             return 0
         where = []
         params: list[object] = []
-        if "started_at" in cols:
+        if cutoff is not None and "started_at" in cols:
             where.append("started_at >= ?")
             params.append(cutoff)
         if "archived" in cols:
@@ -268,19 +467,24 @@ def total_input_tokens(db_path: Path, *, since_hours: int) -> int:
 
 
 def parse_telemetry(
-    telemetry_path: Path, *, since_hours: int, total_input_tokens: int
+    telemetry_path: Path,
+    *,
+    since_hours: int,
+    total_input_tokens: int,
+    all_sessions: bool = False,
 ) -> TelemetryCoverage:
     """Aggregate the metadata-only ContextPilot telemetry file.
 
     Tolerates malformed lines (non-JSON, non-dict, missing counters) by
-    skipping and counting them. Never reads message content.
+    skipping and counting them. Never reads message content. With
+    ``all_sessions=True`` the time window is ignored.
     """
     events = 0
     chars = 0
     tokens = 0
     malformed = 0
     if telemetry_path and telemetry_path.exists():
-        cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - since_hours * 3600
+        cutoff = _window_cutoff(since_hours, all_sessions)
         with telemetry_path.open("r", encoding="utf-8", errors="replace") as f:
             for raw in f:
                 line = raw.strip()
@@ -295,7 +499,7 @@ def parse_telemetry(
                     malformed += 1
                     continue
                 ts = record.get("ts")
-                if isinstance(ts, (int, float)) and ts < cutoff:
+                if cutoff is not None and isinstance(ts, (int, float)) and ts < cutoff:
                     continue
                 cs = record.get("chars_saved")
                 if not isinstance(cs, (int, float)):
@@ -452,6 +656,110 @@ def summarize_tool_sizes(
     return stats[:top_n]
 
 
+def _iter_blocks(content: str, min_block_chars: int) -> Iterable[str]:
+    """Yield the distinct fingerprintable lines of one item (deduped in-item)."""
+    seen: set[str] = set()
+    for line in content.splitlines():
+        block = line.strip()
+        if len(block) < min_block_chars:
+            continue
+        if block in seen:
+            continue
+        seen.add(block)
+        yield block
+
+
+def analyze_llm_bound_blocks(
+    contents: Iterable[_LLMContent],
+    *,
+    salt: str,
+    min_block_chars: int,
+    min_repeat: int,
+    top_n: int,
+) -> tuple[list[BlockTypeStat], list[CrossTypeBlockGroup]]:
+    """Fingerprint LLM-bound blocks and report redundancy.
+
+    Returns (per-type stats, cross-type repeated block groups). All output is
+    salted hashes / counters / block-type enums -- no raw text.
+    """
+    # block_hash -> {char_length, types: {block_type: occ}}
+    agg: dict[str, dict] = {}
+    # block_type -> source item count
+    item_counts: dict[str, int] = {}
+
+    for item in contents:
+        bt = item.block_type
+        item_counts[bt] = item_counts.get(bt, 0) + 1
+        for block in _iter_blocks(item.content, min_block_chars):
+            h = _salted_hash(block, salt)
+            entry = agg.get(h)
+            if entry is None:
+                agg[h] = {"char_length": len(block), "types": {bt: 1}}
+            else:
+                entry["types"][bt] = entry["types"].get(bt, 0) + 1
+
+    # --- per block-type aggregate redundancy ------------------------------
+    per_type: dict[str, dict] = {}
+    for entry in agg.values():
+        est = _est_tokens(entry["char_length"])
+        for bt, occ in entry["types"].items():
+            t = per_type.setdefault(
+                bt,
+                {
+                    "block_count": 0,
+                    "unique": 0,
+                    "repeated": 0,
+                    "redundant_tokens": 0,
+                },
+            )
+            t["block_count"] += occ
+            t["unique"] += 1
+            if occ >= min_repeat:
+                t["repeated"] += 1
+                t["redundant_tokens"] += est * (occ - 1)
+
+    block_type_stats: list[BlockTypeStat] = []
+    for bt in sorted(set(per_type) | set(item_counts)):
+        t = per_type.get(
+            bt, {"block_count": 0, "unique": 0, "repeated": 0, "redundant_tokens": 0}
+        )
+        block_type_stats.append(
+            BlockTypeStat(
+                block_type=bt,
+                item_count=item_counts.get(bt, 0),
+                block_count=t["block_count"],
+                unique_block_count=t["unique"],
+                repeated_block_count=t["repeated"],
+                est_redundant_tokens=t["redundant_tokens"],
+            )
+        )
+
+    # --- cross-type repeated blocks ---------------------------------------
+    cross: list[CrossTypeBlockGroup] = []
+    for h, entry in agg.items():
+        types = entry["types"]
+        if len(types) < 2:
+            continue
+        total_occ = sum(types.values())
+        est = _est_tokens(entry["char_length"])
+        cross.append(
+            CrossTypeBlockGroup(
+                block_hash=h,
+                block_types=sorted(types.keys()),
+                type_occurrences=[
+                    TypeCount(block_type=bt, count=occ)
+                    for bt, occ in sorted(types.items())
+                ],
+                occurrences=total_occ,
+                char_length=entry["char_length"],
+                est_tokens=est,
+                est_wasted_tokens=est * (total_occ - 1),
+            )
+        )
+    cross.sort(key=lambda g: g.est_wasted_tokens, reverse=True)
+    return block_type_stats, cross[:top_n]
+
+
 # ---------------------------------------------------------------------------
 # Build + write
 # ---------------------------------------------------------------------------
@@ -465,6 +773,8 @@ def build_report(
     tool_messages: list[_ToolMessage],
     heavy_sessions: list[HeavySession],
     telemetry: TelemetryCoverage,
+    llm_contents: list[_LLMContent] | None = None,
+    all_sessions: bool = False,
     min_block_chars: int = DEFAULT_MIN_BLOCK_CHARS,
     min_block_repeat: int = DEFAULT_MIN_BLOCK_REPEAT,
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS,
@@ -482,22 +792,38 @@ def build_report(
         tool_messages, large_output_chars=large_output_chars, top_n=top_n
     )
 
+    llm_contents = llm_contents or []
+    block_type_stats, cross_groups = analyze_llm_bound_blocks(
+        llm_contents,
+        salt=salt,
+        min_block_chars=min_block_chars,
+        min_repeat=min_block_repeat,
+        top_n=top_n,
+    )
+
     total_chars = sum(len(m.content) for m in tool_messages)
     dup_wasted = sum(d.est_wasted_tokens for d in dups)
     block_wasted = sum(b.est_wasted_tokens for b in blocks)
+    cross_wasted = sum(g.est_wasted_tokens for g in cross_groups)
 
     notes = [
         "content-aware analysis: message/tool text was hashed in-memory only and never written to reports",
         "all identifiers are salted SHA-256 fingerprints; counters are aggregates",
         "wasted-token figures are heuristic estimates (chars/4); validate before acting",
-        "session 'source' and 'tool_name' are emitted verbatim as low-cardinality enums, not raw text",
+        "session 'source', 'tool_name', and block_type are emitted verbatim as low-cardinality enums, not raw text",
+        "llm-bound scan covers only content sent to the LLM: system/skill prompts, active user/assistant/tool messages",
     ]
+    if all_sessions:
+        notes.append("all-sessions mode: time window ignored; scanned all non-archived sessions/active messages")
     if not tool_messages:
         notes.append("no tool-output messages observed in the selected window")
+    if not llm_contents:
+        notes.append("no llm-bound content observed in the selected window")
 
     return OpportunityReport(
         date=date,
         since_hours=since_hours,
+        all_sessions=all_sessions,
         salt_fingerprint=_salt_fingerprint(salt),
         tool_message_count=len(tool_messages),
         total_tool_output_chars=total_chars,
@@ -511,6 +837,10 @@ def build_report(
         large_tool_outputs_by_tool=sizes,
         heavy_sessions=heavy_sessions,
         telemetry=telemetry,
+        llm_bound_item_count=len(llm_contents),
+        llm_block_types=block_type_stats,
+        cross_type_block_groups=cross_groups,
+        cross_type_wasted_tokens=cross_wasted,
         notes=notes,
     )
 
@@ -543,10 +873,11 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
     )
 
     t = report.telemetry
+    window = "all sessions (no time window)" if report.all_sessions else f"last {report.since_hours}h"
     md = [
         f"# ContextPilot Hermes opportunity scan — {report.date}",
         "",
-        f"Window: last {report.since_hours}h",
+        f"Window: {window}",
         f"Salt fingerprint: `{report.salt_fingerprint}`",
         "",
         "## Summary",
@@ -556,11 +887,30 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         f"(~{report.duplicate_tool_output_wasted_tokens} wasted tokens)",
         f"- Repeated blocks: {report.repeated_block_count} "
         f"(~{report.repeated_block_wasted_tokens} wasted tokens)",
+        f"- LLM-bound items scanned: {report.llm_bound_item_count}",
+        f"- Cross-type repeated blocks: {len(report.cross_type_block_groups)} "
+        f"(~{report.cross_type_wasted_tokens} wasted tokens)",
         f"- Telemetry: {t.events} events, ~{t.tokens_saved} tokens saved, "
         f"coverage {t.coverage_ratio_pct}%",
         "",
-        "## Top exact-duplicate tool outputs",
+        "## LLM-bound redundancy by block type",
     ]
+    for bt in report.llm_block_types:
+        md.append(
+            f"- {bt.block_type}: items={bt.item_count} blocks={bt.block_count} "
+            f"unique={bt.unique_block_count} repeated={bt.repeated_block_count} "
+            f"~redundant={bt.est_redundant_tokens} tokens"
+        )
+    md.append("")
+    md.append("## Cross-type repeated blocks (same block, multiple sources)")
+    for g in report.cross_type_block_groups:
+        spread = ", ".join(f"{tc.block_type}x{tc.count}" for tc in g.type_occurrences)
+        md.append(
+            f"- `{g.block_hash}` types=[{', '.join(g.block_types)}] ({spread}) "
+            f"chars={g.char_length} ~wasted={g.est_wasted_tokens} tokens"
+        )
+    md.append("")
+    md.append("## Top exact-duplicate tool outputs")
     for d in report.exact_duplicate_groups:
         md.append(
             f"- `{d.content_hash}` tool={d.tool_name} x{d.occurrences} "
@@ -621,6 +971,11 @@ def main() -> int:
     )
     parser.add_argument("--since-hours", type=int, default=24)
     parser.add_argument(
+        "--all-sessions",
+        action="store_true",
+        help="ignore --since-hours; scan all non-archived sessions and active messages",
+    )
+    parser.add_argument(
         "--salt",
         default="contextpilot-hermes-opportunity-v1",
         help="salt for stable per-install content/session fingerprints",
@@ -640,15 +995,27 @@ def main() -> int:
     # Harden for unattended cron use: never dump a traceback (which would echo
     # the DB path / SQL); emit only the exception class name and a non-zero code.
     try:
-        tool_messages = load_tool_messages(args.state_db, since_hours=args.since_hours)
-        heavy_sessions = load_heavy_sessions(
-            args.state_db, since_hours=args.since_hours, salt=args.salt, top_n=args.top_n
+        tool_messages = load_tool_messages(
+            args.state_db, since_hours=args.since_hours, all_sessions=args.all_sessions
         )
-        total_input = total_input_tokens(args.state_db, since_hours=args.since_hours)
+        llm_contents = load_llm_bound_content(
+            args.state_db, since_hours=args.since_hours, all_sessions=args.all_sessions
+        )
+        heavy_sessions = load_heavy_sessions(
+            args.state_db,
+            since_hours=args.since_hours,
+            salt=args.salt,
+            top_n=args.top_n,
+            all_sessions=args.all_sessions,
+        )
+        total_input = total_input_tokens(
+            args.state_db, since_hours=args.since_hours, all_sessions=args.all_sessions
+        )
         telemetry = parse_telemetry(
             args.telemetry_file,
             since_hours=args.since_hours,
             total_input_tokens=total_input,
+            all_sessions=args.all_sessions,
         )
         report = build_report(
             date=args.date,
@@ -657,6 +1024,8 @@ def main() -> int:
             tool_messages=tool_messages,
             heavy_sessions=heavy_sessions,
             telemetry=telemetry,
+            llm_contents=llm_contents,
+            all_sessions=args.all_sessions,
             min_block_chars=args.min_block_chars,
             min_block_repeat=args.min_block_repeat,
             large_output_chars=args.large_output_chars,

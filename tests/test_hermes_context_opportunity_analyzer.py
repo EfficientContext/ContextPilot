@@ -78,16 +78,22 @@ def _make_db(path: Path, messages, *, sessions=None):
     conn.close()
 
 
-def _analyze(db, tmp_path, telemetry=None, salt="test-salt"):
-    tool_messages = analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)
+def _analyze(db, tmp_path, telemetry=None, salt="test-salt", all_sessions=False):
+    tool_messages = analyzer.load_tool_messages(
+        db, since_hours=WIDE_WINDOW, all_sessions=all_sessions
+    )
+    llm_contents = analyzer.load_llm_bound_content(
+        db, since_hours=WIDE_WINDOW, all_sessions=all_sessions
+    )
     heavy = analyzer.load_heavy_sessions(
-        db, since_hours=WIDE_WINDOW, salt=salt, top_n=20
+        db, since_hours=WIDE_WINDOW, salt=salt, top_n=20, all_sessions=all_sessions
     )
     total_input = sum(h.input_tokens for h in heavy)
     tel = analyzer.parse_telemetry(
         telemetry if telemetry is not None else tmp_path / "none.jsonl",
         since_hours=WIDE_WINDOW,
         total_input_tokens=total_input,
+        all_sessions=all_sessions,
     )
     report = analyzer.build_report(
         date="2100-01-01",
@@ -96,6 +102,8 @@ def _analyze(db, tmp_path, telemetry=None, salt="test-salt"):
         tool_messages=tool_messages,
         heavy_sessions=heavy,
         telemetry=tel,
+        llm_contents=llm_contents,
+        all_sessions=all_sessions,
         min_block_repeat=2,
     )
     return report
@@ -220,3 +228,225 @@ def test_missing_telemetry_file_is_safe(tmp_path):
     report = _analyze(db, tmp_path, telemetry=tmp_path / "nope.jsonl")
     assert report.telemetry.events == 0
     assert report.telemetry.malformed_records_skipped == 0
+
+
+# ---------------------------------------------------------------------------
+# LLM-bound block analysis + all-sessions tests
+# ---------------------------------------------------------------------------
+
+OLD_TS = 1_000_000_000.0  # 2001 — far outside any normal recent window
+
+
+def _make_db_ex(path, *, sessions, messages, message_active_col=False):
+    """Flexible builder: custom timestamps, optional messages.active column."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            source TEXT,
+            started_at REAL NOT NULL,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            message_count INTEGER DEFAULT 0,
+            tool_call_count INTEGER DEFAULT 0,
+            api_call_count INTEGER DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
+            system_prompt TEXT
+        )
+        """
+    )
+    active_col = ", active INTEGER NOT NULL DEFAULT 1" if message_active_col else ""
+    conn.execute(
+        f"""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_name TEXT,
+            reasoning TEXT,
+            timestamp REAL NOT NULL{active_col}
+        )
+        """
+    )
+    for s in sessions:
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at, input_tokens, archived,"
+            " system_prompt) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                s["id"],
+                s.get("source"),
+                s["started_at"],
+                s.get("input_tokens", 0),
+                s.get("archived", 0),
+                s.get("system_prompt"),
+            ),
+        )
+    for m in messages:
+        if message_active_col:
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, tool_name, reasoning,"
+                " timestamp, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    m.get("session_id", "s1"),
+                    m["role"],
+                    m.get("content"),
+                    m.get("tool_name"),
+                    "PRIVATE REASONING",
+                    m.get("timestamp", FAR_FUTURE),
+                    m.get("active", 1),
+                ),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, tool_name, reasoning,"
+                " timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    m.get("session_id", "s1"),
+                    m["role"],
+                    m.get("content"),
+                    m.get("tool_name"),
+                    "PRIVATE REASONING",
+                    m.get("timestamp", FAR_FUTURE),
+                ),
+            )
+    conn.commit()
+    conn.close()
+
+
+def test_all_sessions_includes_old_out_of_window_data(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db_ex(
+        db,
+        sessions=[
+            {
+                "id": "old-sess",
+                "source": "discord",
+                "started_at": OLD_TS,
+                "input_tokens": 500,
+                "system_prompt": "old system prompt material that is plenty long here",
+            }
+        ],
+        messages=[
+            {
+                "session_id": "old-sess",
+                "role": "tool",
+                "content": "old tool output block sufficiently long to be scanned",
+                "tool_name": "Bash",
+                "timestamp": OLD_TS,
+            },
+            {
+                "session_id": "old-sess",
+                "role": "user",
+                "content": "old user prompt text that is also long enough to scan",
+                "timestamp": OLD_TS,
+            },
+        ],
+    )
+    # A normal recent window excludes the old data entirely.
+    assert analyzer.load_tool_messages(db, since_hours=24) == []
+    assert analyzer.load_llm_bound_content(db, since_hours=24) == []
+    assert analyzer.load_heavy_sessions(db, since_hours=24, salt="s", top_n=5) == []
+
+    # all_sessions ignores the window and picks the old data back up.
+    assert len(analyzer.load_tool_messages(db, since_hours=24, all_sessions=True)) == 1
+    llm = analyzer.load_llm_bound_content(db, since_hours=24, all_sessions=True)
+    assert len(llm) == 3  # system_prompt + tool_result + user_prompt
+    assert (
+        len(
+            analyzer.load_heavy_sessions(
+                db, since_hours=24, salt="s", top_n=5, all_sessions=True
+            )
+        )
+        == 1
+    )
+
+
+def test_inactive_messages_skipped(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {
+                "role": "tool",
+                "content": "active tool output that is sufficiently long to fingerprint",
+                "tool_name": "Bash",
+                "active": 1,
+            },
+            {
+                "role": "tool",
+                "content": "inactive tool output that should be skipped entirely here",
+                "tool_name": "Bash",
+                "active": 0,
+            },
+            {
+                "role": "user",
+                "content": "inactive user prompt that must also be skipped here",
+                "active": 0,
+            },
+        ],
+        message_active_col=True,
+    )
+    # Inactive rows are filtered out of both loaders.
+    assert len(analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)) == 1
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    assert sorted(c.block_type for c in llm) == ["tool_result"]
+
+
+def test_skill_prompt_classification(tmp_path):
+    db = tmp_path / "state.db"
+    skill_sys = (
+        "---\nname: deep-research\ndescription: research harness\n---\n"
+        "Use this skill when researching a topic."
+    )
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": skill_sys}],
+        messages=[],
+    )
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    assert len(llm) == 1
+    assert llm[0].block_type == "skill_prompt"
+
+
+def test_cross_type_redundancy_reported_via_hashes_only(tmp_path):
+    db = tmp_path / "state.db"
+    shared = "This is a shared instruction block long enough to fingerprint cleanly."
+    sys_prompt = "You are a helpful system.\n" + shared + "\nEnd of system prompt."
+    tool_out = "tool produced this output line\n" + shared + "\nand more tool lines"
+    user_msg = "user asks the assistant something specific here\n" + shared
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": sys_prompt}],
+        messages=[
+            {"role": "tool", "content": tool_out, "tool_name": "Bash"},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+
+    # The shared block spans system_prompt, tool_result, and user_prompt.
+    assert len(report.cross_type_block_groups) >= 1
+    grp = report.cross_type_block_groups[0]
+    assert "tool_result" in grp.block_types
+    assert any(bt in grp.block_types for bt in ("system_prompt", "skill_prompt"))
+    assert "user_prompt" in grp.block_types
+    assert grp.occurrences == 3
+    # Reported only via salted hash + counters — never the raw block text.
+    assert shared not in grp.block_hash
+    assert report.cross_type_wasted_tokens > 0
+
+    # Per-type block stats are populated for the LLM-bound types.
+    types_seen = {b.block_type for b in report.llm_block_types}
+    assert {"tool_result", "user_prompt"} <= types_seen
+
+    # The written report leaks no raw prompt/tool/system text.
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
+    assert shared not in blob
+    assert "shared instruction block" not in blob
+    assert "You are a helpful system" not in blob
+    assert "user asks the assistant" not in blob
+    assert "PRIVATE REASONING" not in blob

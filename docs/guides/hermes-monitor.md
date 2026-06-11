@@ -69,12 +69,48 @@ It surfaces concrete token-reduction opportunities:
 - heavy sessions by input-token / tool-call / message counts (hashed ids),
 - ContextPilot telemetry coverage and savings ratios.
 
+### LLM-bound block redundancy
+
+The analyzer also performs an **LLM-bound block scan** that looks *only* at
+content Hermes would actually send to a model, and reports where the same block
+is paid for more than once:
+
+- `sessions.system_prompt`, classified heuristically as `system_prompt` or
+  `skill_prompt` (skill frontmatter / "use this skill" style cues),
+- active `messages.content` for roles `system` / `user` / `assistant` / `tool`,
+  bucketed as `user_prompt`, `assistant_context`, `tool_result`, etc.,
+- tool-result messages (`role='tool'` or `tool_name` set) as `tool_result`.
+
+Inactive messages are skipped when an `active` column exists, and archived
+sessions (and their messages) are skipped when an `archived` column exists. Each
+block is split line-wise, fingerprinted with a salted SHA-256 hash, and
+aggregated. The report then shows:
+
+- **redundancy by block type** — per-type block / unique / repeated counts and
+  estimated redundant tokens,
+- **cross-type repeated blocks** — the headline signal: a single fingerprint
+  observed in 2+ block types (e.g. the same chunk shipped from a skill/system
+  prompt *and* a tool result *and* a user prompt). Reported only as a hash plus
+  per-type counters — never the raw text.
+
+Use `--all-sessions` to ignore the `--since-hours` window and scan **all**
+non-archived sessions and active messages (useful for a one-shot, whole-history
+audit rather than a rolling daily window):
+
 ```bash
+# rolling daily window
 python scripts/analyze_hermes_context_opportunities.py \
   --state-db /root/.hermes/state.db \
   --telemetry-file ~/.hermes/contextpilot/telemetry.jsonl \
   --out-dir ~/contextpilot/opportunities \
   --since-hours 24
+
+# whole-history audit across every session and LLM-bound block
+python scripts/analyze_hermes_context_opportunities.py \
+  --state-db /root/.hermes/state.db \
+  --telemetry-file ~/.hermes/contextpilot/telemetry.jsonl \
+  --out-dir ~/contextpilot/opportunities \
+  --all-sessions
 ```
 
 Outputs:

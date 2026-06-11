@@ -112,3 +112,72 @@ def test_monitor_reads_metadata_only_and_hashes_session_ids(tmp_path):
     assert "DO NOT READ ME" not in md
     assert "SECRET SYSTEM PROMPT" not in md
     assert data["top_token_sessions"][0]["session_hash"] != "raw-session-id"
+
+
+def _write_telemetry(path, records):
+    path.write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
+    )
+
+
+def test_parse_telemetry_aggregates_recent_records(tmp_path):
+    tel = tmp_path / "telemetry.jsonl"
+    far_future = 4102444800.0  # 2100-01-01
+    _write_telemetry(
+        tel,
+        [
+            {"ts": far_future, "type": "turn", "session": "s1", "turn": 1,
+             "chars_saved": 400, "tokens_saved": 100},
+            {"ts": far_future, "type": "turn", "session": "s1", "turn": 2,
+             "chars_saved": 200, "tokens_saved": 50},
+            # Stale record far in the past must be excluded by the window.
+            {"ts": 1000.0, "type": "turn", "session": "s0", "turn": 1,
+             "chars_saved": 999999, "tokens_saved": 999999},
+            "this is not json",
+        ],
+    )
+
+    events, chars, tokens = monitor.parse_contextpilot_telemetry(tel, since_hours=24)
+    assert events == 2
+    assert chars == 600
+    assert tokens == 150
+
+
+def test_parse_telemetry_missing_file_is_safe(tmp_path):
+    assert monitor.parse_contextpilot_telemetry(tmp_path / "nope.jsonl", since_hours=24) == (0, 0, 0)
+
+
+def test_build_report_prefers_telemetry_over_logs(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db(db)
+    metrics = monitor.load_session_metrics(db, since_hours=24 * 365 * 100, salt="test")
+
+    report = monitor.build_report(
+        metrics,
+        date="2100-01-01",
+        since_hours=24,
+        log_stats=(5, 4000, 1000),
+        telemetry_stats=(2, 600, 150),
+    )
+    # Telemetry is authoritative when present; logs are not summed on top.
+    assert report.contextpilot_tokens_saved == 150
+    assert report.contextpilot_chars_saved == 600
+    assert report.contextpilot_telemetry_events == 2
+    assert report.contextpilot_log_events == 5
+    assert report.contextpilot_savings_source == "telemetry"
+
+
+def test_build_report_falls_back_to_logs_without_telemetry(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db(db)
+    metrics = monitor.load_session_metrics(db, since_hours=24 * 365 * 100, salt="test")
+
+    report = monitor.build_report(
+        metrics,
+        date="2100-01-01",
+        since_hours=24,
+        log_stats=(5, 4000, 1000),
+        telemetry_stats=(0, 0, 0),
+    )
+    assert report.contextpilot_tokens_saved == 1000
+    assert report.contextpilot_savings_source == "gateway-log"

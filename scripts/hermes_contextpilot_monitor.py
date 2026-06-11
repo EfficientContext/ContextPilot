@@ -69,6 +69,8 @@ class DailyReport:
     total_reasoning_tokens: int
     estimated_cost_usd: float
     contextpilot_log_events: int
+    contextpilot_telemetry_events: int
+    contextpilot_savings_source: str
     contextpilot_chars_saved: int
     contextpilot_tokens_saved: int
     estimated_input_token_reduction_pct: float
@@ -193,25 +195,86 @@ def parse_contextpilot_savings(log_path: Path, *, since_hours: int) -> tuple[int
     return events, chars, tokens
 
 
-def build_report(metrics: Iterable[SessionMetric], *, date: str, since_hours: int, log_stats: tuple[int, int, int]) -> DailyReport:
+def parse_contextpilot_telemetry(telemetry_path: Path, *, since_hours: int) -> tuple[int, int, int]:
+    """Aggregate the plugin's metadata-only telemetry file.
+
+    Returns (events, chars_saved, tokens_saved). The file is JSON-lines, one
+    numeric record per saved turn; it never contains message content, prompts,
+    or tool payloads, so we only read numeric counters here.
+    """
+    if not telemetry_path or not telemetry_path.exists():
+        return 0, 0, 0
+    cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - since_hours * 3600
+
+    events = 0
+    chars = 0
+    tokens = 0
+    with telemetry_path.open("r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            ts = record.get("ts")
+            if isinstance(ts, (int, float)) and ts < cutoff:
+                continue
+            cs = record.get("chars_saved")
+            if not isinstance(cs, (int, float)):
+                continue
+            saved_tokens = record.get("tokens_saved")
+            events += 1
+            chars += int(cs)
+            tokens += int(saved_tokens) if isinstance(saved_tokens, (int, float)) else int(cs) // 4
+    return events, chars, tokens
+
+
+def build_report(
+    metrics: Iterable[SessionMetric],
+    *,
+    date: str,
+    since_hours: int,
+    log_stats: tuple[int, int, int],
+    telemetry_stats: tuple[int, int, int] = (0, 0, 0),
+) -> DailyReport:
     rows = list(metrics)
     source_counts: dict[str, int] = {}
     for row in rows:
         source_counts[row.source or "unknown"] = source_counts.get(row.source or "unknown", 0) + 1
 
     total_input = sum(r.input_tokens for r in rows)
-    events, saved_chars, saved_tokens = log_stats
+    log_events, log_chars, log_tokens = log_stats
+    tel_events, tel_chars, tel_tokens = telemetry_stats
+
+    # Prefer the local telemetry file when present: it is the authoritative,
+    # log-independent source. Logs are a fallback and are NOT summed on top
+    # (both record the same turns, so summing would double-count).
+    if tel_events > 0:
+        events, saved_chars, saved_tokens = tel_events, tel_chars, tel_tokens
+        savings_source = "telemetry"
+    else:
+        events, saved_chars, saved_tokens = log_events, log_chars, log_tokens
+        savings_source = "gateway-log"
+
     denominator = total_input + saved_tokens
     reduction = (saved_tokens / denominator * 100.0) if denominator else 0.0
 
     notes: list[str] = [
         "metadata-only: did not read messages.content, sessions.system_prompt, reasoning, or tool payloads",
         "accuracy gate is observational here; apply code/config changes only after separate golden-eval pass",
+        f"contextpilot savings source: {savings_source} (telemetry={tel_events} events, log={log_events} events)",
     ]
     if not rows:
         notes.append("no sessions observed in the selected window")
-    if events == 0:
-        notes.append("no ContextPilot savings log lines observed; gateway may need restart after enabling plugin")
+    if tel_events == 0 and log_events == 0:
+        notes.append(
+            "no ContextPilot savings observed via telemetry or logs; "
+            "gateway may need restart after enabling plugin"
+        )
 
     return DailyReport(
         date=date,
@@ -226,7 +289,9 @@ def build_report(metrics: Iterable[SessionMetric], *, date: str, since_hours: in
         total_cache_write_tokens=sum(r.cache_write_tokens for r in rows),
         total_reasoning_tokens=sum(r.reasoning_tokens for r in rows),
         estimated_cost_usd=sum(r.estimated_cost_usd or 0.0 for r in rows),
-        contextpilot_log_events=events,
+        contextpilot_log_events=log_events,
+        contextpilot_telemetry_events=tel_events,
+        contextpilot_savings_source=savings_source,
         contextpilot_chars_saved=saved_chars,
         contextpilot_tokens_saved=saved_tokens,
         estimated_input_token_reduction_pct=round(reduction, 2),
@@ -254,6 +319,8 @@ def write_report(report: DailyReport, out_dir: Path) -> tuple[Path, Path]:
         f"- Output tokens: {report.total_output_tokens}",
         f"- Tool calls: {report.total_tool_calls}",
         f"- ContextPilot saved: ~{report.contextpilot_tokens_saved} tokens ({report.contextpilot_chars_saved} chars)",
+        f"- ContextPilot savings source: {report.contextpilot_savings_source} "
+        f"(telemetry events={report.contextpilot_telemetry_events}, log events={report.contextpilot_log_events})",
         f"- Estimated input-token reduction: {report.estimated_input_token_reduction_pct}%",
         f"- Estimated cost: ${report.estimated_cost_usd:.4f}",
         "",
@@ -278,6 +345,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-db", type=Path, default=Path.home() / ".hermes" / "state.db")
     parser.add_argument("--gateway-log", type=Path, default=Path.home() / ".hermes" / "logs" / "gateway.log")
+    parser.add_argument(
+        "--telemetry-file",
+        type=Path,
+        default=Path.home() / ".hermes" / "contextpilot" / "telemetry.jsonl",
+        help="metadata-only ContextPilot telemetry file (preferred over gateway log)",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path.home() / "contextpilot" / "reports")
     parser.add_argument("--since-hours", type=int, default=24)
     parser.add_argument("--salt", default="contextpilot-hermes-monitor-v1", help="salt for stable per-install session hashes")
@@ -289,7 +362,14 @@ def main() -> int:
 
     metrics = load_session_metrics(args.state_db, since_hours=args.since_hours, salt=args.salt)
     log_stats = parse_contextpilot_savings(args.gateway_log, since_hours=args.since_hours)
-    report = build_report(metrics, date=args.date, since_hours=args.since_hours, log_stats=log_stats)
+    telemetry_stats = parse_contextpilot_telemetry(args.telemetry_file, since_hours=args.since_hours)
+    report = build_report(
+        metrics,
+        date=args.date,
+        since_hours=args.since_hours,
+        log_stats=log_stats,
+        telemetry_stats=telemetry_stats,
+    )
     json_path, md_path = write_report(report, args.out_dir)
     print(json.dumps({"ok": True, "json": str(json_path), "markdown": str(md_path)}, ensure_ascii=False))
     return 0

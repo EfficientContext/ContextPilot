@@ -184,3 +184,103 @@ def test_prefix_replay_matches_original_and_reuses_optimized_prefix(monkeypatch)
     assert second_out[1]["content"] == "DEDUPED TOOL RESULT"
     assert second_out[2]["content"] == "now summarize it"
     assert calls[-1][1]["content"] == "DEDUPED TOOL RESULT"
+
+
+def _saving_dedup(body, **kwargs):
+    saved = 0
+    for msg in body["messages"]:
+        if msg.get("role") == "tool" and msg.get("content") == "FULL TOOL RESULT":
+            msg["content"] = "REF"
+            saved += len("FULL TOOL RESULT") - len("REF")
+    return SimpleNamespace(
+        chars_saved=saved,
+        blocks_deduped=1 if saved else 0,
+        blocks_total=1,
+        system_blocks_matched=0,
+    )
+
+
+def test_optimize_writes_metadata_only_telemetry_line(monkeypatch, tmp_path):
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _saving_dedup)
+
+    telemetry = tmp_path / "nested" / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    engine = module.ContextPilotEngine()
+    engine.on_session_start("session-XYZ", model="test-model")
+
+    secret = "SUPER SECRET USER PROMPT — must never be written to telemetry"
+    messages = [
+        {"role": "user", "content": secret},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+    ]
+    engine.optimize_api_messages(messages)
+
+    assert telemetry.exists()
+    lines = [l for l in telemetry.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+
+    # Numeric/metadata only — savings recorded.
+    assert record["chars_saved"] > 0
+    assert record["tokens_saved"] == record["chars_saved"] // 4
+    assert record["turn"] == 1
+    assert record["session_hash"] == module._hash_text("session-XYZ")
+    assert "session" not in record
+    assert isinstance(record["ts"], (int, float))
+
+    # Privacy: no message/prompt/tool-payload content may appear anywhere.
+    raw = telemetry.read_text(encoding="utf-8")
+    assert secret not in raw
+    assert "FULL TOOL RESULT" not in raw
+    forbidden = {"content", "messages", "prompt", "system_prompt", "text", "tool_calls"}
+    assert forbidden.isdisjoint(record.keys())
+
+
+def test_optimize_telemetry_skipped_when_nothing_saved(monkeypatch, tmp_path):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(
+        module,
+        "dedup_chat_completions",
+        lambda body, **kw: SimpleNamespace(
+            chars_saved=0, blocks_deduped=0, blocks_total=0, system_blocks_matched=0
+        ),
+    )
+
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    engine = module.ContextPilotEngine()
+    engine.optimize_api_messages([{"role": "user", "content": "hello"}])
+
+    # No save -> no telemetry noise.
+    assert not telemetry.exists()
+
+
+def test_optimize_survives_unwritable_telemetry_path(monkeypatch, tmp_path):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _saving_dedup)
+
+    # Point telemetry at a path whose parent is an existing *file*, so mkdir fails.
+    blocker = tmp_path / "iam_a_file"
+    blocker.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(blocker / "telemetry.jsonl"))
+
+    engine = module.ContextPilotEngine()
+    messages = [
+        {"role": "user", "content": "read file"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+    ]
+    # Must not raise despite the unwritable telemetry destination.
+    out, stats = engine.optimize_api_messages(messages)
+    assert out[1]["content"] == "REF"
+    assert stats["chars_saved"] > 0

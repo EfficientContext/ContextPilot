@@ -5,7 +5,8 @@ This is an opt-in, metadata-only monitor for testing ContextPilot inside Hermes 
 ## What it reads
 
 - `~/.hermes/state.db:sessions` metadata only: token counts, tool/API call counts, source, estimated cost, timestamps.
-- `~/.hermes/logs/gateway.log` lines containing ContextPilot savings summaries.
+- `~/.hermes/contextpilot/telemetry.jsonl` metadata-only ContextPilot savings records (preferred source).
+- `~/.hermes/logs/gateway.log` lines containing ContextPilot savings summaries (fallback source).
 
 It intentionally does **not** read:
 
@@ -22,8 +23,11 @@ Session ids are salted SHA-256 hashes in reports.
 ```bash
 python scripts/hermes_contextpilot_monitor.py \
   --out-dir ~/contextpilot/reports \
-  --since-hours 24
+  --since-hours 24 \
+  --telemetry-file ~/.hermes/contextpilot/telemetry.jsonl
 ```
+
+The telemetry file is written by the ContextPilot Hermes plugin when savings occur. Set `CONTEXTPILOT_DISABLE_TELEMETRY=1` to disable writes, or `CONTEXTPILOT_TELEMETRY_FILE=/path/to/file.jsonl` to override the location.
 
 Outputs:
 

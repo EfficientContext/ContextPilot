@@ -232,6 +232,138 @@ def _rebuild_json_content(original: str, key: str, new_text: str) -> str:
         return original
 
 
+def _account(result: DedupResult, original_len: int, new_len: int) -> None:
+    """Roll a single field's before/after lengths into the aggregate result."""
+    result.chars_before += original_len
+    result.chars_after += new_len
+    result.chars_saved += original_len - new_len
+
+
+def _register_blocks_only(
+    text: Optional[str],
+    seen_blocks: Dict[str, Tuple[int, str, int]],
+    msg_idx: int,
+    label: str,
+    result: DedupResult,
+    min_block_chars: int,
+    chunk_modulus: int,
+) -> None:
+    """Register a message's blocks as dedup *sources* without modifying it.
+
+    Used for the canonical first copy — e.g. the system / skill prompt — which
+    may seed references for later duplicates but must itself stay verbatim.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return
+    for block_idx, block in enumerate(_content_defined_chunking(text, chunk_modulus)):
+        if len(block.strip()) < min_block_chars:
+            continue
+        result.blocks_total += 1
+        h = _hash_block(block)
+        if h not in seen_blocks:
+            seen_blocks[h] = (msg_idx, label, block_idx)
+
+
+def _dedup_string_field(
+    text: str,
+    seen_blocks: Dict[str, Tuple[int, str, int]],
+    msg_idx: int,
+    label: str,
+    result: DedupResult,
+    min_block_chars: int,
+    chunk_modulus: int,
+) -> Optional[str]:
+    """Dedup one plain-text field against earlier blocks in the same payload."""
+    new_text = _dedup_text(
+        text, seen_blocks, msg_idx, label, result, min_block_chars, chunk_modulus
+    )
+    if new_text is not None:
+        _account(result, len(text), len(new_text))
+        logger.info(
+            "Block dedup: msg[%d] %s — saved %d chars",
+            msg_idx,
+            label,
+            len(text) - len(new_text),
+        )
+    return new_text
+
+
+def _dedup_assistant_message(
+    msg: dict,
+    idx: int,
+    seen_blocks: Dict[str, Tuple[int, str, int]],
+    result: DedupResult,
+    min_block_chars: int,
+    min_content_chars: int,
+    chunk_modulus: int,
+) -> None:
+    """Dedup assistant content (string or list-of-text-blocks) against earlier blocks."""
+    raw = msg.get("content", "")
+    if isinstance(raw, str):
+        if len(raw) < min_content_chars:
+            return
+        new_content = _dedup_string_field(
+            raw, seen_blocks, idx, "assistant message", result,
+            min_block_chars, chunk_modulus,
+        )
+        if new_content is not None:
+            msg["content"] = new_content
+    elif isinstance(raw, list):
+        # OpenClaw sends [{type: "text", text: "..."}, ...]
+        for block in raw:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            t = block.get("text", "")
+            if not isinstance(t, str) or len(t) < min_content_chars:
+                continue
+            new_text = _dedup_string_field(
+                t, seen_blocks, idx, "assistant message", result,
+                min_block_chars, chunk_modulus,
+            )
+            if new_text is not None:
+                block["text"] = new_text
+
+
+def _dedup_tool_message(
+    msg: dict,
+    idx: int,
+    tool_names: Dict[str, str],
+    seen_blocks: Dict[str, Tuple[int, str, int]],
+    result: DedupResult,
+    min_block_chars: int,
+    min_content_chars: int,
+    chunk_modulus: int,
+) -> None:
+    """Dedup a tool result (JSON-aware) against earlier blocks in the payload."""
+    content = msg.get("content", "")
+    if not isinstance(content, str) or len(content) < min_content_chars:
+        return
+
+    tc_id = msg.get("tool_call_id", "")
+    fn_name = tool_names.get(tc_id, msg.get("name", "")) or "tool"
+
+    # Extract text from JSON-wrapped tool results for proper chunking.
+    extracted_text, json_key = _extract_text_for_dedup(content)
+    dedup_target = extracted_text if extracted_text else content
+
+    new_content = _dedup_text(
+        dedup_target, seen_blocks, idx, fn_name, result, min_block_chars, chunk_modulus
+    )
+    if new_content is None:
+        return
+
+    original_len = len(content)
+    if json_key and extracted_text:
+        msg["content"] = _rebuild_json_content(content, json_key, new_content)
+    else:
+        msg["content"] = new_content
+    new_len = len(msg["content"])
+    _account(result, original_len, new_len)
+    logger.info(
+        "Block dedup: msg[%d] %s — saved %d chars", idx, fn_name, original_len - new_len
+    )
+
+
 def dedup_chat_completions(
     body: dict,
     min_block_chars: int = MIN_BLOCK_CHARS,
@@ -239,148 +371,69 @@ def dedup_chat_completions(
     chunk_modulus: int = CHUNK_MODULUS,
     system_content: Optional[str] = None,
 ) -> DedupResult:
+    """Exact-block dedup across ALL roles within a single chat payload.
+
+    Walks messages in document order with a shared block table. The first
+    (earliest) occurrence of any block — across system/skill prompt, user,
+    assistant, and tool messages — keeps its full text; later EXACT occurrences
+    anywhere in the *same* payload are replaced by a short reference pointing to
+    the earlier copy ("see above"). Only exact hash matches are ever replaced;
+    references only ever point backward, to a block in this same payload.
+
+    The system / skill prompt is treated as the canonical source: its blocks are
+    registered but it is never itself shortened.
+    """
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
         return DedupResult()
 
     tool_names = _build_tool_name_map_openai(messages)
     seen_blocks: Dict[str, Tuple[int, str, int]] = {}
-    pre_seen = _prescan_system_blocks(system_content, min_block_chars, chunk_modulus)
     result = DedupResult()
 
+    # Seed an externally-supplied system / skill prompt (e.g. one not present as
+    # a message in `messages`) as the canonical first copy. Registered at -1 so
+    # later matches are attributed as system-block hits.
+    pre_seen = _prescan_system_blocks(system_content, min_block_chars, chunk_modulus)
+    for h, origin in pre_seen.items():
+        seen_blocks.setdefault(h, origin)
+
     for idx, msg in enumerate(messages):
-        if not isinstance(msg, dict) or msg.get("role") != "tool":
+        if not isinstance(msg, dict):
             continue
+        role = msg.get("role")
 
-        content = msg.get("content", "")
-        if not isinstance(content, str) or len(content) < min_content_chars:
-            continue
-
-        tc_id = msg.get("tool_call_id", "")
-        fn_name = tool_names.get(tc_id, msg.get("name", "")) or "tool"
-
-        # Extract text from JSON-wrapped tool results for proper chunking
-        extracted_text, json_key = _extract_text_for_dedup(content)
-        dedup_target = extracted_text if extracted_text else content
-
-        new_content = _dedup_text(
-            dedup_target,
-            seen_blocks,
-            idx,
-            fn_name,
-            result,
-            min_block_chars,
-            chunk_modulus,
-            pre_seen=pre_seen,
-        )
-        if new_content is not None:
-            if json_key and extracted_text:
-                # Rebuild the JSON with shortened content field
-                original_len = len(content)
-                msg["content"] = _rebuild_json_content(content, json_key, new_content)
-                new_len = len(msg["content"])
-            else:
-                original_len = len(content)
-                msg["content"] = new_content
-                new_len = len(new_content)
-            result.chars_before += original_len
-            result.chars_after += new_len
-            result.chars_saved += original_len - new_len
-            logger.info(
-                f"Block dedup: msg[{idx}] {fn_name} — "
-                f"saved {original_len - new_len:,} chars"
+        if role == "system":
+            # Canonical source — register but never shorten. Use -1 so downstream
+            # matches count as system-block hits, consistent with `pre_seen`.
+            _register_blocks_only(
+                msg.get("content", ""), seen_blocks, -1, "system prompt",
+                result, min_block_chars, chunk_modulus,
             )
 
-    _dedup_assistant_code_blocks(
-        messages,
-        seen_blocks,
-        result,
-        min_block_chars,
-        min_content_chars,
-        chunk_modulus,
-        pre_seen=pre_seen,
-    )
+        elif role == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) >= min_content_chars:
+                new_content = _dedup_string_field(
+                    content, seen_blocks, idx, "user message", result,
+                    min_block_chars, chunk_modulus,
+                )
+                if new_content is not None:
+                    msg["content"] = new_content
+
+        elif role == "assistant":
+            _dedup_assistant_message(
+                msg, idx, seen_blocks, result,
+                min_block_chars, min_content_chars, chunk_modulus,
+            )
+
+        elif role == "tool":
+            _dedup_tool_message(
+                msg, idx, tool_names, seen_blocks, result,
+                min_block_chars, min_content_chars, chunk_modulus,
+            )
 
     return result
-
-
-_CODE_BLOCK_RE = re.compile(r"(```[\w]*\n)(.*?)(```)", re.DOTALL)
-
-
-def _dedup_assistant_code_blocks(
-    messages: list,
-    seen_blocks: Dict[str, Tuple[int, str, int]],
-    result: DedupResult,
-    min_block_chars: int,
-    min_content_chars: int,
-    chunk_modulus: int,
-    pre_seen: Optional[Dict[str, Tuple[int, str, int]]] = None,
-) -> None:
-    for idx, msg in enumerate(messages):
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            continue
-        raw_content = msg.get("content", "")
-
-        # Handle both string and list (content blocks) formats
-        is_list_content = False
-        text_block_idx = -1
-        if isinstance(raw_content, str):
-            content = raw_content
-        elif isinstance(raw_content, list):
-            # OpenClaw sends [{type: "text", text: "..."}, ...]
-            # Find the text block that contains code
-            content = ""
-            for bi, block in enumerate(raw_content):
-                if isinstance(block, dict) and block.get("type") == "text":
-                    t = block.get("text", "")
-                    if "```" in t and len(t) > len(content):
-                        content = t
-                        text_block_idx = bi
-                        is_list_content = True
-            if not content:
-                continue
-        else:
-            continue
-
-        if len(content) < min_content_chars:
-            continue
-
-        code_blocks = list(_CODE_BLOCK_RE.finditer(content))
-        if not code_blocks:
-            continue
-
-        modified = False
-        new_content = content
-
-        for match in reversed(code_blocks):
-            code = match.group(2)
-            if len(code.strip()) < min_block_chars:
-                continue
-
-            new_code = _dedup_text(
-                code,
-                seen_blocks,
-                idx,
-                "assistant",
-                result,
-                min_block_chars,
-                chunk_modulus,
-                pre_seen=pre_seen,
-            )
-            if new_code is not None:
-                start, end = match.start(2), match.end(2)
-                original_len = end - start
-                new_content = new_content[:start] + new_code + new_content[end:]
-                result.chars_before += original_len
-                result.chars_after += len(new_code)
-                result.chars_saved += original_len - len(new_code)
-                modified = True
-
-        if modified:
-            if is_list_content and text_block_idx >= 0:
-                msg["content"][text_block_idx]["text"] = new_content
-            else:
-                msg["content"] = new_content
 
 
 def dedup_responses_api(

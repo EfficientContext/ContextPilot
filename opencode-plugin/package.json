@@ -1,0 +1,33 @@
+{
+  "name": "@contextpilot-ai/opencode",
+  "version": "0.1.0",
+  "description": "ContextPilot plugin for OpenCode — per-turn context optimization via deduplication and reordering for KV cache sharing.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "ContextPilot Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EfficientContext/ContextPilot.git",
+    "directory": "opencode-plugin"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "contextpilot",
+    "kv-cache",
+    "context-reuse",
+    "prompt-cache",
+    "dedup",
+    "llm"
+  ],
+  "main": "./src/index.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src/"
+  ],
+  "peerDependencies": {
+    "@opencode-ai/plugin": "*"
+  }
+}

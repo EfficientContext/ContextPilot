@@ -53,6 +53,39 @@ Then read the generated Markdown report for today and send a short Chinese summa
 )
 ```
 
+## Quick savings summary (lightweight)
+
+If you just want to answer "how many tokens did ContextPilot save?", use the
+lightweight `scripts/contextpilot_savings.py` command instead of this monitor or
+the analyzer below. It reads **only** the metadata-only telemetry file, imports
+no Hermes internals, and prints a one-screen summary:
+
+```bash
+python scripts/contextpilot_savings.py            # last 24h
+python scripts/contextpilot_savings.py --all-time # everything
+python scripts/contextpilot_savings.py --format json
+# or, after Hermes plugin install:
+python ~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py
+```
+
+It reports events, chars saved, estimated tokens saved, the window, and average
+tokens per event. This is the right tool for ordinary users; the monitor in this
+guide (which also reads `state.db` metadata) and the content-aware analyzer below
+are for deeper investigation.
+
+### Ask Hermes for savings
+
+To let users get this summary without typing the command, the repo ships a
+narrow, read-only Hermes skill at `skills/contextpilot-savings/SKILL.md`. Copy
+or install it into your Hermes skills, then ask Hermes something like "show
+ContextPilot token savings" or "how much did ContextPilot save all time?".
+Hermes locates `scripts/contextpilot_savings.py` (in the repo/plugin checkout or
+at `~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py`), runs it
+with the right `--since-hours` / `--all-time` / `--format json` options, and
+summarizes the output. The skill is observe-only — it reads only the
+metadata-only telemetry through this script and makes no code, config, or
+scheduling changes.
+
 ## Opportunity scanning
 
 `scripts/analyze_hermes_context_opportunities.py` is a companion scanner meant

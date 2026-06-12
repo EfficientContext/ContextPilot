@@ -97,6 +97,15 @@ Hermes ships with `ContextCompressor`, a threshold-based LLM-summarization engin
 
 ContextPilot runs *before* the threshold-based compressor, reducing how often the expensive summarization path is hit.
 
+## Self-evolve skill
+
+For a guided, safety-gated loop that installs ContextPilot, monitors its real
+token savings, scans for context-reduction opportunities, and proposes
+improvements (without auto-applying risky changes), use the bundled Hermes
+skill at `skills/contextpilot-self-evolve/SKILL.md`. See
+[`hermes-monitor.md`](./hermes-monitor.md#self-evolve-skill-hermes) for how to
+copy/load and invoke it.
+
 ## Troubleshooting
 
 **Plugin not discovered after install.** Check `~/.hermes/plugins/ContextPilot/plugin.yaml` exists and contains `type: context_engine`. Run `hermes plugins list` to confirm.

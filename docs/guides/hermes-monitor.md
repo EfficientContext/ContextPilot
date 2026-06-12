@@ -67,7 +67,8 @@ It surfaces concrete token-reduction opportunities:
 - repeated line/block fingerprints (shared boilerplate across outputs),
 - large tool outputs grouped by `tool_name`,
 - heavy sessions by input-token / tool-call / message counts (hashed ids),
-- ContextPilot telemetry coverage and savings ratios.
+- ContextPilot telemetry coverage and savings ratios,
+- **Worker Context Routing shadow labels** for future router training/eval.
 
 ### LLM-bound block redundancy
 
@@ -92,6 +93,28 @@ aggregated. The report then shows:
   observed in 2+ block types (e.g. the same chunk shipped from a skill/system
   prompt *and* a tool result *and* a user prompt). Reported only as a hash plus
   per-type counters — never the raw text.
+
+### Worker Context Routing shadow mode
+
+The analyzer now includes a **Worker Context Routing — shadow mode** section by
+default. This is P0 data collection only: it never drops, summarizes, or mutates
+context. It fingerprints each LLM-bound block and emits only low-cardinality
+labels/counters such as:
+
+- `policy_must_keep` for user/system/skill prompts and explicit safety /
+  acceptance constraints,
+- `direct_task_hint` for short actionable task/error hints,
+- `likely_relevant` for conservative default-keep blocks,
+- `summarizable_candidate` / `likely_drop_candidate` for large or repeated
+  tool-like blocks that a future router might route away. Large diagnostic logs
+  containing `error:` / `failed` / `traceback` cues are still only advisory
+  summarization candidates, not must-drop decisions.
+
+The report includes estimated advisory candidate tokens and salted candidate
+block hashes. These are **not realized savings** and must be treated as training
+/ evaluation data for a future high-recall router. Use
+`--disable-worker-routing-shadow` only when you want to omit this section from a
+scan.
 
 Use `--all-sessions` to ignore the `--since-hours` window and scan **all**
 non-archived sessions and active messages (useful for a one-shot, whole-history

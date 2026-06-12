@@ -134,6 +134,131 @@ class CrossTypeBlockGroup:
     est_wasted_tokens: int               # (occurrences - 1) * est_tokens
 
 
+# ---------------------------------------------------------------------------
+# Worker Context Routing — SHADOW MODE (P0 data collection only)
+# ---------------------------------------------------------------------------
+# Low-cardinality router labels. These are the *training/eval* labels a future
+# small worker-context router would predict. P0 is data-collection only: nothing
+# here ever drops, summarizes, or mutates context — it only classifies blocks
+# and emits aggregate counters + salted hashes so the labels can be evaluated
+# offline before any online pruning is built.
+ROUTER_LABELS = (
+    "policy_must_keep",        # never droppable (user/system/skill/safety constraints)
+    "direct_task_hint",        # short actionable task signal — keep
+    "likely_relevant",         # default keep; not obviously prunable
+    "summarizable_candidate",  # large single block that *might* be summarized later
+    "likely_drop_candidate",   # large/repeated tool-like block, candidate to route away
+)
+
+# Labels whose blocks a future router might safely route away. Used only to
+# tally *advisory* candidate tokens; P0 never acts on them.
+_ROUTABLE_LABELS = ("summarizable_candidate", "likely_drop_candidate")
+
+# Block-type priority when one fingerprint spans multiple origins: the most
+# "must-keep" origin wins, so cross-origin blocks are classified conservatively.
+_TYPE_KEEP_PRIORITY = {
+    "user_prompt": 5,
+    "system_prompt": 4,
+    "skill_prompt": 4,
+    "assistant_context": 2,
+    "tool_result": 1,
+    "unknown": 0,
+}
+
+# Cues marking content that must NEVER be dropped even from a tool/assistant
+# block: explicit safety / acceptance / hard-constraint language. Matching here
+# is intentionally generous — over-keeping is the safe direction for P0.
+_SAFETY_CONSTRAINT_CUES = (
+    "must not",
+    "must never",
+    "never drop",
+    "do not delete",
+    "do not remove",
+    "do not modify",
+    "acceptance criteria",
+    "acceptance test",
+    "safety",
+    "must keep",
+    "you must",
+    "required:",
+    "constraint",
+    "forbidden",
+    "policy",
+)
+
+# Cues marking a short, actionable task hint worth keeping verbatim.
+_TASK_HINT_CUES = (
+    "todo",
+    "next step",
+    "error:",
+    "traceback",
+    "failed",
+    "fixme",
+    "task:",
+    "goal:",
+    "implement",
+    "reproduce",
+)
+
+
+@dataclass
+class RouterLabelCount:
+    """Aggregate over all blocks assigned one router label."""
+
+    route_label: str
+    block_count: int            # distinct fingerprints with this label
+    occurrence_count: int       # total occurrences across the window
+    total_est_tokens: int       # est tokens these blocks occupy (occ * est)
+    est_candidate_tokens: int   # ADVISORY routable tokens (0 unless routable)
+
+
+@dataclass
+class RouterReasonCount:
+    """Aggregate keyed by (block_type, route_label, reason_code)."""
+
+    block_type: str
+    route_label: str
+    reason_code: str
+    block_count: int
+    occurrence_count: int
+    total_est_tokens: int
+    est_candidate_tokens: int
+
+
+@dataclass
+class RouterCandidateBlock:
+    """A single routable-candidate fingerprint (salted hash + counters only)."""
+
+    block_hash: str
+    block_type: str
+    route_label: str
+    reason_code: str
+    occurrences: int
+    char_length: int
+    est_tokens: int
+    est_candidate_tokens: int   # ADVISORY upper bound only
+
+
+@dataclass
+class WorkerRoutingShadow:
+    """Shadow-mode worker-context routing report (P0: data collection only)."""
+
+    enabled: bool
+    item_count: int                 # LLM-bound items classified
+    classified_block_count: int     # distinct fingerprints classified
+    total_occurrences: int
+    must_keep_block_count: int
+    must_keep_occurrence_count: int
+    est_must_keep_tokens: int
+    est_candidate_tokens_total: int          # ADVISORY routable ceiling
+    est_drop_candidate_tokens: int           # ADVISORY
+    est_summarizable_candidate_tokens: int   # ADVISORY
+    label_counts: list[RouterLabelCount]
+    reason_counts: list[RouterReasonCount]
+    top_candidate_blocks: list[RouterCandidateBlock]
+    notes: list[str] = field(default_factory=list)
+
+
 @dataclass
 class ToolSizeStat:
     tool_name: str
@@ -189,6 +314,8 @@ class OpportunityReport:
     llm_block_types: list[BlockTypeStat]
     cross_type_block_groups: list[CrossTypeBlockGroup]
     cross_type_wasted_tokens: int
+    # Worker Context Routing shadow mode (P0 data collection; never prunes).
+    worker_routing: WorkerRoutingShadow
     notes: list[str] = field(default_factory=list)
 
 
@@ -760,6 +887,247 @@ def analyze_llm_bound_blocks(
     return block_type_stats, cross[:top_n]
 
 
+def classify_router_label(
+    block_type: str,
+    content: str,
+    *,
+    occurrences: int,
+    large_output_chars: int,
+    min_repeat: int,
+) -> tuple[str, str]:
+    """Heuristically assign a worker-routing label + reason code to a block.
+
+    Pure P0 heuristic: no ML, no network, no mutation. Operates on in-memory
+    text only and returns two low-cardinality enums (``route_label``,
+    ``reason_code``) -- never the text. The bias is deliberately conservative:
+    when in doubt, keep. Anything that is a user prompt, a system/skill prompt,
+    or carries explicit safety/acceptance-constraint language is pinned to
+    ``policy_must_keep`` and can never become a routable candidate.
+    """
+    low = content.lower()
+
+    # 1. Never-drop by origin: prompts the user/system/skills authored.
+    if block_type == "user_prompt":
+        return "policy_must_keep", "user_prompt_never_drop"
+    if block_type in ("system_prompt", "skill_prompt"):
+        return "policy_must_keep", "system_or_skill_constraint_never_drop"
+
+    # 2. Never-drop by content: explicit safety / acceptance / hard constraints,
+    #    even inside an assistant or tool block.
+    if any(cue in low for cue in _SAFETY_CONSTRAINT_CUES):
+        return "policy_must_keep", "safety_or_acceptance_constraint"
+
+    char_len = len(content)
+    has_task_hint = any(cue in low for cue in _TASK_HINT_CUES)
+
+    # 3. Short actionable task hints -> keep verbatim. Very large diagnostic
+    #    logs often contain "error:"/"failed"/"traceback"; keep collecting
+    #    them as summarization candidates instead of pinning the whole log.
+    if has_task_hint and char_len < large_output_chars:
+        return "direct_task_hint", "actionable_task_signal"
+
+    # 4. Bulky / repeated tool-like material -> routable candidates (advisory).
+    if block_type in ("tool_result", "assistant_context", "unknown"):
+        if has_task_hint and char_len >= large_output_chars:
+            return "summarizable_candidate", "large_actionable_tool_block"
+        is_large = char_len >= large_output_chars
+        is_repeated = occurrences >= min_repeat
+        if is_large and is_repeated:
+            return "likely_drop_candidate", "large_repeated_tool_block"
+        if is_repeated:
+            return "likely_drop_candidate", "repeated_tool_block"
+        if is_large:
+            return "summarizable_candidate", "large_single_tool_block"
+
+    # 5. Everything else: keep by default.
+    return "likely_relevant", "default_keep"
+
+
+def analyze_worker_routing_shadow(
+    contents: Iterable[_LLMContent],
+    *,
+    salt: str,
+    large_output_chars: int,
+    min_repeat: int,
+    top_n: int,
+    enabled: bool = True,
+) -> WorkerRoutingShadow:
+    """Shadow-mode worker-context routing classifier (P0: data collection only).
+
+    Fingerprints each LLM-bound item, assigns a conservative router label, and
+    returns aggregate counters + salted hashes for routable candidates. Emits
+    NO raw text and never mutates/drops context. ``est_candidate_tokens`` is an
+    advisory upper bound on what a *future* router might route away -- not a
+    realized saving.
+    """
+    if not enabled:
+        return WorkerRoutingShadow(
+            enabled=False,
+            item_count=0,
+            classified_block_count=0,
+            total_occurrences=0,
+            must_keep_block_count=0,
+            must_keep_occurrence_count=0,
+            est_must_keep_tokens=0,
+            est_candidate_tokens_total=0,
+            est_drop_candidate_tokens=0,
+            est_summarizable_candidate_tokens=0,
+            label_counts=[],
+            reason_counts=[],
+            top_candidate_blocks=[],
+            notes=["worker-routing shadow analysis disabled via flag"],
+        )
+
+    # Aggregate occurrences per fingerprint, picking the most must-keep origin
+    # when one block spans several block types.
+    agg: dict[str, dict] = {}
+    item_count = 0
+    for item in contents:
+        content = item.content
+        if not content:
+            continue
+        item_count += 1
+        h = _salted_hash(content, salt)
+        bt = item.block_type
+        entry = agg.get(h)
+        if entry is None:
+            agg[h] = {
+                "block_type": bt,
+                "char_length": len(content),
+                "occurrences": 1,
+                "content": content,
+            }
+        else:
+            entry["occurrences"] += 1
+            cur = entry["block_type"]
+            bt_pri = _TYPE_KEEP_PRIORITY.get(bt, 0)
+            cur_pri = _TYPE_KEEP_PRIORITY.get(cur, 0)
+            if bt_pri > cur_pri or (bt_pri == cur_pri and bt < cur):
+                entry["block_type"] = bt
+
+    # Classify each unique fingerprint and roll up counters.
+    label_agg: dict[str, dict] = {}
+    reason_agg: dict[tuple[str, str, str], dict] = {}
+    candidates: list[RouterCandidateBlock] = []
+    must_keep_blocks = 0
+    must_keep_occ = 0
+    est_must_keep_tokens = 0
+    drop_tokens = 0
+    summ_tokens = 0
+
+    for h, entry in agg.items():
+        bt = entry["block_type"]
+        occ = entry["occurrences"]
+        char_len = entry["char_length"]
+        est = _est_tokens(char_len)
+        total_est = est * occ
+        label, reason = classify_router_label(
+            bt,
+            entry["content"],
+            occurrences=occ,
+            large_output_chars=large_output_chars,
+            min_repeat=min_repeat,
+        )
+        candidate_tokens = total_est if label in _ROUTABLE_LABELS else 0
+
+        la = label_agg.setdefault(
+            label,
+            {"block_count": 0, "occ": 0, "total_est": 0, "candidate": 0},
+        )
+        la["block_count"] += 1
+        la["occ"] += occ
+        la["total_est"] += total_est
+        la["candidate"] += candidate_tokens
+
+        ra = reason_agg.setdefault(
+            (bt, label, reason),
+            {"block_count": 0, "occ": 0, "total_est": 0, "candidate": 0},
+        )
+        ra["block_count"] += 1
+        ra["occ"] += occ
+        ra["total_est"] += total_est
+        ra["candidate"] += candidate_tokens
+
+        if label == "policy_must_keep":
+            must_keep_blocks += 1
+            must_keep_occ += occ
+            est_must_keep_tokens += total_est
+        if label == "likely_drop_candidate":
+            drop_tokens += candidate_tokens
+        elif label == "summarizable_candidate":
+            summ_tokens += candidate_tokens
+
+        if candidate_tokens > 0:
+            candidates.append(
+                RouterCandidateBlock(
+                    block_hash=h,
+                    block_type=bt,
+                    route_label=label,
+                    reason_code=reason,
+                    occurrences=occ,
+                    char_length=char_len,
+                    est_tokens=est,
+                    est_candidate_tokens=candidate_tokens,
+                )
+            )
+
+    # Deterministic ordering: label_counts follow the canonical label order;
+    # reason_counts and candidates sort by a stable key.
+    label_counts = [
+        RouterLabelCount(
+            route_label=lbl,
+            block_count=label_agg[lbl]["block_count"],
+            occurrence_count=label_agg[lbl]["occ"],
+            total_est_tokens=label_agg[lbl]["total_est"],
+            est_candidate_tokens=label_agg[lbl]["candidate"],
+        )
+        for lbl in ROUTER_LABELS
+        if lbl in label_agg
+    ]
+    reason_counts = [
+        RouterReasonCount(
+            block_type=bt,
+            route_label=lbl,
+            reason_code=reason,
+            block_count=v["block_count"],
+            occurrence_count=v["occ"],
+            total_est_tokens=v["total_est"],
+            est_candidate_tokens=v["candidate"],
+        )
+        for (bt, lbl, reason), v in sorted(reason_agg.items())
+    ]
+    candidates.sort(
+        key=lambda c: (c.est_candidate_tokens, c.occurrences, c.block_hash),
+        reverse=True,
+    )
+
+    total_occ = sum(e["occurrences"] for e in agg.values())
+    notes = [
+        "SHADOW MODE P0: classification only -- no context was dropped, summarized, or mutated",
+        "route_label/reason_code/block_type are low-cardinality enums; block_hash is a salted SHA-256 fingerprint",
+        "est_candidate_tokens is ADVISORY (an upper bound for a FUTURE router), not a realized saving",
+        "user/system/skill prompts and safety/acceptance constraints are pinned to policy_must_keep and never routable",
+        "classification is conservative: when uncertain, blocks are kept (likely_relevant)",
+    ]
+
+    return WorkerRoutingShadow(
+        enabled=True,
+        item_count=item_count,
+        classified_block_count=len(agg),
+        total_occurrences=total_occ,
+        must_keep_block_count=must_keep_blocks,
+        must_keep_occurrence_count=must_keep_occ,
+        est_must_keep_tokens=est_must_keep_tokens,
+        est_candidate_tokens_total=drop_tokens + summ_tokens,
+        est_drop_candidate_tokens=drop_tokens,
+        est_summarizable_candidate_tokens=summ_tokens,
+        label_counts=label_counts,
+        reason_counts=reason_counts,
+        top_candidate_blocks=candidates[:top_n],
+        notes=notes,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Build + write
 # ---------------------------------------------------------------------------
@@ -779,6 +1147,7 @@ def build_report(
     min_block_repeat: int = DEFAULT_MIN_BLOCK_REPEAT,
     large_output_chars: int = DEFAULT_LARGE_OUTPUT_CHARS,
     top_n: int = DEFAULT_TOP_N,
+    worker_routing_shadow: bool = True,
 ) -> OpportunityReport:
     dups = detect_exact_duplicate_tool_outputs(tool_messages, salt=salt, top_n=top_n)
     blocks = detect_repeated_blocks(
@@ -801,6 +1170,15 @@ def build_report(
         top_n=top_n,
     )
 
+    worker_routing = analyze_worker_routing_shadow(
+        llm_contents,
+        salt=salt,
+        large_output_chars=large_output_chars,
+        min_repeat=min_block_repeat,
+        top_n=top_n,
+        enabled=worker_routing_shadow,
+    )
+
     total_chars = sum(len(m.content) for m in tool_messages)
     dup_wasted = sum(d.est_wasted_tokens for d in dups)
     block_wasted = sum(b.est_wasted_tokens for b in blocks)
@@ -812,6 +1190,7 @@ def build_report(
         "wasted-token figures are heuristic estimates (chars/4); validate before acting",
         "session 'source', 'tool_name', and block_type are emitted verbatim as low-cardinality enums, not raw text",
         "llm-bound scan covers only content sent to the LLM: system/skill prompts, active user/assistant/tool messages",
+        "worker-routing section is SHADOW MODE P0: it labels blocks for a future router but never drops/summarizes context",
     ]
     if all_sessions:
         notes.append("all-sessions mode: time window ignored; scanned all non-archived sessions/active messages")
@@ -841,6 +1220,7 @@ def build_report(
         llm_block_types=block_type_stats,
         cross_type_block_groups=cross_groups,
         cross_type_wasted_tokens=cross_wasted,
+        worker_routing=worker_routing,
         notes=notes,
     )
 
@@ -892,6 +1272,9 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         f"(~{report.cross_type_wasted_tokens} wasted tokens)",
         f"- Telemetry: {t.events} events, ~{t.tokens_saved} tokens saved, "
         f"coverage {t.coverage_ratio_pct}%",
+        f"- Worker routing (shadow): {report.worker_routing.classified_block_count} blocks "
+        f"classified, {report.worker_routing.must_keep_block_count} must-keep, "
+        f"~{report.worker_routing.est_candidate_tokens_total} advisory candidate tokens",
         "",
         "## LLM-bound redundancy by block type",
     ]
@@ -950,6 +1333,51 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         ]
     )
     md.append("")
+    wr = report.worker_routing
+    md.append("## Worker Context Routing — shadow mode (P0, advisory only)")
+    if not wr.enabled:
+        md.append("- disabled")
+    else:
+        md.append(
+            f"- Items classified: {wr.item_count} "
+            f"(distinct fingerprints: {wr.classified_block_count}, "
+            f"occurrences: {wr.total_occurrences})"
+        )
+        md.append(
+            f"- Must-keep: {wr.must_keep_block_count} blocks / "
+            f"{wr.must_keep_occurrence_count} occurrences "
+            f"(~{wr.est_must_keep_tokens} tokens, never routable)"
+        )
+        md.append(
+            f"- Advisory candidate tokens: ~{wr.est_candidate_tokens_total} "
+            f"(drop ~{wr.est_drop_candidate_tokens}, "
+            f"summarize ~{wr.est_summarizable_candidate_tokens}) — NOT a realized saving"
+        )
+        md.append("")
+        md.append("### Router labels")
+        for lc in wr.label_counts:
+            md.append(
+                f"- {lc.route_label}: blocks={lc.block_count} "
+                f"occ={lc.occurrence_count} tokens={lc.total_est_tokens} "
+                f"~candidate={lc.est_candidate_tokens}"
+            )
+        md.append("")
+        md.append("### Reason codes (block_type / label / reason)")
+        for rc in wr.reason_counts:
+            md.append(
+                f"- {rc.block_type} / {rc.route_label} / {rc.reason_code}: "
+                f"blocks={rc.block_count} occ={rc.occurrence_count} "
+                f"tokens={rc.total_est_tokens} ~candidate={rc.est_candidate_tokens}"
+            )
+        md.append("")
+        md.append("### Top routable-candidate blocks (hashed)")
+        for cb in wr.top_candidate_blocks:
+            md.append(
+                f"- `{cb.block_hash}` type={cb.block_type} "
+                f"label={cb.route_label} reason={cb.reason_code} "
+                f"x{cb.occurrences} chars={cb.char_length} ~candidate={cb.est_candidate_tokens}"
+            )
+    md.append("")
     md.append("## Notes")
     for note in report.notes:
         md.append(f"- {note}")
@@ -987,6 +1415,14 @@ def main() -> int:
         "--large-output-chars", type=int, default=DEFAULT_LARGE_OUTPUT_CHARS
     )
     parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N)
+    parser.add_argument(
+        "--disable-worker-routing-shadow",
+        action="store_true",
+        help=(
+            "skip the shadow-mode Worker Context Routing classification "
+            "(P0 data collection; enabled by default, never prunes context)"
+        ),
+    )
     args = parser.parse_args()
 
     if not args.state_db.exists():
@@ -1030,6 +1466,7 @@ def main() -> int:
             min_block_repeat=args.min_block_repeat,
             large_output_chars=args.large_output_chars,
             top_n=args.top_n,
+            worker_routing_shadow=not args.disable_worker_routing_shadow,
         )
         json_path, md_path = write_report(report, args.out_dir)
     except Exception as exc:  # noqa: BLE001 - cron-safe: report class only, no payload

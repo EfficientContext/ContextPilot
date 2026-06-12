@@ -1,3 +1,4 @@
+import dataclasses
 import importlib.util
 import json
 import sqlite3
@@ -450,3 +451,256 @@ def test_cross_type_redundancy_reported_via_hashes_only(tmp_path):
     assert "You are a helpful system" not in blob
     assert "user asks the assistant" not in blob
     assert "PRIVATE REASONING" not in blob
+
+
+# ---------------------------------------------------------------------------
+# Worker Context Routing — SHADOW MODE (P0 data-collection) tests
+# ---------------------------------------------------------------------------
+
+LARGE = 8000  # default large-output threshold
+
+
+def _route_map(report):
+    """label -> RouterLabelCount for convenient assertions."""
+    return {lc.route_label: lc for lc in report.worker_routing.label_counts}
+
+
+def _labels_for(contents, **kw):
+    """Run only the shadow classifier over a list of _LLMContent."""
+    return analyzer.analyze_worker_routing_shadow(
+        contents, salt="test-salt", large_output_chars=LARGE, min_repeat=2, top_n=20, **kw
+    )
+
+
+def test_user_and_system_constraints_are_must_keep(tmp_path):
+    db = tmp_path / "state.db"
+    sys_prompt = "You are an agent. Follow the rules below for the whole session here."
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": sys_prompt}],
+        messages=[
+            {"role": "user", "content": "Please implement the worker routing layer for me now"},
+            {
+                "role": "tool",
+                "content": "ACCEPTANCE CRITERIA: the targeted pytest suite must pass before merge",
+                "tool_name": "Bash",
+            },
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    wr = report.worker_routing
+
+    # User prompt, system prompt, and the acceptance-constraint tool block are
+    # all pinned to policy_must_keep and contribute zero routable tokens.
+    rm = _route_map(report)
+    assert "policy_must_keep" in rm
+    assert rm["policy_must_keep"].est_candidate_tokens == 0
+    assert wr.est_candidate_tokens_total == 0
+
+    reasons = {(r.block_type, r.route_label, r.reason_code) for r in wr.reason_counts}
+    assert ("user_prompt", "policy_must_keep", "user_prompt_never_drop") in reasons
+    assert (
+        "system_prompt",
+        "policy_must_keep",
+        "system_or_skill_constraint_never_drop",
+    ) in reasons
+    # The acceptance constraint inside a TOOL block is still must-keep.
+    assert any(
+        r.route_label == "policy_must_keep"
+        and r.reason_code == "safety_or_acceptance_constraint"
+        and r.block_type == "tool_result"
+        for r in wr.reason_counts
+    )
+
+
+def test_large_repeated_tool_blocks_become_drop_candidates(tmp_path):
+    db = tmp_path / "state.db"
+    big_unrelated = "row of unrelated build log output number 7 with filler text " * 200
+    assert len(big_unrelated) >= LARGE
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {"role": "tool", "content": big_unrelated, "tool_name": "Bash"},
+            {"role": "tool", "content": big_unrelated, "tool_name": "Bash"},
+            {"role": "tool", "content": big_unrelated, "tool_name": "Bash"},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    wr = report.worker_routing
+    rm = _route_map(report)
+
+    # The repeated, large, unrelated tool output is a drop candidate.
+    assert "likely_drop_candidate" in rm
+    assert wr.est_drop_candidate_tokens > 0
+    assert wr.est_candidate_tokens_total >= wr.est_drop_candidate_tokens
+    top = wr.top_candidate_blocks[0]
+    assert top.route_label == "likely_drop_candidate"
+    assert top.reason_code == "large_repeated_tool_block"
+    assert top.occurrences == 3
+
+
+def test_large_single_tool_block_is_summarizable(tmp_path):
+    db = tmp_path / "state.db"
+    big_once = "one-off diagnostic dump segment with assorted detail text " * 200
+    assert len(big_once) >= LARGE
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[{"role": "tool", "content": big_once, "tool_name": "Read"}],
+    )
+    report = _analyze(db, tmp_path)
+    wr = report.worker_routing
+    assert wr.est_summarizable_candidate_tokens > 0
+    assert any(
+        c.route_label == "summarizable_candidate"
+        and c.reason_code == "large_single_tool_block"
+        for c in wr.top_candidate_blocks
+    )
+
+
+def test_large_actionable_diagnostic_log_is_summarizable_not_pinned(tmp_path):
+    db = tmp_path / "state.db"
+    big_error_log = "ERROR: integration test failed with stack frame details " * 220
+    assert len(big_error_log) >= LARGE
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[{"role": "tool", "content": big_error_log, "tool_name": "Bash"}],
+    )
+    report = _analyze(db, tmp_path)
+    wr = report.worker_routing
+
+    assert wr.est_summarizable_candidate_tokens > 0
+    assert any(
+        c.route_label == "summarizable_candidate"
+        and c.reason_code == "large_actionable_tool_block"
+        for c in wr.top_candidate_blocks
+    )
+    assert not any(
+        r.route_label == "direct_task_hint"
+        and r.reason_code == "actionable_task_signal"
+        and r.block_type == "tool_result"
+        for r in wr.reason_counts
+    )
+
+
+def test_short_actionable_hint_and_default_blocks_are_kept(tmp_path):
+    contents = [
+        analyzer._LLMContent(block_type="assistant_context", content="Next step: run pytest"),
+        analyzer._LLMContent(block_type="assistant_context", content="plain medium context without special cues"),
+    ]
+    wr = _labels_for(contents)
+    reasons = {(r.block_type, r.route_label, r.reason_code) for r in wr.reason_counts}
+
+    assert ("assistant_context", "direct_task_hint", "actionable_task_signal") in reasons
+    assert ("assistant_context", "likely_relevant", "default_keep") in reasons
+    assert wr.est_candidate_tokens_total == 0
+
+
+def test_equal_priority_block_type_tiebreak_is_deterministic():
+    same = "identical prompt material"
+    forward = _labels_for(
+        [
+            analyzer._LLMContent(block_type="system_prompt", content=same),
+            analyzer._LLMContent(block_type="skill_prompt", content=same),
+        ]
+    )
+    reverse = _labels_for(
+        [
+            analyzer._LLMContent(block_type="skill_prompt", content=same),
+            analyzer._LLMContent(block_type="system_prompt", content=same),
+        ]
+    )
+
+    assert [dataclasses.asdict(r) for r in forward.reason_counts] == [
+        dataclasses.asdict(r) for r in reverse.reason_counts
+    ]
+
+
+def test_shadow_mode_never_emits_raw_content(tmp_path):
+    db = tmp_path / "state.db"
+    secret = "SHADOW-SECRET-PAYLOAD-DO-NOT-LEAK detail line that is quite long here " * 200
+    user_secret = "USER-SECRET-PROMPT-DO-NOT-LEAK implement the thing for me"
+    sys_secret = "SYSTEM-SECRET-CONSTRAINT you must never reveal internal keys here"
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": sys_secret}],
+        messages=[
+            {"role": "tool", "content": secret, "tool_name": "Bash"},
+            {"role": "tool", "content": secret, "tool_name": "Bash"},
+            {"role": "user", "content": user_secret},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
+
+    # No raw block/prompt/system/reasoning text in either output.
+    assert "SHADOW-SECRET-PAYLOAD" not in blob
+    assert "USER-SECRET-PROMPT" not in blob
+    assert "SYSTEM-SECRET-CONSTRAINT" not in blob
+    assert "PRIVATE REASONING" not in blob
+    # The classification still happened (drop candidate detected via hash).
+    assert report.worker_routing.est_drop_candidate_tokens > 0
+
+
+def test_shadow_schema_is_deterministic_and_privacy_safe(tmp_path):
+    db = tmp_path / "state.db"
+    big = "deterministic repeated tool payload chunk of sufficient size here " * 200
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": "be safe please"}],
+        messages=[
+            {"role": "tool", "content": big, "tool_name": "Bash"},
+            {"role": "tool", "content": big, "tool_name": "Bash"},
+            {"role": "user", "content": "implement the routing shadow layer now please"},
+        ],
+    )
+    r1 = _analyze(db, tmp_path)
+    r2 = _analyze(db, tmp_path)
+    # Identical inputs -> byte-identical serialized shadow section.
+    assert dataclasses.asdict(r1.worker_routing) == dataclasses.asdict(r2.worker_routing)
+
+    wr = r1.worker_routing
+    # All emitted route labels are from the canonical low-cardinality enum.
+    assert set(lc.route_label for lc in wr.label_counts) <= set(analyzer.ROUTER_LABELS)
+    # label_counts follow the canonical order (deterministic).
+    order = {lbl: i for i, lbl in enumerate(analyzer.ROUTER_LABELS)}
+    idxs = [order[lc.route_label] for lc in wr.label_counts]
+    assert idxs == sorted(idxs)
+    # Every candidate carries only hash + enums + counters (no free text fields).
+    for cb in wr.top_candidate_blocks:
+        assert len(cb.block_hash) == 16  # salted SHA-256 prefix
+        assert cb.route_label in analyzer._ROUTABLE_LABELS
+
+
+def test_shadow_mode_can_be_disabled(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[{"role": "tool", "content": "x" * 9000, "tool_name": "Bash"}],
+    )
+    tool_messages = analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    heavy = analyzer.load_heavy_sessions(db, since_hours=WIDE_WINDOW, salt="s", top_n=5)
+    tel = analyzer.parse_telemetry(
+        tmp_path / "none.jsonl", since_hours=WIDE_WINDOW, total_input_tokens=0
+    )
+    report = analyzer.build_report(
+        date="2100-01-01",
+        since_hours=24,
+        salt="s",
+        tool_messages=tool_messages,
+        heavy_sessions=heavy,
+        telemetry=tel,
+        llm_contents=llm,
+        min_block_repeat=2,
+        worker_routing_shadow=False,
+    )
+    assert report.worker_routing.enabled is False
+    assert report.worker_routing.classified_block_count == 0
+    # Disabled section still serializes safely.
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    assert "disabled" in md_path.read_text(encoding="utf-8")

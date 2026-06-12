@@ -704,3 +704,238 @@ def test_shadow_mode_can_be_disabled(tmp_path):
     # Disabled section still serializes safely.
     json_path, md_path = analyzer.write_report(report, tmp_path / "out")
     assert "disabled" in md_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Parent Aggregation Artifacts — SHADOW MODE (P0 telemetry) tests
+# ---------------------------------------------------------------------------
+
+# An artifact body must be >= DEFAULT_MIN_ARTIFACT_CHARS to be a candidate.
+TEST_LOG_ARTIFACT = "pytest session: tests/test_widget.py::test_alpha PASSED\n" * 20
+
+
+def _pa_kinds(report):
+    """artifact_kind -> ArtifactKindStat for convenient assertions."""
+    return {ks.artifact_kind: ks for ks in report.parent_aggregation.by_kind}
+
+
+def test_exact_duplicate_artifacts_group_and_estimate_duplicate_tokens(tmp_path):
+    db = tmp_path / "state.db"
+    assert len(TEST_LOG_ARTIFACT) >= analyzer.DEFAULT_MIN_ARTIFACT_CHARS
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    pa = report.parent_aggregation
+
+    assert pa.enabled is True
+    assert pa.duplicate_group_count == 1
+    grp = pa.top_duplicate_groups[0]
+    assert grp.occurrences == 3
+    assert grp.artifact_kind == "test_log"
+    # Two of the three copies are advisory duplicate tokens.
+    assert grp.est_duplicate_tokens == grp.est_tokens * 2
+    assert pa.est_duplicate_tokens == grp.est_duplicate_tokens
+
+
+def test_near_duplicate_artifacts_do_not_group(tmp_path):
+    db = tmp_path / "state.db"
+    base = "pytest run output line that is sufficiently long to be an artifact body\n" * 8
+    near = base + "X"  # one char different -> different exact hash
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {"role": "tool", "content": base, "tool_name": "Bash"},
+            {"role": "tool", "content": near, "tool_name": "Bash"},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    pa = report.parent_aggregation
+    # Two distinct bodies, neither repeated -> zero duplicate groups.
+    assert pa.artifact_body_count == 2
+    assert pa.duplicate_group_count == 0
+    assert pa.est_duplicate_tokens == 0
+    assert pa.top_duplicate_groups == []
+
+
+def test_provenance_source_type_counts_are_emitted(tmp_path):
+    db = tmp_path / "state.db"
+    # Same exact artifact body shipped from a tool result AND assistant context.
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+            {"role": "assistant", "content": TEST_LOG_ARTIFACT},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    pa = report.parent_aggregation
+    grp = pa.top_duplicate_groups[0]
+
+    spread = {sc.source_type: sc.count for sc in grp.source_type_counts}
+    assert spread == {"assistant_context": 1, "tool_result": 1}
+    # Canonical source chosen deterministically (tie -> alphabetical).
+    assert grp.canonical_source_type == "assistant_context"
+    # Aggregate provenance across all candidates is also emitted.
+    agg = {sc.source_type: sc.count for sc in pa.source_type_counts}
+    assert agg == {"assistant_context": 1, "tool_result": 1}
+
+
+def test_parent_aggregation_excludes_prompt_boilerplate_sources(tmp_path):
+    db = tmp_path / "state.db"
+    prompt_like_artifact = "pytest prompt boilerplate that should not be a parent artifact\n" * 20
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": prompt_like_artifact}],
+        messages=[
+            {"role": "user", "content": prompt_like_artifact},
+            {"role": "system", "content": prompt_like_artifact},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    pa = report.parent_aggregation
+
+    assert pa.item_count == 0
+    assert pa.artifact_body_count == 0
+    assert pa.source_type_counts == []
+    assert pa.top_duplicate_groups == []
+
+
+def test_parent_aggregation_never_emits_raw_content(tmp_path):
+    db = tmp_path / "state.db"
+    secret = "PARENT-AGG-SECRET-ARTIFACT-DO-NOT-LEAK pytest detail line here\n" * 20
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": "be safe"}],
+        messages=[
+            {"role": "tool", "content": secret, "tool_name": "Bash"},
+            {"role": "tool", "content": secret, "tool_name": "Bash"},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
+
+    assert "PARENT-AGG-SECRET-ARTIFACT" not in blob
+    assert "PRIVATE REASONING" not in blob
+    assert "raw-session-id" not in blob
+    # The duplicate was still detected via salted hashing.
+    assert report.parent_aggregation.duplicate_group_count == 1
+    assert report.parent_aggregation.est_duplicate_tokens > 0
+
+
+def test_parent_aggregation_schema_is_deterministic(tmp_path):
+    db = tmp_path / "state.db"
+    diff_artifact = (
+        "diff --git a/foo.py b/foo.py\n@@ -1,4 +1,4 @@\n"
+        "-old line of code here that is long\n+new line of code here that is long\n" * 8
+    )
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+            {"role": "assistant", "content": diff_artifact},
+            {"role": "assistant", "content": diff_artifact},
+        ],
+    )
+    r1 = _analyze(db, tmp_path)
+    r2 = _analyze(db, tmp_path)
+    # Identical inputs -> byte-identical serialized section.
+    assert dataclasses.asdict(r1.parent_aggregation) == dataclasses.asdict(
+        r2.parent_aggregation
+    )
+
+    pa = r1.parent_aggregation
+    # by_kind follows the canonical ARTIFACT_KINDS order (deterministic).
+    order = {k: i for i, k in enumerate(analyzer.ARTIFACT_KINDS)}
+    idxs = [order[ks.artifact_kind] for ks in pa.by_kind]
+    assert idxs == sorted(idxs)
+    # Every emitted kind is from the canonical low-cardinality enum.
+    assert set(order) >= {ks.artifact_kind for ks in pa.by_kind}
+    # Candidates carry only hash + enums + counters; hash is a salted prefix.
+    for g in pa.top_duplicate_groups:
+        assert len(g.content_hash) == 16
+        assert g.artifact_kind in analyzer.ARTIFACT_KINDS
+        assert g.canonical_source_type in analyzer.BLOCK_TYPES
+
+
+def test_classify_artifact_kind_is_deterministic_and_low_cardinality():
+    cases = {
+        "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n": "diff",
+        "Traceback (most recent call last):\n  File x\nValueError: boom": "error_trace",
+        "## Summary\nThe worker aggregated all results successfully here.": "worker_summary",
+        "def worker_helper():\n    return 'source code should win over worker word'": "file_content",
+        "some entirely opaque blob of bytes with no recognizable structure!!": "unknown_large_block",
+    }
+    for text, expected in cases.items():
+        kind = analyzer.classify_artifact_kind(text)
+        assert kind == expected
+        assert kind in analyzer.ARTIFACT_KINDS
+
+
+def test_parent_aggregation_can_be_disabled(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+            {"role": "tool", "content": TEST_LOG_ARTIFACT, "tool_name": "Bash"},
+        ],
+    )
+    tool_messages = analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    heavy = analyzer.load_heavy_sessions(db, since_hours=WIDE_WINDOW, salt="s", top_n=5)
+    tel = analyzer.parse_telemetry(
+        tmp_path / "none.jsonl", since_hours=WIDE_WINDOW, total_input_tokens=0
+    )
+    report = analyzer.build_report(
+        date="2100-01-01",
+        since_hours=24,
+        salt="s",
+        tool_messages=tool_messages,
+        heavy_sessions=heavy,
+        telemetry=tel,
+        llm_contents=llm,
+        min_block_repeat=2,
+        parent_aggregation_shadow=False,
+    )
+    assert report.parent_aggregation.enabled is False
+    assert report.parent_aggregation.duplicate_group_count == 0
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    md = md_path.read_text(encoding="utf-8")
+    assert "Parent Aggregation Artifacts — shadow mode" in md
+    assert "disabled" in md
+
+
+def test_worker_routing_intact_alongside_parent_aggregation(tmp_path):
+    """Adding parent-aggregation telemetry must not disturb worker routing."""
+    db = tmp_path / "state.db"
+    big_repeated = "row of unrelated build log output number 7 with filler text " * 200
+    assert len(big_repeated) >= LARGE
+    _make_db_ex(
+        db,
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE}],
+        messages=[
+            {"role": "tool", "content": big_repeated, "tool_name": "Bash"},
+            {"role": "tool", "content": big_repeated, "tool_name": "Bash"},
+            {"role": "tool", "content": big_repeated, "tool_name": "Bash"},
+        ],
+    )
+    report = _analyze(db, tmp_path)
+    # Worker routing still classifies the large repeated block as a drop candidate.
+    rm = _route_map(report)
+    assert "likely_drop_candidate" in rm
+    assert report.worker_routing.est_drop_candidate_tokens > 0
+    # And parent aggregation independently sees the same body as a duplicate.
+    assert report.parent_aggregation.duplicate_group_count == 1

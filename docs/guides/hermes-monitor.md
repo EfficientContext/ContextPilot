@@ -68,7 +68,9 @@ It surfaces concrete token-reduction opportunities:
 - large tool outputs grouped by `tool_name`,
 - heavy sessions by input-token / tool-call / message counts (hashed ids),
 - ContextPilot telemetry coverage and savings ratios,
-- **Worker Context Routing shadow labels** for future router training/eval.
+- **Worker Context Routing shadow labels** for future router training/eval,
+- **Parent Aggregation Artifact telemetry** (exact duplicate worker/parent
+  artifacts grouped by hash) for future parent-aggregation dedup eval.
 
 ### LLM-bound block redundancy
 
@@ -115,6 +117,41 @@ block hashes. These are **not realized savings** and must be treated as training
 / evaluation data for a future high-recall router. Use
 `--disable-worker-routing-shadow` only when you want to omit this section from a
 scan.
+
+### Parent Aggregation Artifacts — shadow mode
+
+The analyzer also includes a **Parent Aggregation Artifacts — shadow mode**
+section by default. This is **P0 telemetry only**: it collects data so a future
+parent-aggregation dedup can be evaluated offline. It never drops, summarizes,
+replaces, or mutates any context.
+
+When a parent/orchestrator aggregates results from several workers, the same
+artifact body (a test log, a diff, a file dump, a review summary, ...) is often
+carried into the parent's LLM context once per worker and again in the parent's
+own roll-up — paying for the same tokens several times. The analyzer groups
+**EXACT** artifact bodies by salted content hash (near-duplicates never group),
+classifies each body with a deterministic heuristic kind, and emits only
+low-cardinality metadata + counters:
+
+- `artifact_kind` — one of `test_log`, `terminal_output`, `file_content`,
+  `diff`, `error_trace`, `review_findings`, `benchmark_result`,
+  `worker_summary`, `unknown_large_block` (deterministic, first-match-wins),
+- per-kind summary — distinct bodies, occurrences, duplicate-group count,
+  estimated tokens, and advisory duplicate tokens,
+- **provenance** — per duplicate group, `source_type_counts` such as
+  `tool_result xN` and `assistant_context xM`, plus a deterministically chosen
+  `canonical_source_type` (the dominant origin, tie-broken alphabetically),
+- top duplicate artifact groups, reported **only** as a salted `content_hash`
+  plus counters.
+
+`est_duplicate_tokens` is computed as `(occurrences - 1) * est_tokens` and is an
+**advisory upper bound** on what a future parent dedup might save — **not a
+realized saving**, and payloads are never changed. No raw artifact / worker /
+tool / system text, and no raw session ids, are ever emitted. Only sizeable
+blocks (`>= --min-artifact-chars`, default 400) from parent/worker output origins
+(`assistant_context` and `tool_result`) are considered candidates, so prompt
+boilerplate and short hints never enter this telemetry. Use
+`--disable-parent-aggregation` to omit this section from a scan.
 
 Use `--all-sessions` to ignore the `--since-hours` window and scan **all**
 non-archived sessions and active messages (useful for a one-shot, whole-history

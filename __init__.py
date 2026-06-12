@@ -13,6 +13,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -184,6 +185,38 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
 
 
+def _telemetry_path() -> "Path | None":
+    """Resolve the metadata-only telemetry file, or None if disabled.
+
+    Lets the monitor read ContextPilot savings without depending on gateway log
+    lines. Override with CONTEXTPILOT_TELEMETRY_FILE; disable with
+    CONTEXTPILOT_DISABLE_TELEMETRY=1.
+    """
+    if os.environ.get("CONTEXTPILOT_DISABLE_TELEMETRY") == "1":
+        return None
+    override = os.environ.get("CONTEXTPILOT_TELEMETRY_FILE")
+    if override:
+        return Path(override)
+    return Path.home() / ".hermes" / "contextpilot" / "telemetry.jsonl"
+
+
+def _write_telemetry(record: Dict[str, Any]) -> None:
+    """Append one metadata-only JSON line. Never raises; best-effort only.
+
+    Privacy contract: callers must pass numeric counters / timestamps / session
+    / turn metadata only — never message bodies, prompts, or tool payloads.
+    """
+    try:
+        path = _telemetry_path()
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except Exception as e:  # noqa: BLE001 - telemetry must never break optimization
+        logger.debug("[ContextPilot] telemetry write skipped: %s", e)
+
+
 def _reorder_docs(docs: List[str], alpha: float = 0.001) -> List[str]:
     global _intercept_index
     if len(docs) < 2:
@@ -286,6 +319,7 @@ class ContextPilotEngine(ContextEngine):
         self._total_reordered = 0
         self._total_docs_deduped = 0
         self._optimize_count = 0
+        self._session_id = None
         self.threshold_percent = 0.75
 
     @staticmethod
@@ -624,6 +658,28 @@ class ContextPilotEngine(ContextEngine):
                 self._total_chars_saved,
                 self._total_chars_saved // 4,
             )
+            # Metadata-only telemetry so the monitor does not depend solely on
+            # gateway log lines. No content, prompts, or tool payloads here.
+            _write_telemetry(
+                {
+                    "ts": time.time(),
+                    "type": "turn",
+                    "session_hash": (
+                        _hash_text(str(self._session_id))
+                        if self._session_id is not None else None
+                    ),
+                    "turn": self._optimize_count,
+                    "chars_saved": turn_chars_saved,
+                    "tokens_saved": turn_chars_saved // 4,
+                    "doc_chars_saved": doc_chars_saved,
+                    "block_chars_saved": dedup_result.chars_saved,
+                    "blocks_deduped": dedup_result.blocks_deduped,
+                    "blocks_total": dedup_result.blocks_total,
+                    "docs_deduped": self._total_docs_deduped,
+                    "system_blocks_matched": dedup_result.system_blocks_matched,
+                    "cumulative_chars_saved": self._total_chars_saved,
+                }
+            )
 
         return api_messages, {
             "chars_saved": turn_chars_saved,
@@ -648,6 +704,7 @@ class ContextPilotEngine(ContextEngine):
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         _patch_hermes_sanitizer()
+        self._session_id = session_id
         self._model = kwargs.get("model", "")
         self._base_url = ""
         self._api_key = ""

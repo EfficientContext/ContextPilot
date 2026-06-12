@@ -96,6 +96,15 @@ prompts, or tool output. If it reports no savings, make sure ContextPilot is
 enabled, restart Hermes, and run a workload that reads the same content more than
 once — savings only happen when content repeats across turns.
 
+### Ask Hermes instead
+
+If you'd rather not run the command yourself, install or copy the bundled
+read-only Hermes skill at `skills/contextpilot-savings/SKILL.md` and just ask
+Hermes ("how much did ContextPilot save?"). Hermes finds the script, runs it
+with the right window/format, and summarizes the result. The skill is
+observe-only: it reads nothing but the metadata-only telemetry via this script.
+See [`hermes-monitor.md`](./hermes-monitor.md#ask-hermes-for-savings) for details.
+
 ## Disabling
 
 ```bash

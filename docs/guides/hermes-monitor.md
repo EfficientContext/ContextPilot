@@ -73,6 +73,19 @@ tokens per event. This is the right tool for ordinary users; the monitor in this
 guide (which also reads `state.db` metadata) and the content-aware analyzer below
 are for deeper investigation.
 
+### Ask Hermes for savings
+
+To let users get this summary without typing the command, the repo ships a
+narrow, read-only Hermes skill at `skills/contextpilot-savings/SKILL.md`. Copy
+or install it into your Hermes skills, then ask Hermes something like "show
+ContextPilot token savings" or "how much did ContextPilot save all time?".
+Hermes locates `scripts/contextpilot_savings.py` (in the repo/plugin checkout or
+at `~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py`), runs it
+with the right `--since-hours` / `--all-time` / `--format json` options, and
+summarizes the output. The skill is observe-only — it reads only the
+metadata-only telemetry through this script and makes no code, config, or
+scheduling changes.
+
 ## Opportunity scanning
 
 `scripts/analyze_hermes_context_opportunities.py` is a companion scanner meant

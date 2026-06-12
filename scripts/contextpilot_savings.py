@@ -157,11 +157,11 @@ def render_text(summary: Dict[str, Any]) -> str:
         f"ContextPilot token savings ({window})",
         f"  Events:                {summary['events']}",
         f"  Chars saved:           {summary['chars_saved']:,}",
-        f"  Estimated tokens saved: ~{summary['tokens_saved']:,}",
+        f"  Telemetry tokens saved: {summary['tokens_saved']:,}",
     ]
     if summary["avg_tokens_per_event"] is not None:
         lines.append(
-            f"  Avg tokens/event:      ~{summary['avg_tokens_per_event']:,}"
+            f"  Avg tokens/event:      {summary['avg_tokens_per_event']:,}"
         )
     lines.append(f"  Telemetry file:        {path}")
     if summary["skipped_lines"]:

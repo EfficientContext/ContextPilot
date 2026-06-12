@@ -152,7 +152,7 @@ def test_text_output_renders_savings(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "ContextPilot token savings (last 24h)" in out
-    assert "Estimated tokens saved" in out
+    assert "Telemetry tokens saved" in out
     assert str(tel) in out
 
 

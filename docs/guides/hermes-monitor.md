@@ -184,35 +184,6 @@ gate below before changing ContextPilot config or code. A defensive guard in
 `write_report` refuses to emit any forbidden raw-content key, so the reports are
 safe to ship from an unattended cron job.
 
-## Self-evolve skill (Hermes)
-
-The monitor and analyzer above are bundled into a reusable Hermes skill so users
-can run the same safe loop — install/enable ContextPilot, collect
-telemetry/shadow data, analyze realized savings vs advisory candidates, and
-propose improvements under strict safety gates:
-
-- Skill path: `skills/contextpilot-self-evolve/SKILL.md`
-
-The skill is **proposal-only**: it never auto-applies context routing, dropping,
-or summarization, and it enforces the same privacy boundary (reports never emit
-raw conversation/tool/system text, reasoning, or raw session ids).
-
-To use it in Hermes, copy or load the skill into your Hermes skills directory,
-then invoke it by name:
-
-```bash
-# copy into your Hermes skills directory (adjust path to your install)
-mkdir -p ~/.hermes/skills/contextpilot-self-evolve
-cp skills/contextpilot-self-evolve/SKILL.md \
-   ~/.hermes/skills/contextpilot-self-evolve/SKILL.md
-```
-
-Then ask Hermes to run the **contextpilot-self-evolve** skill. It walks through
-install/verify, the metadata-only monitor, the content-aware analyzer for
-`--since-hours 24` and `168`, interpretation of realized vs advisory tokens,
-optional read-only cron jobs, and the branch/tests/privacy/independent-review
-gate required before any code or config change ships.
-
 ## Accuracy gate
 
 This monitor only measures token/cost savings and operational signals. Before shipping ContextPilot changes, run a fixed golden eval set and require:

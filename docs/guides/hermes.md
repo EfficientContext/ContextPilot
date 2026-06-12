@@ -64,6 +64,38 @@ print(engine.get_status())
 # {'engine': 'contextpilot', 'contextpilot_chars_saved': 18420, ...}
 ```
 
+## See token savings
+
+Once ContextPilot has run for a bit, you can see how many tokens it saved with a
+single command from the ContextPilot repo or plugin directory:
+
+```bash
+python scripts/contextpilot_savings.py
+# or, after Hermes plugin install:
+python ~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py
+```
+
+```
+ContextPilot token savings (last 24h)
+  Events:                117
+  Chars saved:           6,147,074
+  Estimated tokens saved: ~1,536,728
+  Avg tokens/event:      ~13,134
+  Telemetry file:        /root/.hermes/contextpilot/telemetry.jsonl
+```
+
+Useful options:
+
+- `--all-time` — total savings since you enabled ContextPilot.
+- `--since-hours N` — only the last `N` hours (default `24`).
+- `--format json` — stable, machine-readable output for dashboards.
+
+This reads only the metadata-only telemetry file
+(`~/.hermes/contextpilot/telemetry.jsonl`); it never touches your conversations,
+prompts, or tool output. If it reports no savings, make sure ContextPilot is
+enabled, restart Hermes, and run a workload that reads the same content more than
+once — savings only happen when content repeats across turns.
+
 ## Disabling
 
 ```bash

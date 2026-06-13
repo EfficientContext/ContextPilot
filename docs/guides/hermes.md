@@ -79,8 +79,8 @@ python ~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py
 ContextPilot token savings (last 24h)
   Events:                117
   Chars saved:           6,147,074
-  Estimated tokens saved: ~1,536,728
-  Avg tokens/event:      ~13,134
+  Telemetry tokens saved: 1,536,728
+  Avg tokens/event:      13,134
   Telemetry file:        /root/.hermes/contextpilot/telemetry.jsonl
 ```
 

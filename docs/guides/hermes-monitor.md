@@ -68,7 +68,7 @@ python scripts/contextpilot_savings.py --format json
 python ~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py
 ```
 
-It reports events, chars saved, estimated tokens saved, the window, and average
+It reports events, chars saved, telemetry tokens saved, the window, and average
 tokens per event. This is the right tool for ordinary users; the monitor in this
 guide (which also reads `state.db` metadata) and the content-aware analyzer below
 are for deeper investigation.

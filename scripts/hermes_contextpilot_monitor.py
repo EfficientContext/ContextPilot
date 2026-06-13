@@ -321,8 +321,8 @@ def write_report(report: DailyReport, out_dir: Path) -> tuple[Path, Path]:
         f"- ContextPilot saved: ~{report.contextpilot_tokens_saved} tokens ({report.contextpilot_chars_saved} chars)",
         f"- ContextPilot savings source: {report.contextpilot_savings_source} "
         f"(telemetry events={report.contextpilot_telemetry_events}, log events={report.contextpilot_log_events})",
-        f"- Estimated input-token reduction: {report.estimated_input_token_reduction_pct}%",
-        f"- Estimated cost: ${report.estimated_cost_usd:.4f}",
+        f"- Input-token reduction from ContextPilot telemetry: {report.estimated_input_token_reduction_pct}%",
+        f"- Session cost field total: ${report.estimated_cost_usd:.4f}",
         "",
         "## Top sources",
     ]

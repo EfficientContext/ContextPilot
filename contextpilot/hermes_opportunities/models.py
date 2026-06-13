@@ -127,6 +127,62 @@ class TelemetryCoverage:
 
 
 # ---------------------------------------------------------------------------
+# Prompt duplicate — SHADOW MODE structures (system/skill prompts only)
+# ---------------------------------------------------------------------------
+
+# Block types this advisory section is allowed to scan. Static prompt text only;
+# never user/assistant/tool message bodies.
+PROMPT_DUPLICATE_BLOCK_TYPES = ("system_prompt", "skill_prompt")
+
+
+@dataclass
+class PromptDuplicateBlock:
+    """One exact block fingerprint seen 2+ times in system/skill prompt text.
+
+    Salted hash + counters only -- never the block text. Char figures are ACTUAL
+    duplicated characters; the token figure is an ADVISORY chars/4 estimate.
+    """
+
+    block_hash: str
+    block_types: list[str]                       # which prompt types this block spans
+    occurrences: int
+    char_length: int
+    chars_duplicated: int                        # ACTUAL: (occurrences - 1) * char_length
+    advisory_est_duplicate_tokens_chars_div_4: int  # ADVISORY only, NOT actual tokens
+
+
+@dataclass
+class PromptDuplicateTypeCount:
+    """Per-prompt-type occurrence rollup for duplicate blocks."""
+
+    block_type: str              # system_prompt | skill_prompt
+    duplicate_block_count: int   # distinct duplicate fingerprints touching this type
+    occurrence_count: int        # total occurrences within this type
+    chars_duplicated: int        # ACTUAL duplicated chars attributable within this type
+
+
+@dataclass
+class PromptDuplicateShadow:
+    """Advisory report of exact duplicate blocks in system/skill prompts.
+
+    SHADOW/ADVISORY ONLY: this measures static prompt duplication; it never
+    rewrites, dedups, or otherwise mutates prompts, and its char/token figures
+    must never be reported as realized savings.
+    """
+
+    enabled: bool
+    item_count: int                  # system/skill prompt items scanned
+    scanned_block_types: list[str]
+    duplicate_group_count: int
+    total_duplicate_occurrences: int
+    total_chars_duplicated: int      # ACTUAL duplicated chars (advisory, not realized)
+    advisory_est_duplicate_tokens_chars_div_4: int  # ADVISORY chars/4, NOT actual tokens
+    by_block_type: list[PromptDuplicateTypeCount]
+    top_duplicate_blocks: list[PromptDuplicateBlock]
+    notes: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Worker Context Routing — SHADOW MODE structures (P0 data collection only)
 # ---------------------------------------------------------------------------
 
@@ -276,6 +332,8 @@ class OpportunityReport:
     llm_block_types: list[BlockTypeStat]
     cross_type_block_groups: list[CrossTypeBlockGroup]
     cross_type_wasted_tokens: int
+    # Prompt duplicate shadow (system/skill prompts only; advisory, never realized).
+    prompt_duplicates: PromptDuplicateShadow
     # Worker Context Routing shadow mode (P0 data collection; never prunes).
     worker_routing: WorkerRoutingShadow
     # Parent Aggregation Artifacts shadow mode (P0 telemetry; never dedups).

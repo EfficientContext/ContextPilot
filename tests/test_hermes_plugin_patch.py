@@ -242,6 +242,86 @@ def test_optimize_writes_metadata_only_telemetry_line(monkeypatch, tmp_path):
     assert forbidden.isdisjoint(record.keys())
 
 
+def test_telemetry_records_payload_chars_and_derived_token_method(monkeypatch, tmp_path):
+    """Before/after payload chars are actual; the chars/4 counter is labelled derived."""
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _saving_dedup)
+    # Force the exact tokenizer OFF so this case is deterministic everywhere.
+    monkeypatch.setenv("CONTEXTPILOT_DISABLE_EXACT_TOKENIZER", "1")
+
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    engine = module.ContextPilotEngine()
+    messages = [
+        {"role": "user", "content": "read file"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+    ]
+    _out, stats = engine.optimize_api_messages(messages)
+
+    record = json.loads(telemetry.read_text(encoding="utf-8").splitlines()[0])
+
+    # Actual processed-payload before/after char measurement.
+    assert record["payload_chars_before"] > record["payload_chars_after"]
+    assert (
+        record["payload_chars_saved"]
+        == record["payload_chars_before"] - record["payload_chars_after"]
+    )
+    # The legacy token counter is explicitly tagged as a derived chars/4 estimate.
+    assert record["tokens_saved"] == record["chars_saved"] // 4
+    assert record["tokens_saved_method"] == "estimated_chars_div_4"
+    # No exact tokenizer -> a clear status and NO fabricated token numbers.
+    assert record["actual_token_status"] == "unavailable"
+    assert "actual_tokens_before" not in record
+    assert "actual_tokens_after" not in record
+    assert "actual_tokens_saved" not in record
+    # Returned stats expose the same payload-char measurement.
+    assert stats["payload_chars_saved"] == record["payload_chars_saved"]
+
+
+def test_telemetry_records_exact_tokens_when_backend_available(monkeypatch, tmp_path):
+    """When an exact tokenizer backend is present, actual token fields are emitted."""
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _saving_dedup)
+
+    # Inject a deterministic fake exact tokenizer (1 token per 3 chars).
+    def fake_counter(text):
+        return len(text) // 3
+
+    fake_counter._backend = "fake:test-encoding"
+    monkeypatch.setattr(module, "_get_exact_tokenizer", lambda: fake_counter)
+
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    engine = module.ContextPilotEngine()
+    messages = [
+        {"role": "user", "content": "read file"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+    ]
+    engine.optimize_api_messages(messages)
+
+    record = json.loads(telemetry.read_text(encoding="utf-8").splitlines()[0])
+
+    assert record["actual_token_status"] == "available"
+    assert record["actual_tokenizer_backend"] == "fake:test-encoding"
+    assert record["actual_tokens_before"] >= record["actual_tokens_after"]
+    assert (
+        record["actual_tokens_saved"]
+        == record["actual_tokens_before"] - record["actual_tokens_after"]
+    )
+    # Actual tokens are distinct from the legacy chars/4 estimate.
+    assert "tokens_saved_method" in record
+
+
 def test_optimize_telemetry_skipped_when_nothing_saved(monkeypatch, tmp_path):
     module, _ = _load_plugin_module(monkeypatch)
     monkeypatch.setattr(module, "_check_reorder", lambda: False)

@@ -55,10 +55,14 @@ Then read the generated Markdown report for today and send a short Chinese summa
 
 ## Quick savings summary (lightweight)
 
-If you just want to answer "how many tokens did ContextPilot save?", use the
-lightweight `scripts/contextpilot_savings.py` command instead of this monitor or
-the analyzer below. It reads **only** the metadata-only telemetry file, imports
-no Hermes internals, and prints a one-screen summary:
+If you just want a lightweight realized-savings summary, use the
+`scripts/contextpilot_savings.py` command instead of this monitor or the analyzer
+below. It reads **only** the metadata-only telemetry file, imports no Hermes
+internals, and prints a one-screen summary. Character savings are measured from
+ContextPilot's actual before/after processed payload; exact tokenizer tokens are
+shown only when telemetry recorded an explicitly configured exact tokenizer
+backend. The legacy chars/4 counter is labelled as derived; tokenizer measurement
+is off by default to avoid provider/tokenizer mismatches.
 
 ```bash
 python scripts/contextpilot_savings.py            # last 24h
@@ -68,10 +72,10 @@ python scripts/contextpilot_savings.py --format json
 python ~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py
 ```
 
-It reports events, chars saved, telemetry tokens saved, the window, and average
-tokens per event. This is the right tool for ordinary users; the monitor in this
-guide (which also reads `state.db` metadata) and the content-aware analyzer below
-are for deeper investigation.
+It reports events, processed-payload chars saved, exact tokenizer tokens when
+available, and the legacy derived chars/4 counter. This is the right tool for
+ordinary users; the monitor in this guide (which also reads `state.db` metadata)
+and the content-aware analyzer below are for deeper investigation.
 
 ### Ask Hermes for savings
 
@@ -100,7 +104,9 @@ It surfaces concrete token-reduction opportunities:
 - repeated line/block fingerprints (shared boilerplate across outputs),
 - large tool outputs grouped by `tool_name`,
 - heavy sessions by input-token / tool-call / message counts (hashed ids),
-- ContextPilot telemetry coverage and savings ratios,
+- **Prompt duplicate shadow telemetry** for exact system/skill prompt template
+  repeats (advisory only; no prompt rewriting),
+- ContextPilot telemetry coverage and processed-payload savings counters,
 - **Worker Context Routing shadow labels** for future router training/eval,
 - **Parent Aggregation Artifact telemetry** (exact duplicate worker/parent
   artifacts grouped by hash) for future parent-aggregation dedup eval.
@@ -128,6 +134,23 @@ aggregated. The report then shows:
   observed in 2+ block types (e.g. the same chunk shipped from a skill/system
   prompt *and* a tool result *and* a user prompt). Reported only as a hash plus
   per-type counters — never the raw text.
+
+### Prompt duplicate shadow mode
+
+The analyzer includes a dedicated **Prompt duplicate blocks — system/skill**
+section for the static-template opportunity found in Hermes workloads. It scans
+only `system_prompt` and `skill_prompt` blocks, groups **EXACT** duplicate block
+fingerprints, and reports:
+
+- duplicate group count and duplicate occurrence count,
+- actual duplicated characters observed in prompt assembly,
+- a derived chars/4 advisory token counter labelled as advisory,
+- per-type counters and top salted hashes.
+
+This section is **advisory only**. It never rewrites, summarizes, deduplicates,
+or replaces prompt text, and its counters are not realized savings. Use it to
+prioritize a future prompt-assembly A/B where before/after payloads are measured
+with an exact tokenizer/API usage comparison.
 
 ### Worker Context Routing shadow mode
 
@@ -219,7 +242,7 @@ safe to ship from an unattended cron job.
 
 ## Accuracy gate
 
-This monitor only measures token/cost savings and operational signals. Before shipping ContextPilot changes, run a fixed golden eval set and require:
+This monitor reports processed-payload savings, exact tokenizer token deltas when recorded, and operational signals. Before shipping ContextPilot changes, run a fixed golden eval set and require:
 
 - no task-success regression,
 - no drop in context recall beyond the chosen threshold,

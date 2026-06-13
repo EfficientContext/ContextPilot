@@ -217,6 +217,113 @@ def _write_telemetry(record: Dict[str, Any]) -> None:
         logger.debug("[ContextPilot] telemetry write skipped: %s", e)
 
 
+def _iter_message_text(messages: List[Dict[str, Any]]):
+    """Yield text fragments from an LLM-bound payload for in-memory measurement.
+
+    Used only to *size* the payload (chars / exact tokens). Fragments are never
+    stored or emitted -- callers consume them immediately to produce integer
+    counts, then discard them.
+    """
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            yield content
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, str):
+                    yield block
+                elif isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str):
+                        yield text
+                    inner = block.get("content")
+                    if isinstance(inner, str):
+                        yield inner
+
+
+def _payload_chars(messages: List[Dict[str, Any]]) -> int:
+    """Total character count of an LLM-bound payload (metadata-only measure)."""
+    return sum(len(frag) for frag in _iter_message_text(messages))
+
+
+# Sentinel so the (possibly None) tokenizer is resolved at most once per process.
+_exact_tokenizer_cache: Any = "unset"
+
+
+def _get_exact_tokenizer():
+    """Return a callable ``(text) -> int`` for EXACT token counting, or None.
+
+    Optional and best-effort: an exact tokenizer is used only when a backend is
+    installed and not disabled. This never raises and never installs anything;
+    when no backend is available the caller records an ``unavailable`` status
+    rather than emitting a fake (chars/4) token count.
+
+    Backend selection via ``CONTEXTPILOT_EXACT_TOKENIZER`` = ``off`` (default)
+    | ``tiktoken``. It is opt-in so merely having a tokenizer library installed
+    never creates a misleading provider/tokenizer mismatch. The separate
+    disable environment flag also returns ``None`` immediately.
+    """
+
+    global _exact_tokenizer_cache
+    if _exact_tokenizer_cache != "unset":
+        return _exact_tokenizer_cache
+    _exact_tokenizer_cache = None
+    if os.environ.get("CONTEXTPILOT_DISABLE_EXACT_TOKENIZER") == "1":
+        return None
+    backend = os.environ.get("CONTEXTPILOT_EXACT_TOKENIZER", "off").lower()
+    if backend in ("off", "none", "disabled", "auto"):
+        return None
+    if backend == "tiktoken":
+        try:
+            import tiktoken  # optional dependency; never a hard requirement
+
+            encoding_name = os.environ.get(
+                "CONTEXTPILOT_TIKTOKEN_ENCODING", "cl100k_base"
+            )
+            enc = tiktoken.get_encoding(encoding_name)
+
+            def _count(text: str, _enc=enc) -> int:
+                return len(_enc.encode(text, disallowed_special=()))
+
+            _count._backend = f"tiktoken:{encoding_name}"  # type: ignore[attr-defined]
+            _exact_tokenizer_cache = _count
+        except Exception as e:  # noqa: BLE001 - tokenizer is strictly optional
+            logger.debug("[ContextPilot] exact tokenizer unavailable: %s", e)
+            _exact_tokenizer_cache = None
+    return _exact_tokenizer_cache
+
+
+def _measure_actual_tokens(
+    original_messages: List[Dict[str, Any]],
+    optimized_messages: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Metadata-only EXACT before/after token measurement of the payload.
+
+    Returns a dict carrying ``actual_token_status`` of ``available`` or
+    ``unavailable``. When unavailable (no exact tokenizer backend), it emits NO
+    token numbers -- callers must not substitute a chars/4 estimate for these
+    fields. Raw text is counted in-memory only and never stored.
+    """
+    counter = _get_exact_tokenizer()
+    if counter is None:
+        return {"actual_token_status": "unavailable"}
+    try:
+        before = sum(counter(frag) for frag in _iter_message_text(original_messages))
+        after = sum(counter(frag) for frag in _iter_message_text(optimized_messages))
+    except Exception as e:  # noqa: BLE001 - a measurement must never break optimization
+        logger.debug("[ContextPilot] exact token measurement failed: %s", e)
+        return {"actual_token_status": "unavailable"}
+    return {
+        "actual_token_status": "available",
+        "actual_tokenizer_backend": getattr(counter, "_backend", "unknown"),
+        "actual_tokens_before": before,
+        "actual_tokens_after": after,
+        "actual_tokens_saved": before - after,
+    }
+
+
 def _reorder_docs(docs: List[str], alpha: float = 0.001) -> List[str]:
     global _intercept_index
     if len(docs) < 2:
@@ -645,44 +752,72 @@ class ContextPilotEngine(ContextEngine):
         turn_chars_saved = doc_chars_saved + dedup_result.chars_saved
         self._total_chars_saved += turn_chars_saved
 
+        # Actual before/after of the full LLM-bound payload (chars). These are
+        # measured directly from the original input vs the optimized output, so
+        # they reflect the realized processed-payload delta -- not a duplicate
+        # opportunity count. Cheap (string length only); always computed.
+        payload_chars_before = _payload_chars(original_messages)
+        payload_chars_after = _payload_chars(api_messages)
+        payload_chars_saved = payload_chars_before - payload_chars_after
+
         # Step 6: Cache for next turn
         self._cached_messages = copy.deepcopy(api_messages)
         self._cached_original_messages = original_messages
 
         if turn_chars_saved > 0:
             logger.info(
-                "[ContextPilot] Turn %d: saved %d chars (~%d tokens) | cumulative: %d chars (~%d tokens)",
+                "[ContextPilot] Turn %d: saved %d chars by processing | cumulative: %d chars",
                 self._optimize_count,
                 turn_chars_saved,
-                turn_chars_saved // 4,
                 self._total_chars_saved,
-                self._total_chars_saved // 4,
             )
             # Metadata-only telemetry so the monitor does not depend solely on
             # gateway log lines. No content, prompts, or tool payloads here.
-            _write_telemetry(
-                {
-                    "ts": time.time(),
-                    "type": "turn",
-                    "session_hash": (
-                        _hash_text(str(self._session_id))
-                        if self._session_id is not None else None
-                    ),
-                    "turn": self._optimize_count,
-                    "chars_saved": turn_chars_saved,
-                    "tokens_saved": turn_chars_saved // 4,
-                    "doc_chars_saved": doc_chars_saved,
-                    "block_chars_saved": dedup_result.chars_saved,
-                    "blocks_deduped": dedup_result.blocks_deduped,
-                    "blocks_total": dedup_result.blocks_total,
-                    "docs_deduped": self._total_docs_deduped,
-                    "system_blocks_matched": dedup_result.system_blocks_matched,
-                    "cumulative_chars_saved": self._total_chars_saved,
-                }
+            #
+            # Token fields are deliberately separated by provenance:
+            #   * ``tokens_saved`` is the LEGACY DERIVED estimate (chars/4); the
+            #     ``tokens_saved_method`` tag makes that explicit so it is never
+            #     mistaken for a tokenizer/API measurement.
+            #   * ``actual_tokens_*`` come from an EXACT tokenizer and are present
+            #     only when ``actual_token_status == "available"``. When no exact
+            #     tokenizer backend is configured the status is ``unavailable``
+            #     and no token numbers are emitted (no fake counts).
+            telemetry_record = {
+                "ts": time.time(),
+                "type": "turn",
+                "session_hash": (
+                    _hash_text(str(self._session_id))
+                    if self._session_id is not None else None
+                ),
+                "turn": self._optimize_count,
+                # Actual processed-payload char delta (doc + block dedup).
+                "chars_saved": turn_chars_saved,
+                # Actual before/after of the full LLM-bound payload (chars).
+                "payload_chars_before": payload_chars_before,
+                "payload_chars_after": payload_chars_after,
+                "payload_chars_saved": payload_chars_saved,
+                # Legacy DERIVED token estimate (chars/4) -- NOT exact tokens.
+                "tokens_saved": turn_chars_saved // 4,
+                "tokens_saved_method": "estimated_chars_div_4",
+                "doc_chars_saved": doc_chars_saved,
+                "block_chars_saved": dedup_result.chars_saved,
+                "blocks_deduped": dedup_result.blocks_deduped,
+                "blocks_total": dedup_result.blocks_total,
+                "docs_deduped": self._total_docs_deduped,
+                "system_blocks_matched": dedup_result.system_blocks_matched,
+                "cumulative_chars_saved": self._total_chars_saved,
+            }
+            # Optional EXACT token measurement (only computed on a saving turn).
+            telemetry_record.update(
+                _measure_actual_tokens(original_messages, api_messages)
             )
+            _write_telemetry(telemetry_record)
 
         return api_messages, {
             "chars_saved": turn_chars_saved,
+            "payload_chars_before": payload_chars_before,
+            "payload_chars_after": payload_chars_after,
+            "payload_chars_saved": payload_chars_saved,
             "doc_chars_saved": doc_chars_saved,
             "block_chars_saved": dedup_result.chars_saved,
             "blocks_deduped": dedup_result.blocks_deduped,
@@ -720,11 +855,10 @@ class ContextPilotEngine(ContextEngine):
             self._compressor.on_session_end(session_id, messages)
         if self._total_chars_saved > 0:
             logger.info(
-                "[ContextPilot] Session %s: %d turns, %d chars saved (~%d tokens)",
+                "[ContextPilot] Session %s: %d turns, %d chars saved by processing",
                 session_id,
                 self._optimize_count,
                 self._total_chars_saved,
-                self._total_chars_saved // 4,
             )
 
     def on_session_reset(self) -> None:

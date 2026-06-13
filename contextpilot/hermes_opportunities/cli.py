@@ -80,6 +80,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--min-artifact-chars", type=int, default=DEFAULT_MIN_ARTIFACT_CHARS
     )
+    parser.add_argument(
+        "--disable-prompt-duplicate-shadow",
+        action="store_true",
+        help=(
+            "skip the advisory system/skill prompt duplicate-block scan "
+            "(enabled by default; advisory only, never rewrites/dedups prompts)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.state_db.exists():
@@ -125,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             top_n=args.top_n,
             worker_routing_shadow=not args.disable_worker_routing_shadow,
             parent_aggregation_shadow=not args.disable_parent_aggregation,
+            prompt_duplicate_shadow=not args.disable_prompt_duplicate_shadow,
             min_artifact_chars=args.min_artifact_chars,
         )
         json_path, md_path = write_report(report, args.out_dir)

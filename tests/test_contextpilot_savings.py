@@ -131,12 +131,25 @@ def test_json_output_schema_and_no_raw_content(tmp_path, capsys):
         "events",
         "chars_saved",
         "tokens_saved",
+        "tokens_saved_method",
         "avg_tokens_per_event",
+        "actual_token_status",
+        "actual_token_events",
+        "actual_tokens_before",
+        "actual_tokens_after",
+        "actual_tokens_saved",
+        "actual_tokenizer_backends",
         "skipped_lines",
     }
     assert set(data.keys()) == expected_keys
     assert data["events"] == 1
     assert data["tokens_saved"] == 100
+    # Legacy counter is explicitly flagged as a chars/4 estimate.
+    assert data["tokens_saved_method"] == "estimated_chars_div_4"
+    # This record had no exact-tokenizer fields, so actual tokens stay empty.
+    assert data["actual_token_status"] == "unavailable"
+    assert data["actual_tokens_saved"] == 0
+    assert data["actual_tokenizer_backends"] == []
     assert "SECRET CONVERSATION TEXT" not in out
     assert "SECRET SYSTEM PROMPT" not in out
 
@@ -151,9 +164,62 @@ def test_text_output_renders_savings(tmp_path, capsys):
     rc = savings.main(["--telemetry-file", str(tel), "--since-hours", "24"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "ContextPilot token savings (last 24h)" in out
-    assert "Telemetry tokens saved" in out
+    assert "ContextPilot savings (last 24h)" in out
+    # The legacy token figure must be labelled as a derived chars/4 estimate,
+    # never presented as actual tokenizer/API tokens.
+    assert "Est. tokens saved (chars/4, derived)" in out
+    assert "Telemetry tokens saved" not in out
+    # With no actual-token telemetry, say so plainly instead of faking a number.
+    assert "Actual tokens saved (tokenizer): unavailable" in out
     assert str(tel) in out
+
+
+def test_actual_tokenizer_tokens_surfaced_separately(tmp_path, capsys):
+    """Exact tokenizer fields are aggregated and shown apart from the chars/4 estimate."""
+    tel = tmp_path / "telemetry.jsonl"
+    now = time.time()
+    _write_jsonl(
+        tel,
+        [
+            {
+                "ts": now,
+                "type": "turn",
+                "chars_saved": 400,
+                "tokens_saved": 100,
+                "actual_token_status": "available",
+                "actual_tokenizer_backend": "tiktoken:cl100k_base",
+                "actual_tokens_before": 90,
+                "actual_tokens_after": 30,
+                "actual_tokens_saved": 60,
+            },
+            # A record with no exact tokenizer must not pollute the actual totals.
+            {
+                "ts": now,
+                "type": "turn",
+                "chars_saved": 200,
+                "tokens_saved": 50,
+                "actual_token_status": "unavailable",
+            },
+        ],
+    )
+    summary = savings.summarize_telemetry(tel, since_hours=None)
+    # Derived (legacy) totals still count every saving event.
+    assert summary["events"] == 2
+    assert summary["tokens_saved"] == 150
+    assert summary["tokens_saved_method"] == "estimated_chars_div_4"
+    # Actual tokens come only from the "available" record -- no chars/4 fallback.
+    assert summary["actual_token_status"] == "available"
+    assert summary["actual_token_events"] == 1
+    assert summary["actual_tokens_before"] == 90
+    assert summary["actual_tokens_after"] == 30
+    assert summary["actual_tokens_saved"] == 60
+    assert summary["actual_tokenizer_backends"] == ["tiktoken:cl100k_base"]
+
+    text = savings.render_text(summary)
+    assert "Est. tokens saved (chars/4, derived): 150" in text
+    assert "Actual tokens saved (tokenizer): 60" in text
+    assert "tiktoken:cl100k_base" in text
+    assert "status: available" in text
 
 
 def test_no_events_in_window_message(tmp_path, capsys):

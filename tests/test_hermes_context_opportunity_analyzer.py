@@ -939,3 +939,109 @@ def test_worker_routing_intact_alongside_parent_aggregation(tmp_path):
     assert report.worker_routing.est_drop_candidate_tokens > 0
     # And parent aggregation independently sees the same body as a duplicate.
     assert report.parent_aggregation.duplicate_group_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Prompt duplicate shadow (system/skill prompts only; advisory only)
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_duplicate_shadow_detects_system_skill_duplicates():
+    line = "This is a sufficiently long duplicated instruction line here."
+    sys_unique = "A completely unique system instruction line that is long."
+    skill_unique = "Skill body unique line that is also clearly long enough."
+    contents = [
+        analyzer._LLMContent(
+            block_type="system_prompt", content=f"{line}\n{sys_unique}\n{line}"
+        ),
+        analyzer._LLMContent(block_type="skill_prompt", content=f"{line}\n{skill_unique}"),
+        # Non-prompt duplicates must be ignored by this prompt-only section.
+        analyzer._LLMContent(block_type="tool_result", content=f"{line}\n{line}"),
+        analyzer._LLMContent(block_type="user_prompt", content=f"{line}\n{line}"),
+    ]
+    shadow = analyzer.detect_prompt_duplicate_blocks(
+        contents, salt="s", min_block_chars=40, top_n=20
+    )
+    assert shadow.enabled
+    assert shadow.item_count == 2  # only system + skill items scanned
+    assert shadow.scanned_block_types == ["system_prompt", "skill_prompt"]
+    # `line` appears 2x (system) + 1x (skill) = 3 across prompt types only.
+    assert shadow.duplicate_group_count == 1
+    grp = shadow.top_duplicate_blocks[0]
+    assert grp.occurrences == 3
+    assert grp.block_types == ["skill_prompt", "system_prompt"]
+    assert grp.chars_duplicated == (3 - 1) * len(line)
+    assert shadow.total_chars_duplicated == grp.chars_duplicated
+    # Advisory token figure is exactly chars/4, never an actual token count.
+    assert (
+        shadow.advisory_est_duplicate_tokens_chars_div_4
+        == shadow.total_chars_duplicated // 4
+    )
+    assert (
+        grp.advisory_est_duplicate_tokens_chars_div_4 == grp.chars_duplicated // 4
+    )
+    # Occurrences are broken out per prompt type.
+    types = {tc.block_type: tc for tc in shadow.by_block_type}
+    assert set(types) == {"system_prompt", "skill_prompt"}
+    assert types["system_prompt"].occurrence_count == 2
+    assert types["skill_prompt"].occurrence_count == 1
+
+
+def test_prompt_duplicate_shadow_in_report_no_leak_and_advisory(tmp_path):
+    db = tmp_path / "state.db"
+    secret_line = "SECRET-PROMPT-LINE-THAT-REPEATS-AND-IS-PLENTY-LONG"
+    other_line = "some other distinct system instruction text here now"
+    sys_prompt = f"{secret_line}\n{other_line}\n{secret_line}"
+    _make_db(
+        db,
+        [("tool", "irrelevant tool output", "Bash")],
+        sessions=[("raw-session-id", "discord", None, 1, 1, 100, 10, 1, sys_prompt)],
+    )
+    report = _analyze(db, tmp_path)
+    pd = report.prompt_duplicates
+    assert pd.enabled
+    assert pd.duplicate_group_count == 1
+    assert pd.total_chars_duplicated == len(secret_line)
+    # Advisory figures are NOT folded into realized telemetry savings.
+    assert report.telemetry.chars_saved == 0
+    assert pd.total_chars_duplicated > 0
+
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    md_text = md_path.read_text(encoding="utf-8")
+    blob = json_path.read_text(encoding="utf-8") + md_text
+    # Raw prompt text must never appear in the report.
+    assert secret_line not in blob
+    assert other_line not in blob
+    # Section is present and clearly labelled advisory / not-realized.
+    assert "Prompt duplicate blocks" in md_text
+    assert "advisory" in md_text.lower()
+    assert "NOT a realized saving" in md_text or "NOT realized savings" in md_text
+
+
+def test_prompt_duplicate_shadow_can_be_disabled(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db(db, [("tool", "out", "Bash")])
+    tool_messages = analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    heavy = analyzer.load_heavy_sessions(
+        db, since_hours=WIDE_WINDOW, salt="s", top_n=20
+    )
+    tel = analyzer.parse_telemetry(
+        tmp_path / "none.jsonl", since_hours=WIDE_WINDOW, total_input_tokens=0
+    )
+    report = analyzer.build_report(
+        date="2100-01-01",
+        since_hours=24,
+        salt="s",
+        tool_messages=tool_messages,
+        heavy_sessions=heavy,
+        telemetry=tel,
+        llm_contents=llm,
+        prompt_duplicate_shadow=False,
+    )
+    assert report.prompt_duplicates.enabled is False
+    _, md_path = analyzer.write_report(report, tmp_path / "out")
+    # Section still renders, marked disabled; report writing stays healthy.
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "Prompt duplicate blocks" in md_text
+    assert "disabled" in md_text

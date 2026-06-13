@@ -18,6 +18,7 @@ from .aggregation import (
 from .detection import (
     analyze_llm_bound_blocks,
     detect_exact_duplicate_tool_outputs,
+    detect_prompt_duplicate_blocks,
     detect_repeated_blocks,
     summarize_tool_sizes,
 )
@@ -53,6 +54,7 @@ def build_report(
     top_n: int = DEFAULT_TOP_N,
     worker_routing_shadow: bool = True,
     parent_aggregation_shadow: bool = True,
+    prompt_duplicate_shadow: bool = True,
     min_artifact_chars: int = DEFAULT_MIN_ARTIFACT_CHARS,
 ) -> OpportunityReport:
     dups = detect_exact_duplicate_tool_outputs(tool_messages, salt=salt, top_n=top_n)
@@ -74,6 +76,14 @@ def build_report(
         min_block_chars=min_block_chars,
         min_repeat=min_block_repeat,
         top_n=top_n,
+    )
+
+    prompt_duplicates = detect_prompt_duplicate_blocks(
+        llm_contents,
+        salt=salt,
+        min_block_chars=min_block_chars,
+        top_n=top_n,
+        enabled=prompt_duplicate_shadow,
     )
 
     worker_routing = analyze_worker_routing_shadow(
@@ -106,6 +116,7 @@ def build_report(
         "llm-bound scan covers only content sent to the LLM: system/skill prompts, active user/assistant/tool messages",
         "worker-routing section is SHADOW MODE P0: it labels blocks for a future router but never drops/summarizes context",
         "parent-aggregation section is SHADOW MODE P0 telemetry: it groups exact artifact bodies but never dedups/replaces context",
+        "prompt-duplicate section is ADVISORY ONLY (system/skill prompts): it counts exact duplicate prompt blocks but never rewrites/dedups prompts; its chars/tokens are NOT realized savings",
     ]
     if all_sessions:
         notes.append("all-sessions mode: time window ignored; scanned all non-archived sessions/active messages")
@@ -135,6 +146,7 @@ def build_report(
         llm_block_types=block_type_stats,
         cross_type_block_groups=cross_groups,
         cross_type_wasted_tokens=cross_wasted,
+        prompt_duplicates=prompt_duplicates,
         worker_routing=worker_routing,
         parent_aggregation=parent_aggregation,
         notes=notes,
@@ -170,6 +182,11 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         f"- LLM-bound items scanned: {report.llm_bound_item_count}",
         f"- Cross-type repeated blocks: {len(report.cross_type_block_groups)} "
         f"(~{report.cross_type_wasted_tokens} wasted tokens)",
+        f"- Prompt duplicates (system/skill, advisory): "
+        f"{report.prompt_duplicates.duplicate_group_count} groups, "
+        f"{report.prompt_duplicates.total_chars_duplicated} chars duplicated "
+        f"(~{report.prompt_duplicates.advisory_est_duplicate_tokens_chars_div_4} "
+        f"advisory chars/4 tokens) — NOT realized savings",
         f"- Telemetry: {t.events} events, {t.chars_saved} chars saved by processing; "
         f"derived chars/4 tokens={t.tokens_saved}, ratio={t.coverage_ratio_pct}%",
         f"- Worker routing (shadow): {report.worker_routing.classified_block_count} blocks "
@@ -195,6 +212,41 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
             f"- `{g.block_hash}` types=[{', '.join(g.block_types)}] ({spread}) "
             f"chars={g.char_length} ~wasted={g.est_wasted_tokens} tokens"
         )
+    md.append("")
+    pd = report.prompt_duplicates
+    md.append("## Prompt duplicate blocks — system/skill (advisory only)")
+    if not pd.enabled:
+        md.append("- disabled")
+    else:
+        md.append(
+            f"- Scanned prompt types: {', '.join(pd.scanned_block_types)} "
+            f"(items: {pd.item_count})"
+        )
+        md.append(
+            f"- Duplicate groups: {pd.duplicate_group_count} "
+            f"(occurrences: {pd.total_duplicate_occurrences})"
+        )
+        md.append(
+            f"- Chars duplicated (actual): {pd.total_chars_duplicated} "
+            f"(~{pd.advisory_est_duplicate_tokens_chars_div_4} advisory chars/4 tokens, "
+            f"NOT actual tokens, NOT a realized saving)"
+        )
+        md.append("")
+        md.append("### Occurrences by prompt type")
+        for tc in pd.by_block_type:
+            md.append(
+                f"- {tc.block_type}: dup_blocks={tc.duplicate_block_count} "
+                f"occ={tc.occurrence_count} chars_duplicated={tc.chars_duplicated}"
+            )
+        md.append("")
+        md.append("### Top duplicate prompt blocks (hashed)")
+        for b in pd.top_duplicate_blocks:
+            md.append(
+                f"- `{b.block_hash}` types=[{', '.join(b.block_types)}] "
+                f"x{b.occurrences} chars={b.char_length} "
+                f"chars_duplicated={b.chars_duplicated} "
+                f"(~{b.advisory_est_duplicate_tokens_chars_div_4} advisory chars/4 tokens)"
+            )
     md.append("")
     md.append("## Top exact-duplicate tool outputs")
     for d in report.exact_duplicate_groups:

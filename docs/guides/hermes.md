@@ -64,10 +64,18 @@ print(engine.get_status())
 # {'engine': 'contextpilot', 'contextpilot_chars_saved': 18420, ...}
 ```
 
-## See token savings
+## See processed-payload savings
 
-Once ContextPilot has run for a bit, you can see how many tokens it saved with a
-single command from the ContextPilot repo or plugin directory:
+Once ContextPilot has run for a bit, you can see realized savings from the
+metadata-only telemetry with a single command from the ContextPilot repo or
+plugin directory. Character savings are always measured from the actual
+before/after LLM-bound payload after ContextPilot processing. Exact tokenizer
+savings are shown only when telemetry recorded an exact tokenizer backend; the
+legacy chars/4 counter is labelled as derived. To record tokenizer-based deltas,
+configure an exact matching tokenizer explicitly, for example
+`CONTEXTPILOT_EXACT_TOKENIZER=tiktoken` with
+`CONTEXTPILOT_TIKTOKEN_ENCODING=<encoding>`; it is off by default to avoid
+provider/tokenizer mismatches.
 
 ```bash
 python scripts/contextpilot_savings.py
@@ -76,12 +84,12 @@ python ~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py
 ```
 
 ```
-ContextPilot token savings (last 24h)
-  Events:                117
-  Chars saved:           6,147,074
-  Telemetry tokens saved: 1,536,728
-  Avg tokens/event:      13,134
-  Telemetry file:        /root/.hermes/contextpilot/telemetry.jsonl
+ContextPilot savings (last 24h)
+  Events:                  117
+  Chars saved:             6,147,074
+  Est. tokens saved (chars/4, derived): 1,536,728
+  Actual tokens saved (tokenizer): unavailable (no exact tokenizer backend recorded)
+  Telemetry file:          /root/.hermes/contextpilot/telemetry.jsonl
 ```
 
 Useful options:
@@ -142,6 +150,6 @@ ContextPilot runs *before* the threshold-based compressor, reducing how often th
 
 **Plugin not discovered after install.** Check `~/.hermes/plugins/ContextPilot/plugin.yaml` exists and contains `type: context_engine`. Run `hermes plugins list` to confirm.
 
-**No token savings logged.** Dedup only fires when the LLM reads the same file content more than once in a session. On first reads, content is indexed but not deduplicated.
+**No savings logged.** Dedup only fires when the LLM reads the same file content more than once in a session. On first reads, content is indexed but not deduplicated.
 
 **`ModuleNotFoundError: No module named 'numpy'`.** Reorder requires numpy. If unavailable, ContextPilot silently falls back to dedup-only mode.

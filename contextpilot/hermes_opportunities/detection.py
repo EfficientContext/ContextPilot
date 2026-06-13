@@ -10,9 +10,13 @@ from __future__ import annotations
 from typing import Iterable
 
 from .models import (
+    PROMPT_DUPLICATE_BLOCK_TYPES,
     BlockTypeStat,
     CrossTypeBlockGroup,
     DuplicateToolOutput,
+    PromptDuplicateBlock,
+    PromptDuplicateShadow,
+    PromptDuplicateTypeCount,
     RepeatedBlock,
     ToolSizeStat,
     TypeCount,
@@ -145,6 +149,123 @@ def summarize_tool_sizes(
         )
     stats.sort(key=lambda s: s.total_chars, reverse=True)
     return stats[:top_n]
+
+
+def detect_prompt_duplicate_blocks(
+    contents: Iterable[_LLMContent],
+    *,
+    salt: str,
+    min_block_chars: int,
+    top_n: int,
+    enabled: bool = True,
+) -> PromptDuplicateShadow:
+    """Advisory scan for EXACT duplicate blocks in system/skill prompt text.
+
+    Restricted to ``system_prompt`` / ``skill_prompt`` items. Counts every block
+    instance (intra- and inter-prompt) so a block literally present multiple
+    times in the static prompt payload is detected. A "duplicate" is any block
+    fingerprint observed 2+ times.
+
+    SHADOW/ADVISORY ONLY: output is salted hashes + counters + block-type enums;
+    char figures are ACTUAL duplicated chars and the token figure is an ADVISORY
+    chars/4 estimate. This never rewrites or dedups prompts and must never be
+    reported as a realized saving.
+    """
+    scanned = list(PROMPT_DUPLICATE_BLOCK_TYPES)
+    if not enabled:
+        return PromptDuplicateShadow(
+            enabled=False,
+            item_count=0,
+            scanned_block_types=scanned,
+            duplicate_group_count=0,
+            total_duplicate_occurrences=0,
+            total_chars_duplicated=0,
+            advisory_est_duplicate_tokens_chars_div_4=0,
+            by_block_type=[],
+            top_duplicate_blocks=[],
+            notes=["prompt-duplicate shadow disabled"],
+        )
+
+    # block_hash -> {char_length, types: {block_type: occ}}
+    agg: dict[str, dict] = {}
+    item_counts: dict[str, int] = {}
+    for item in contents:
+        bt = item.block_type
+        if bt not in PROMPT_DUPLICATE_BLOCK_TYPES:
+            continue
+        item_counts[bt] = item_counts.get(bt, 0) + 1
+        # Count every fingerprintable line (no intra-item dedup) so repeated
+        # blocks within a single prompt are surfaced too.
+        for line in item.content.splitlines():
+            block = line.strip()
+            if len(block) < min_block_chars:
+                continue
+            h = _salted_hash(block, salt)
+            entry = agg.get(h)
+            if entry is None:
+                agg[h] = {"char_length": len(block), "types": {bt: 1}}
+            else:
+                entry["types"][bt] = entry["types"].get(bt, 0) + 1
+
+    dup_blocks: list[PromptDuplicateBlock] = []
+    per_type: dict[str, dict] = {}
+    total_chars_dup = 0
+    total_dup_occ = 0
+    for h, entry in agg.items():
+        types = entry["types"]
+        occ = sum(types.values())
+        if occ < 2:
+            continue  # not a duplicate
+        char_len = entry["char_length"]
+        chars_dup = (occ - 1) * char_len
+        total_chars_dup += chars_dup
+        total_dup_occ += occ
+        dup_blocks.append(
+            PromptDuplicateBlock(
+                block_hash=h,
+                block_types=sorted(types.keys()),
+                occurrences=occ,
+                char_length=char_len,
+                chars_duplicated=chars_dup,
+                advisory_est_duplicate_tokens_chars_div_4=_est_tokens(chars_dup),
+            )
+        )
+        for bt, type_occ in types.items():
+            t = per_type.setdefault(
+                bt, {"blocks": 0, "occ": 0, "chars_dup": 0}
+            )
+            t["blocks"] += 1
+            t["occ"] += type_occ
+            # Attribute duplicated chars within this type (occ-1 of the in-type
+            # instances are duplicates); cross-type-only blocks contribute 0 here.
+            t["chars_dup"] += max(type_occ - 1, 0) * char_len
+
+    by_block_type = [
+        PromptDuplicateTypeCount(
+            block_type=bt,
+            duplicate_block_count=per_type.get(bt, {}).get("blocks", 0),
+            occurrence_count=per_type.get(bt, {}).get("occ", 0),
+            chars_duplicated=per_type.get(bt, {}).get("chars_dup", 0),
+        )
+        for bt in scanned
+    ]
+
+    dup_blocks.sort(key=lambda b: b.chars_duplicated, reverse=True)
+    notes: list[str] = []
+    if not item_counts:
+        notes.append("no system/skill prompt items observed in the selected window")
+    return PromptDuplicateShadow(
+        enabled=True,
+        item_count=sum(item_counts.values()),
+        scanned_block_types=scanned,
+        duplicate_group_count=len(dup_blocks),
+        total_duplicate_occurrences=total_dup_occ,
+        total_chars_duplicated=total_chars_dup,
+        advisory_est_duplicate_tokens_chars_div_4=_est_tokens(total_chars_dup),
+        by_block_type=by_block_type,
+        top_duplicate_blocks=dup_blocks[:top_n],
+        notes=notes,
+    )
 
 
 def _iter_blocks(content: str, min_block_chars: int) -> Iterable[str]:

@@ -5,6 +5,13 @@ dist/
 *.log
 *.jsonl
 *.egg-info/
+
+# Trace-derived validation sets are local-only / private: generated corpora hold
+# raw conversation content and must never be committed. The in-repo convenience
+# dir is ignored; raw corpora also match the *.jsonl rule above.
+.contextpilot_validation/
+# ...but the committed SYNTHETIC test fixture (no real trace data) is kept.
+!tests/fixtures/trace_validation/synthetic_cases.jsonl
 */.DS_Store
 *.DS_Store
 

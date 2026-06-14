@@ -152,6 +152,32 @@ or replaces prompt text, and its counters are not realized savings. Use it to
 prioritize a future prompt-assembly A/B where before/after payloads are measured
 with an exact tokenizer/API usage comparison.
 
+### Prompt dedup A/B simulation
+
+The analyzer also includes a **Prompt dedup A/B simulation — system/skill**
+section. This is the evidence gate before any canary replacement. It still does
+not mutate runtime payloads: it keeps prompt text in memory, groups exact
+duplicate `system_prompt` / `skill_prompt` blocks, and simulates the accounting
+for keeping the first occurrence while replacing only later occurrences with a
+deterministic reference placeholder.
+
+The simulation reports candidate classes separately:
+
+- `same_type_skill_prompt_only` — lowest-risk first canary candidate,
+- `same_type_system_prompt_only` — higher risk,
+- `cross_type_system_skill` — higher risk because it crosses prompt hierarchy.
+
+For each class the report includes group counts, replacement occurrence counts,
+`chars_before`, `chars_after_simulated`, and signed `chars_delta_simulated`.
+When you pass an explicitly configured tokenizer backend, for example
+`--prompt-dedup-tokenizer tiktoken:cl100k_base`, it also reports actual tokenizer
+before/after/delta fields for the simulation. Without that opt-in backend,
+`tokenizer_status=unavailable` and no fake actual-token numbers are emitted.
+
+Use `--disable-prompt-dedup-ab` to omit this section. Even when enabled, all
+figures are **simulation-only**, **not realized savings**, and no prompt text is
+rewritten, summarized, deduplicated, or emitted.
+
 ### Worker Context Routing shadow mode
 
 The analyzer now includes a **Worker Context Routing — shadow mode** section by

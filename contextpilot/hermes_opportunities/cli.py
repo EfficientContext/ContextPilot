@@ -27,6 +27,7 @@ from .models import (
 )
 from .report import build_report, write_report
 from .telemetry import parse_telemetry
+from .tokenizer import resolve_tokenizer
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,6 +89,24 @@ def main(argv: list[str] | None = None) -> int:
             "(enabled by default; advisory only, never rewrites/dedups prompts)"
         ),
     )
+    parser.add_argument(
+        "--disable-prompt-dedup-ab",
+        action="store_true",
+        help=(
+            "skip the offline prompt-dedup A/B simulation section "
+            "(enabled by default; offline simulation only, never mutates prompts; "
+            "this is the evidence gate before any canary replace)"
+        ),
+    )
+    parser.add_argument(
+        "--prompt-dedup-tokenizer",
+        default=None,
+        help=(
+            "opt-in exact tokenizer backend for the prompt-dedup A/B simulation, "
+            "e.g. 'tiktoken:cl100k_base' (off by default; without it the A/B "
+            "section reports tokenizer_status=unavailable and no actual-token fields)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.state_db.exists():
@@ -96,6 +115,9 @@ def main(argv: list[str] | None = None) -> int:
     # Harden for unattended cron use: never dump a traceback (which would echo
     # the DB path / SQL); emit only the exception class name and a non-zero code.
     try:
+        # Opt-in tokenizer; off by default -> A/B simulation reports actual tokens
+        # as unavailable rather than fabricating chars/4 figures.
+        dedup_ab_tokenizer = resolve_tokenizer(args.prompt_dedup_tokenizer)
         tool_messages = load_tool_messages(
             args.state_db, since_hours=args.since_hours, all_sessions=args.all_sessions
         )
@@ -134,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
             worker_routing_shadow=not args.disable_worker_routing_shadow,
             parent_aggregation_shadow=not args.disable_parent_aggregation,
             prompt_duplicate_shadow=not args.disable_prompt_duplicate_shadow,
+            prompt_dedup_ab=not args.disable_prompt_dedup_ab,
+            prompt_dedup_ab_tokenizer=dedup_ab_tokenizer,
             min_artifact_chars=args.min_artifact_chars,
         )
         json_path, md_path = write_report(report, args.out_dir)

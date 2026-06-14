@@ -1045,3 +1045,123 @@ def test_prompt_duplicate_shadow_can_be_disabled(tmp_path):
     md_text = md_path.read_text(encoding="utf-8")
     assert "Prompt duplicate blocks" in md_text
     assert "disabled" in md_text
+
+
+# ---------------------------------------------------------------------------
+# Prompt dedup A/B simulation (offline only; no replacement)
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_dedup_ab_simulates_candidate_classes_without_tokenizer():
+    skill_line = "Skill duplicate instruction line long enough for hashing."
+    sys_line = "System duplicate instruction line long enough for hashing."
+    cross_line = "Cross prompt duplicate instruction line long enough for hashing."
+    contents = [
+        analyzer._LLMContent(
+            block_type="skill_prompt",
+            content=f"{skill_line}\n{skill_line}\n{cross_line}",
+        ),
+        analyzer._LLMContent(
+            block_type="system_prompt",
+            content=f"{sys_line}\n{sys_line}\n{cross_line}",
+        ),
+        analyzer._LLMContent(
+            block_type="tool_result",
+            content=f"{skill_line}\n{skill_line}",
+        ),
+    ]
+    sim = analyzer.simulate_prompt_dedup_ab(
+        contents, salt="s", min_block_chars=40, tokenizer=None
+    )
+    assert sim.enabled
+    assert sim.item_count == 2
+    assert sim.tokenizer_status == "unavailable"
+    classes = {c.candidate_class: c for c in sim.classes}
+    assert classes["same_type_skill_prompt_only"].candidate_group_count == 1
+    assert classes["same_type_skill_prompt_only"].replacement_occurrence_count == 1
+    assert classes["same_type_system_prompt_only"].candidate_group_count == 1
+    assert classes["cross_type_system_skill"].candidate_group_count == 1
+    for cls in classes.values():
+        assert cls.actual_tokens_before is None
+        assert cls.actual_tokens_after is None
+        assert cls.actual_tokens_delta is None
+    # Tool duplicates with the same text are ignored by this prompt-only harness.
+    assert all("tool" not in c.candidate_class for c in sim.classes)
+
+
+def test_prompt_dedup_ab_uses_injected_tokenizer_only_when_available():
+    line = "Skill duplicate instruction line long enough for tokenizer counting."
+    fake = analyzer.TokenizerBackend(
+        name="fake:chars",
+        count=lambda text: len(text),
+    )
+    sim = analyzer.simulate_prompt_dedup_ab(
+        [
+            analyzer._LLMContent(
+                block_type="skill_prompt", content=f"{line}\n{line}\n{line}"
+            )
+        ],
+        salt="s",
+        min_block_chars=40,
+        tokenizer=fake,
+    )
+    assert sim.tokenizer_status == "available"
+    assert sim.tokenizer_backend == "fake:chars"
+    cls = {c.candidate_class: c for c in sim.classes}["same_type_skill_prompt_only"]
+    assert cls.actual_tokens_before == 3 * len(line)
+    assert cls.actual_tokens_after is not None
+    assert cls.actual_tokens_delta == cls.actual_tokens_before - cls.actual_tokens_after
+
+
+def test_prompt_dedup_ab_report_no_leak_and_not_realized(tmp_path):
+    db = tmp_path / "state.db"
+    secret_line = "SECRET-PROMPT-AB-LINE-THAT-REPEATS-AND-IS-LONG-ENOUGH"
+    sys_prompt = f"{secret_line}\n{secret_line}"
+    _make_db(
+        db,
+        [("tool", "irrelevant tool output", "Bash")],
+        sessions=[("raw-session-id", "discord", None, 1, 1, 100, 10, 1, sys_prompt)],
+    )
+    report = _analyze(db, tmp_path)
+    ab = report.prompt_dedup_ab
+    assert ab.enabled
+    cls = {c.candidate_class: c for c in ab.classes}["same_type_system_prompt_only"]
+    assert cls.candidate_group_count == 1
+    assert cls.replacement_occurrence_count == 1
+    # A/B simulation is not realized telemetry savings.
+    assert report.telemetry.chars_saved == 0
+
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
+    assert secret_line not in blob
+    assert "Prompt dedup A/B simulation" in blob
+    assert "OFFLINE SIMULATION ONLY" in blob
+    assert "NOT realized savings" in blob
+
+
+def test_prompt_dedup_ab_can_be_disabled(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db(db, [("tool", "out", "Bash")])
+    tool_messages = analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    heavy = analyzer.load_heavy_sessions(
+        db, since_hours=WIDE_WINDOW, salt="s", top_n=20
+    )
+    tel = analyzer.parse_telemetry(
+        tmp_path / "none.jsonl", since_hours=WIDE_WINDOW, total_input_tokens=0
+    )
+    report = analyzer.build_report(
+        date="2100-01-01",
+        since_hours=24,
+        salt="s",
+        tool_messages=tool_messages,
+        heavy_sessions=heavy,
+        telemetry=tel,
+        llm_contents=llm,
+        prompt_dedup_ab=False,
+    )
+    assert report.prompt_dedup_ab.enabled is False
+    _, md_path = analyzer.write_report(report, tmp_path / "out")
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "Prompt dedup A/B simulation" in md_text
+    assert "disabled" in md_text

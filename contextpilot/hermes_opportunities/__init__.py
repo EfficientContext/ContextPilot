@@ -36,6 +36,7 @@ from .aggregation import (
     classify_artifact_kind,
 )
 from .cli import main
+from .dedup_ab import simulate_prompt_dedup_ab
 from .db import (
     load_heavy_sessions,
     load_llm_bound_content,
@@ -56,6 +57,8 @@ from .models import (
     DEFAULT_MIN_BLOCK_REPEAT,
     DEFAULT_TOP_N,
     EST_CHARS_PER_TOKEN,
+    PROMPT_DEDUP_AB_CLASSES,
+    PROMPT_DEDUP_AB_REFERENCE_TEMPLATE,
     PROMPT_DUPLICATE_BLOCK_TYPES,
     ArtifactKindStat,
     ArtifactSourceCount,
@@ -66,6 +69,8 @@ from .models import (
     OpportunityReport,
     ParentAggregationArtifacts,
     ParentAggregationGroup,
+    PromptDedupABClass,
+    PromptDedupABSimulation,
     PromptDuplicateBlock,
     PromptDuplicateShadow,
     PromptDuplicateTypeCount,
@@ -95,6 +100,7 @@ from .routing import (
     classify_router_label,
 )
 from .telemetry import parse_telemetry
+from .tokenizer import TokenizerBackend, resolve_tokenizer
 
 __all__ = [
     # tunables / enums
@@ -119,6 +125,8 @@ __all__ = [
     "ToolSizeStat",
     "HeavySession",
     "TelemetryCoverage",
+    "PromptDedupABClass",
+    "PromptDedupABSimulation",
     "PromptDuplicateBlock",
     "PromptDuplicateTypeCount",
     "PromptDuplicateShadow",
@@ -144,6 +152,9 @@ __all__ = [
     "summarize_tool_sizes",
     "analyze_llm_bound_blocks",
     "detect_prompt_duplicate_blocks",
+    "simulate_prompt_dedup_ab",
+    "TokenizerBackend",
+    "resolve_tokenizer",
     # routing (shadow)
     "classify_router_label",
     "analyze_worker_routing_shadow",

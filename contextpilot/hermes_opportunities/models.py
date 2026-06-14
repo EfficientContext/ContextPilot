@@ -183,6 +183,78 @@ class PromptDuplicateShadow:
 
 
 # ---------------------------------------------------------------------------
+# Prompt Dedup A/B — OFFLINE SIMULATION structures (system/skill prompts only)
+# ---------------------------------------------------------------------------
+
+# The reference placeholder a *simulated* replacement would leave in place of a
+# later duplicate occurrence. Used for accounting only -- ContextPilot never
+# emits this string into a real payload. ``<type>`` / ``<hash>`` are filled with
+# the canonical prompt type and the salted block fingerprint.
+PROMPT_DEDUP_AB_REFERENCE_TEMPLATE = (
+    "[Prompt duplicate omitted in simulation; canonical=<type>:<hash>]"
+)
+
+# Safe candidate classes, simulated separately. The skill-only class is the
+# lowest-risk first canary candidate; the others are reported but higher risk.
+PROMPT_DEDUP_AB_CLASSES = (
+    "same_type_skill_prompt_only",
+    "same_type_system_prompt_only",
+    "cross_type_system_skill",
+)
+
+
+@dataclass
+class PromptDedupABClass:
+    """Simulated A/B accounting for one candidate class.
+
+    All figures are OFFLINE SIMULATION over static system/skill prompt text and
+    are NOT realized savings -- ContextPilot performs no replacement at runtime.
+    ``chars_delta_simulated`` is signed: positive means the simulated reference
+    replacement would shrink the payload, negative means it would grow it (a
+    short duplicate replaced by a longer placeholder).
+
+    Actual-token fields are populated ONLY when an exact tokenizer backend is
+    configured; otherwise they are ``None`` and ``tokenizer_status`` is
+    ``"unavailable"`` -- never a fabricated chars/4 figure.
+    """
+
+    candidate_class: str
+    risk_label: str                       # "low" (canary candidate) | "high"
+    candidate_group_count: int            # distinct exact-duplicate block groups
+    replacement_occurrence_count: int     # occurrences beyond the first, summed
+    chars_before: int                     # chars of all candidate occurrences
+    chars_after_simulated: int            # first kept full, later -> reference str
+    chars_delta_simulated: int            # chars_before - chars_after_simulated
+    tokenizer_status: str                 # "available" | "unavailable"
+    actual_tokens_before: int | None      # only when tokenizer available
+    actual_tokens_after: int | None       # only when tokenizer available
+    actual_tokens_delta: int | None       # only when tokenizer available
+    note: str
+
+
+@dataclass
+class PromptDedupABSimulation:
+    """Offline A/B simulation harness for prompt dedup (system/skill prompts).
+
+    OFFLINE SIMULATION + MEASUREMENT ONLY. This is the evidence gate to evaluate
+    *before* any canary replacement: it scans only ``system_prompt`` /
+    ``skill_prompt`` LLM-bound blocks, keeps the first occurrence of every exact
+    duplicate and replaces only later occurrences in a *simulated* accounting. It
+    never mutates the DB, runtime, or emitted prompts, and its char/token deltas
+    are NOT realized savings.
+    """
+
+    enabled: bool
+    item_count: int                       # system/skill prompt items scanned
+    scanned_block_types: list[str]
+    tokenizer_status: str                 # "available" | "unavailable"
+    tokenizer_backend: str | None         # backend name when available, else None
+    reference_string_template: str
+    classes: list[PromptDedupABClass]
+    notes: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # Worker Context Routing — SHADOW MODE structures (P0 data collection only)
 # ---------------------------------------------------------------------------
 
@@ -334,6 +406,8 @@ class OpportunityReport:
     cross_type_wasted_tokens: int
     # Prompt duplicate shadow (system/skill prompts only; advisory, never realized).
     prompt_duplicates: PromptDuplicateShadow
+    # Prompt dedup A/B simulation (system/skill prompts only; offline, never realized).
+    prompt_dedup_ab: PromptDedupABSimulation
     # Worker Context Routing shadow mode (P0 data collection; never prunes).
     worker_routing: WorkerRoutingShadow
     # Parent Aggregation Artifacts shadow mode (P0 telemetry; never dedups).

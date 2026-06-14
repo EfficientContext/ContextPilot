@@ -15,6 +15,7 @@ from .aggregation import (
     DEFAULT_MIN_ARTIFACT_CHARS,
     analyze_parent_aggregation_artifacts,
 )
+from .dedup_ab import simulate_prompt_dedup_ab
 from .detection import (
     analyze_llm_bound_blocks,
     detect_exact_duplicate_tool_outputs,
@@ -36,6 +37,19 @@ from .models import (
 )
 from .privacy import _assert_no_forbidden_keys, _salt_fingerprint
 from .routing import analyze_worker_routing_shadow
+from .tokenizer import TokenizerBackend
+
+
+def _dedup_ab_summary(ab) -> str:
+    """One-line rollup of the prompt-dedup A/B simulation for the summary block."""
+    if not ab.enabled:
+        return "disabled"
+    groups = sum(c.candidate_group_count for c in ab.classes)
+    chars_delta = sum(c.chars_delta_simulated for c in ab.classes)
+    return (
+        f"{groups} candidate groups, {chars_delta} simulated chars delta, "
+        f"tokenizer {ab.tokenizer_status}"
+    )
 
 
 def build_report(
@@ -55,6 +69,8 @@ def build_report(
     worker_routing_shadow: bool = True,
     parent_aggregation_shadow: bool = True,
     prompt_duplicate_shadow: bool = True,
+    prompt_dedup_ab: bool = True,
+    prompt_dedup_ab_tokenizer: TokenizerBackend | None = None,
     min_artifact_chars: int = DEFAULT_MIN_ARTIFACT_CHARS,
 ) -> OpportunityReport:
     dups = detect_exact_duplicate_tool_outputs(tool_messages, salt=salt, top_n=top_n)
@@ -84,6 +100,14 @@ def build_report(
         min_block_chars=min_block_chars,
         top_n=top_n,
         enabled=prompt_duplicate_shadow,
+    )
+
+    prompt_dedup_ab_sim = simulate_prompt_dedup_ab(
+        llm_contents,
+        salt=salt,
+        min_block_chars=min_block_chars,
+        tokenizer=prompt_dedup_ab_tokenizer,
+        enabled=prompt_dedup_ab,
     )
 
     worker_routing = analyze_worker_routing_shadow(
@@ -117,6 +141,7 @@ def build_report(
         "worker-routing section is SHADOW MODE P0: it labels blocks for a future router but never drops/summarizes context",
         "parent-aggregation section is SHADOW MODE P0 telemetry: it groups exact artifact bodies but never dedups/replaces context",
         "prompt-duplicate section is ADVISORY ONLY (system/skill prompts): it counts exact duplicate prompt blocks but never rewrites/dedups prompts; its chars/tokens are NOT realized savings",
+        "prompt-dedup A/B section is OFFLINE SIMULATION ONLY (system/skill prompts): it simulates keeping the first occurrence and replacing later duplicate occurrences to measure candidate savings; it performs NO runtime replacement/canonicalization and its deltas are NOT realized savings; it is the evidence gate before any canary replace",
     ]
     if all_sessions:
         notes.append("all-sessions mode: time window ignored; scanned all non-archived sessions/active messages")
@@ -147,6 +172,7 @@ def build_report(
         cross_type_block_groups=cross_groups,
         cross_type_wasted_tokens=cross_wasted,
         prompt_duplicates=prompt_duplicates,
+        prompt_dedup_ab=prompt_dedup_ab_sim,
         worker_routing=worker_routing,
         parent_aggregation=parent_aggregation,
         notes=notes,
@@ -187,6 +213,8 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         f"{report.prompt_duplicates.total_chars_duplicated} chars duplicated "
         f"(~{report.prompt_duplicates.advisory_est_duplicate_tokens_chars_div_4} "
         f"advisory chars/4 tokens) — NOT realized savings",
+        f"- Prompt dedup A/B (simulation): "
+        f"{_dedup_ab_summary(report.prompt_dedup_ab)} — NOT realized savings",
         f"- Telemetry: {t.events} events, {t.chars_saved} chars saved by processing; "
         f"derived chars/4 tokens={t.tokens_saved}, ratio={t.coverage_ratio_pct}%",
         f"- Worker routing (shadow): {report.worker_routing.classified_block_count} blocks "
@@ -247,6 +275,47 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
                 f"chars_duplicated={b.chars_duplicated} "
                 f"(~{b.advisory_est_duplicate_tokens_chars_div_4} advisory chars/4 tokens)"
             )
+    md.append("")
+    ab = report.prompt_dedup_ab
+    md.append("## Prompt dedup A/B simulation — system/skill (offline only)")
+    if not ab.enabled:
+        md.append("- disabled")
+    else:
+        md.append(
+            f"- Scanned prompt types: {', '.join(ab.scanned_block_types)} "
+            f"(items: {ab.item_count})"
+        )
+        backend = ab.tokenizer_backend or "none"
+        md.append(
+            f"- Tokenizer: status={ab.tokenizer_status} backend={backend} "
+            f"(actual tokens shown only when an exact backend is configured)"
+        )
+        md.append(f"- Simulated reference string: `{ab.reference_string_template}`")
+        md.append(
+            "- OFFLINE SIMULATION ONLY — no runtime replacement/canonicalization; "
+            "deltas below are candidate figures, NOT realized savings"
+        )
+        md.append("")
+        md.append("### Candidate classes (simulated separately)")
+        for c in ab.classes:
+            line = (
+                f"- {c.candidate_class} [risk={c.risk_label}]: "
+                f"groups={c.candidate_group_count} "
+                f"replacements={c.replacement_occurrence_count} "
+                f"chars_before={c.chars_before} "
+                f"chars_after_simulated={c.chars_after_simulated} "
+                f"chars_delta_simulated={c.chars_delta_simulated}"
+            )
+            if c.tokenizer_status == "available":
+                line += (
+                    f" actual_tokens_before={c.actual_tokens_before} "
+                    f"actual_tokens_after={c.actual_tokens_after} "
+                    f"actual_tokens_delta={c.actual_tokens_delta}"
+                )
+            else:
+                line += " actual_tokens=unavailable"
+            md.append(line)
+            md.append(f"  - {c.note}")
     md.append("")
     md.append("## Top exact-duplicate tool outputs")
     for d in report.exact_duplicate_groups:

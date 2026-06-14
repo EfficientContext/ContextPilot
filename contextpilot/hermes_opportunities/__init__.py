@@ -18,13 +18,17 @@ The package is split into focused modules:
 * :mod:`.db`          -- read-only Hermes state-DB loaders
 * :mod:`.telemetry`   -- metadata-only ContextPilot telemetry parsing
 * :mod:`.detection`   -- content-aware redundancy detection
+* :mod:`.dedup_ab`    -- offline prompt-dedup A/B simulation (no mutation)
+* :mod:`.prompt_dedup_canary` -- default-off runtime canary, skill-only
 * :mod:`.routing`     -- Worker Context Routing shadow mode (P0)
 * :mod:`.aggregation` -- Parent Aggregation Artifacts shadow mode (P0)
 * :mod:`.report`      -- report assembly + serialization
 * :mod:`.cli`         -- command-line entry point
 
-Everything here is reporting/measurement only: no module ever replaces,
-summarizes, routes, or otherwise mutates context at runtime.
+Safety contract: everything here is reporting/measurement only **except**
+:mod:`.prompt_dedup_canary`, which is the single default-off runtime mutation
+path. That canary is limited to same-type skill-prompt exact duplicates and only
+runs when explicitly enabled by environment variable.
 """
 from __future__ import annotations
 
@@ -92,6 +96,19 @@ from .privacy import (
     _salt_fingerprint,
     _salted_hash,
 )
+from .prompt_dedup_canary import (
+    CANARY_DEDUP_CLASS,
+    DEFAULT_PROMPT_DEDUP_MODE,
+    PROMPT_DEDUP_CANARY_REFERENCE_TEMPLATE,
+    PROMPT_DEDUP_DISABLE_ENV,
+    PROMPT_DEDUP_MODE_ENV,
+    PROMPT_DEDUP_MODES,
+    SAFETY_DENYLIST,
+    PromptDedupCanaryResult,
+    apply_prompt_dedup_canary,
+    build_canary_telemetry_record,
+    resolve_prompt_dedup_mode,
+)
 from .report import build_report, write_report
 from .routing import (
     ROUTER_LABELS,
@@ -116,6 +133,14 @@ __all__ = [
     "ARTIFACT_KINDS",
     "PARENT_AGGREGATION_SOURCE_TYPES",
     "FORBIDDEN_OUTPUT_KEYS",
+    # prompt-dedup canary (runtime; default off)
+    "PROMPT_DEDUP_MODE_ENV",
+    "PROMPT_DEDUP_DISABLE_ENV",
+    "PROMPT_DEDUP_MODES",
+    "DEFAULT_PROMPT_DEDUP_MODE",
+    "CANARY_DEDUP_CLASS",
+    "PROMPT_DEDUP_CANARY_REFERENCE_TEMPLATE",
+    "SAFETY_DENYLIST",
     # dataclasses
     "DuplicateToolOutput",
     "RepeatedBlock",
@@ -155,6 +180,11 @@ __all__ = [
     "simulate_prompt_dedup_ab",
     "TokenizerBackend",
     "resolve_tokenizer",
+    # prompt-dedup canary (runtime; default off)
+    "PromptDedupCanaryResult",
+    "resolve_prompt_dedup_mode",
+    "apply_prompt_dedup_canary",
+    "build_canary_telemetry_record",
     # routing (shadow)
     "classify_router_label",
     "analyze_worker_routing_shadow",

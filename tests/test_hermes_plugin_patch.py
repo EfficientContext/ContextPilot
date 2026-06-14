@@ -364,3 +364,116 @@ def test_optimize_survives_unwritable_telemetry_path(monkeypatch, tmp_path):
     out, stats = engine.optimize_api_messages(messages)
     assert out[1]["content"] == "REF"
     assert stats["chars_saved"] > 0
+
+
+def _zero_dedup(body, **kwargs):
+    return SimpleNamespace(
+        chars_saved=0,
+        blocks_deduped=0,
+        blocks_total=0,
+        system_blocks_matched=0,
+    )
+
+
+def test_prompt_dedup_canary_default_off_does_not_mutate_runtime(monkeypatch, tmp_path):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+    monkeypatch.delenv("CONTEXTPILOT_PROMPT_DEDUP_MODE", raising=False)
+
+    repeated = (
+        "Reusable examples paragraph for skill notes with enough descriptive filler "
+        "to make the reference shorter than the duplicate body in this test."
+    )
+    content = f"Use this skill when testing.\n{repeated}\n{repeated}"
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages([{"role": "system", "content": content}])
+
+    assert out[0]["content"] == content
+    assert stats["prompt_dedup_mode"] == "off"
+    assert stats["prompt_dedup_chars_saved"] == 0
+    assert not telemetry.exists()
+
+
+def test_prompt_dedup_canary_mutates_only_skill_prompt_runtime(monkeypatch, tmp_path):
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.setenv("CONTEXTPILOT_PROMPT_DEDUP_MODE", "canary")
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    repeated = (
+        "Reusable examples paragraph for skill notes with enough descriptive filler "
+        "to make the reference shorter than the duplicate body in this test."
+    )
+    skill_content = f"Use this skill when testing.\n{repeated}\n{repeated}"
+    ordinary_system = "ordinary system heading\nordinary system text stays untouched"
+    user_content = f"{repeated}\n{repeated}"
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(
+        [
+            {"role": "system", "content": skill_content},
+            {"role": "system", "content": ordinary_system},
+            {"role": "user", "content": user_content},
+        ]
+    )
+
+    assert repeated in out[0]["content"]  # first occurrence kept
+    assert out[0]["content"].count(repeated) == 1
+    assert "ContextPilot dedup: duplicate skill_prompt block omitted" in out[0]["content"]
+    # Ordinary system and user content are untouched.
+    assert out[1]["content"] == ordinary_system
+    assert out[2]["content"] == user_content
+    assert stats["prompt_dedup_mode"] == "canary"
+    assert stats["prompt_dedup_blocks_replaced"] == 1
+    assert stats["prompt_dedup_chars_saved"] > 0
+    assert stats["chars_saved"] == stats["prompt_dedup_chars_saved"]
+
+    record = json.loads(telemetry.read_text(encoding="utf-8").splitlines()[0])
+    assert record["prompt_dedup_mode"] == "canary"
+    assert record["prompt_dedup_class"] == "same_type_skill_prompt_only"
+    assert record["prompt_dedup_blocks_replaced"] == 1
+    assert record["prompt_dedup_chars_saved"] == stats["prompt_dedup_chars_saved"]
+    raw = telemetry.read_text(encoding="utf-8")
+    assert repeated not in raw
+    assert "Use this skill" not in raw
+
+
+def test_prompt_dedup_canary_does_not_replace_cross_type_or_denylisted_runtime(monkeypatch):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.setenv("CONTEXTPILOT_PROMPT_DEDUP_MODE", "canary")
+
+    cross = (
+        "Shared examples paragraph across prompts with enough descriptive filler "
+        "to be tempting but cross hierarchy should stay unchanged."
+    )
+    denied = (
+        "This duplicate line contains secret handling details and enough filler "
+        "to be long but should be blocked by denylist."
+    )
+    skill_content = f"Use this skill when testing.\n{cross}\n{denied}\n{denied}"
+    ordinary_system = f"ordinary system heading\n{cross}"
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(
+        [
+            {"role": "system", "content": skill_content},
+            {"role": "system", "content": ordinary_system},
+        ]
+    )
+
+    assert out[0]["content"] == skill_content
+    assert out[1]["content"] == ordinary_system
+    assert stats["prompt_dedup_chars_saved"] == 0
+    assert stats["prompt_dedup_blocks_replaced"] == 0

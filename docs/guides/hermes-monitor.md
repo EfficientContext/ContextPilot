@@ -178,6 +178,61 @@ Use `--disable-prompt-dedup-ab` to omit this section. Even when enabled, all
 figures are **simulation-only**, **not realized savings**, and no prompt text is
 rewritten, summarized, deduplicated, or emitted.
 
+### Prompt dedup canary (runtime; default OFF)
+
+> **Use only after the A/B simulation above shows a clear, positive
+> `same_type_skill_prompt_only` delta and you have a golden eval in place.**
+> This is the one ContextPilot path that *actually rewrites prompt text*; treat
+> it as gray/canary, not default behavior.
+
+Everything else in the analyzer is measurement/shadow/simulation only. The
+canary (`contextpilot.hermes_opportunities.prompt_dedup_canary`) is the single
+runtime replacement path and it is **off by default**. It is controlled entirely
+by environment variables — no config file is required:
+
+```sh
+# off (default): no scan, no mutation, no prompt-dedup savings recorded
+CONTEXTPILOT_PROMPT_DEDUP_MODE=off
+
+# shadow: measure what a canary *would* replace; payload still unchanged
+CONTEXTPILOT_PROMPT_DEDUP_MODE=shadow
+
+# canary: actually replace later exact duplicate skill-prompt blocks
+CONTEXTPILOT_PROMPT_DEDUP_MODE=canary
+```
+
+**Rollback / kill switch.** Set the mode back to `off` (or unset the variable)
+to disable immediately. The escape-hatch variable forces `off` regardless of the
+mode variable, for an instant kill without editing the mode:
+
+```sh
+CONTEXTPILOT_PROMPT_DEDUP_DISABLE=1   # forces off even if MODE=canary
+```
+
+What the canary will and will not do, even when `MODE=canary`:
+
+- It acts **only** on the `same_type_skill_prompt_only` class — an EXACT
+  duplicate block whose every occurrence is inside `skill_prompt` content.
+- It **never** replaces `system_prompt`-only duplicates, **never** replaces
+  cross-type `system_prompt`/`skill_prompt` duplicates, and **never** touches
+  user, assistant, tool, or ordinary system-prompt content.
+- The **first** occurrence is always kept verbatim; only later exact duplicates
+  are replaced, and only with a deterministic reference string containing a
+  low-cardinality prompt-type enum plus a salted hash — never raw prompt text.
+- A replacement happens only when the reference string is **strictly shorter**
+  than the line it replaces, so the payload is never grown.
+- A broad **safety denylist** (instruction / safety / security / tool / auth /
+  secret / must / never / always / required / ...) leaves any matching block
+  unchanged even in canary mode. Skill-prompt detection is conservative: if a
+  block is not clearly a skill-prompt duplicate, it is left as-is.
+
+Telemetry is metadata-only: `prompt_dedup_mode`, `prompt_dedup_class`,
+`prompt_dedup_blocks_replaced`, and `prompt_dedup_chars_saved` (mode/class enums
+and integer counters only — no prompt text). The realized `prompt_dedup_chars_saved`
+and its contribution to the aggregate `chars_saved` total are non-zero **only
+when a real canary mutation occurred**; `off` and `shadow` record no prompt-dedup
+savings.
+
 ### Worker Context Routing shadow mode
 
 The analyzer now includes a **Worker Context Routing — shadow mode** section by

@@ -324,6 +324,73 @@ def _measure_actual_tokens(
     }
 
 
+def _classify_prompt_content_for_canary(text: str) -> str:
+    """Conservatively classify runtime system text for prompt-dedup canary.
+
+    Runtime API payloads usually expose both system and skill instructions as
+    role='system' messages. The canary may only rewrite clearly skill-like text;
+    ordinary/unclear system content stays system_prompt and is therefore never
+    eligible for the same_type_skill_prompt_only canary class.
+    """
+    low = text.lower()
+    stripped = low.lstrip()
+    if stripped.startswith("---") and "name:" in low[:300]:
+        return "skill_prompt"
+    # Runtime canary is stricter than the offline analyzer: only obvious skill
+    # documents whose leading text says "use this skill" are writable. Broader
+    # cues such as "available skills" remain system_prompt at runtime.
+    if "use this skill" in low[:500]:
+        return "skill_prompt"
+    return "system_prompt"
+
+
+def _apply_prompt_dedup_canary_to_api_messages(
+    api_messages: List[Dict[str, Any]], *, salt: str = "contextpilot-runtime-prompt-dedup-v1"
+):
+    """Apply the default-off skill-prompt canary to runtime API messages.
+
+    This is a narrow adapter from Hermes/OpenAI-style messages to the analyzer
+    package's in-memory _LLMContent carrier. It mutates api_messages only when
+    CONTEXTPILOT_PROMPT_DEDUP_MODE=canary and the canary module replaces a
+    same_type_skill_prompt_only duplicate. User/assistant/tool and ordinary
+    system content are never passed as writable skill_prompt items.
+    """
+    try:
+        from contextpilot.hermes_opportunities.models import _LLMContent
+        from contextpilot.hermes_opportunities.prompt_dedup_canary import (
+            apply_prompt_dedup_canary,
+        )
+    except Exception as e:  # noqa: BLE001 - canary must never break requests
+        logger.debug("[ContextPilot] prompt dedup canary unavailable: %s", e)
+        return None
+
+    llm_items = []
+    message_indexes = []
+    for idx, msg in enumerate(api_messages):
+        if not isinstance(msg, dict) or msg.get("role") != "system":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        block_type = _classify_prompt_content_for_canary(content)
+        llm_items.append(_LLMContent(block_type=block_type, content=content))
+        message_indexes.append(idx)
+
+    if not llm_items:
+        return None
+
+    result = apply_prompt_dedup_canary(
+        llm_items,
+        salt=salt,
+        min_block_chars=40,
+    )
+    if result and result.mutated:
+        for item, idx in zip(llm_items, message_indexes):
+            if item.block_type == "skill_prompt":
+                api_messages[idx]["content"] = item.content
+    return result
+
+
 def _reorder_docs(docs: List[str], alpha: float = 0.001) -> List[str]:
     global _intercept_index
     if len(docs) < 2:
@@ -736,7 +803,16 @@ class ContextPilotEngine(ContextEngine):
             except Exception as e:
                 logger.debug("[ContextPilot] Extract/reorder failed: %s", e)
 
-        # Step 5: Block-level dedup
+        # Step 5: Optional prompt-dedup canary (default off). This is the only
+        # runtime prompt mutation path and is limited to same_type_skill_prompt_only.
+        prompt_dedup_result = _apply_prompt_dedup_canary_to_api_messages(api_messages)
+        prompt_dedup_chars_saved = (
+            prompt_dedup_result.chars_saved
+            if prompt_dedup_result is not None and prompt_dedup_result.mutated
+            else 0
+        )
+
+        # Step 6: Block-level dedup
         sys_content = None
         for msg in api_messages:
             if isinstance(msg, dict) and msg.get("role") == "system":
@@ -749,7 +825,7 @@ class ContextPilotEngine(ContextEngine):
             {"messages": api_messages},
             system_content=sys_content,
         )
-        turn_chars_saved = doc_chars_saved + dedup_result.chars_saved
+        turn_chars_saved = doc_chars_saved + dedup_result.chars_saved + prompt_dedup_chars_saved
         self._total_chars_saved += turn_chars_saved
 
         # Actual before/after of the full LLM-bound payload (chars). These are
@@ -801,6 +877,18 @@ class ContextPilotEngine(ContextEngine):
                 "tokens_saved_method": "estimated_chars_div_4",
                 "doc_chars_saved": doc_chars_saved,
                 "block_chars_saved": dedup_result.chars_saved,
+                "prompt_dedup_mode": (
+                    prompt_dedup_result.mode if prompt_dedup_result is not None else "off"
+                ),
+                "prompt_dedup_class": (
+                    prompt_dedup_result.prompt_dedup_class
+                    if prompt_dedup_result is not None else "same_type_skill_prompt_only"
+                ),
+                "prompt_dedup_blocks_replaced": (
+                    prompt_dedup_result.blocks_replaced
+                    if prompt_dedup_result is not None and prompt_dedup_result.mutated else 0
+                ),
+                "prompt_dedup_chars_saved": prompt_dedup_chars_saved,
                 "blocks_deduped": dedup_result.blocks_deduped,
                 "blocks_total": dedup_result.blocks_total,
                 "docs_deduped": self._total_docs_deduped,
@@ -820,6 +908,14 @@ class ContextPilotEngine(ContextEngine):
             "payload_chars_saved": payload_chars_saved,
             "doc_chars_saved": doc_chars_saved,
             "block_chars_saved": dedup_result.chars_saved,
+            "prompt_dedup_mode": (
+                prompt_dedup_result.mode if prompt_dedup_result is not None else "off"
+            ),
+            "prompt_dedup_chars_saved": prompt_dedup_chars_saved,
+            "prompt_dedup_blocks_replaced": (
+                prompt_dedup_result.blocks_replaced
+                if prompt_dedup_result is not None and prompt_dedup_result.mutated else 0
+            ),
             "blocks_deduped": dedup_result.blocks_deduped,
             "blocks_total": dedup_result.blocks_total,
             "docs_deduped": self._total_docs_deduped,

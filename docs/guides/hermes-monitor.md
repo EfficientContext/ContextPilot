@@ -321,7 +321,29 @@ gate below before changing ContextPilot config or code. A defensive guard in
 `write_report` refuses to emit any forbidden raw-content key, so the reports are
 safe to ship from an unattended cron job.
 
-## Accuracy gate
+## Default-off canaries
+
+Prompt and artifact reuse are opt-in canaries. Ordinary installs keep both off
+unless an operator explicitly enables them and restarts Hermes.
+
+```bash
+# Skill-prompt exact duplicate canary (lowest-risk prompt class)
+export CONTEXTPILOT_PROMPT_DEDUP_MODE=canary
+
+# Provenance-aware tool/artifact exact duplicate canary
+export CONTEXTPILOT_ARTIFACT_DEDUP_MODE=canary
+
+# Emergency kill switches
+export CONTEXTPILOT_PROMPT_DEDUP_DISABLE=1
+export CONTEXTPILOT_ARTIFACT_DEDUP_DISABLE=1
+```
+
+The artifact canary only keeps the first full `tool_result`/`assistant_context`
+artifact body and replaces later exact duplicates with a shorter ContextPilot
+reference. It does not summarize, semantically compress, or drop user/system
+content.
+
+## Safety gates
 
 This monitor reports processed-payload savings, exact tokenizer token deltas when recorded, and operational signals. Before shipping ContextPilot changes, run a fixed golden eval set and require:
 

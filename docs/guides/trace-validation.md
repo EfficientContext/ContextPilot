@@ -51,6 +51,17 @@ Validate the current prompt-dedup canary candidate:
 ```bash
 python scripts/run_trace_validation.py \
   ~/contextpilot/validation_sets/validation_set_YYYY-MM-DD.jsonl \
+  --gate prompt \
+  --candidate-mode canary \
+  --format markdown
+```
+
+Validate the provenance-aware artifact/tool-context reuse canary candidate:
+
+```bash
+python scripts/run_trace_validation.py \
+  ~/contextpilot/validation_sets/validation_set_YYYY-MM-DD.jsonl \
+  --gate artifact \
   --candidate-mode canary \
   --format markdown
 ```
@@ -88,10 +99,18 @@ non-zero on any failed invariant:
 - realized savings accounting matches the actual processed-payload before/after
   character delta.
 
-For the current canary, the only allowed mutation scope is
+For the current prompt canary, the only allowed mutation scope is
 `same_type_skill_prompt_only`: later exact duplicate `skill_prompt` lines may be
 replaced with a deterministic ContextPilot reference if and only if the reference
 is shorter and the line is not safety-denylisted.
+
+For the artifact/tool-context reuse canary, the only allowed mutation scope is
+`same_payload_exact_artifact_body`: later exact duplicate `tool_result` or
+`assistant_context` artifact bodies may be replaced with a deterministic
+ContextPilot artifact reference if and only if the first full canonical body
+appears earlier in the same payload, the reference is shorter, and all
+non-artifact content remains byte-identical. The artifact gate adds an explicit
+reference-resolution invariant so dangling references fail the run.
 
 ## When this is required
 

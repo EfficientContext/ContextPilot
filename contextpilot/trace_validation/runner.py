@@ -39,6 +39,14 @@ from contextpilot.hermes_opportunities.prompt_dedup_canary import (
     apply_prompt_dedup_canary,
     resolve_prompt_dedup_mode,
 )
+from contextpilot.hermes_opportunities.artifact_dedup_canary import (
+    MUTABLE_ARTIFACT_BLOCK_TYPES,
+    ArtifactDedupCanaryResult,
+    _parse_artifact_reference,
+    apply_artifact_dedup_canary,
+    dangling_artifact_references,
+    resolve_artifact_dedup_mode,
+)
 from contextpilot.hermes_opportunities.tokenizer import resolve_tokenizer
 
 from .builder import DEFAULT_SALT
@@ -355,6 +363,214 @@ def render_markdown(report: ValidationReport) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Artifact-dedup canary validation (provenance-aware tool-artifact reuse)
+# ---------------------------------------------------------------------------
+
+# Stable invariant identifiers for the artifact-dedup gate. Mirrors the prompt
+# gate but swaps in artifact-scope and reference-resolvability checks.
+ARTIFACT_INVARIANT_NAMES = [
+    "message_count_preserved",
+    "order_and_roles_preserved",
+    "protected_content_preserved",
+    "artifact_mutation_scope_allowed",
+    "artifact_reference_resolvable",
+    "savings_accounting_consistent",
+]
+
+
+def optimize_artifact_case(
+    messages: list[dict], *, mode: str, salt: str, min_block_chars: int
+) -> tuple[list[dict], ArtifactDedupCanaryResult]:
+    """Run the artifact-dedup canary over a case's messages in the given mode.
+
+    Returns ``(out_messages, result)``. The canary mutates only mutable artifact
+    bodies in place; ``out_messages`` mirrors the input role/block_type/order
+    with the (possibly) rewritten content so the caller can diff payloads.
+    """
+    contents = [_LLMContent(m["block_type"], m["content"]) for m in messages]
+    result = apply_artifact_dedup_canary(
+        contents, salt=salt, min_block_chars=min_block_chars, mode=mode
+    )
+    out = [
+        {"role": m["role"], "block_type": m["block_type"], "content": c.content}
+        for m, c in zip(messages, contents)
+    ]
+    return out, result
+
+
+def _artifact_mutation_scope_ok(base: dict, cand: dict) -> bool:
+    """A single message changed only within the allowed (artifact-only) scope."""
+    if base["content"] == cand["content"]:
+        return True
+    # Only mutable artifact bodies may ever change.
+    if base["block_type"] not in MUTABLE_ARTIFACT_BLOCK_TYPES:
+        return False
+    # A changed body must become a reference placeholder strictly shorter than
+    # the body it replaced -- never new free text and never a growth.
+    if _parse_artifact_reference(cand["content"]) is None:
+        return False
+    return len(cand["content"]) < len(base["content"])
+
+
+def check_artifact_invariants(
+    baseline: list[dict],
+    candidate: list[dict],
+    result: ArtifactDedupCanaryResult,
+    *,
+    salt: str,
+) -> tuple[dict[str, bool], int]:
+    """Check accuracy-preservation invariants for an artifact-dedup pass.
+
+    Returns ``(invariant -> passed, realized_chars_saved)`` where
+    ``realized_chars_saved`` is the ACTUAL summed before/after character delta of
+    the processed payload (not an opportunity count).
+    """
+    inv: dict[str, bool] = {}
+
+    inv["message_count_preserved"] = len(baseline) == len(candidate)
+
+    if inv["message_count_preserved"]:
+        inv["order_and_roles_preserved"] = all(
+            b["role"] == c["role"] and b["block_type"] == c["block_type"]
+            for b, c in zip(baseline, candidate)
+        )
+        inv["protected_content_preserved"] = all(
+            b["content"] == c["content"]
+            for b, c in zip(baseline, candidate)
+            if b["block_type"] not in MUTABLE_ARTIFACT_BLOCK_TYPES
+        )
+        inv["artifact_mutation_scope_allowed"] = all(
+            _artifact_mutation_scope_ok(b, c) for b, c in zip(baseline, candidate)
+        )
+        cand_contents = [
+            _LLMContent(c["block_type"], c["content"]) for c in candidate
+        ]
+        inv["artifact_reference_resolvable"] = (
+            dangling_artifact_references(cand_contents, salt=salt) == []
+        )
+        realized = sum(
+            len(b["content"]) - len(c["content"])
+            for b, c in zip(baseline, candidate)
+        )
+    else:
+        # Count mismatch makes positional comparison meaningless; fail the rest.
+        inv["order_and_roles_preserved"] = False
+        inv["protected_content_preserved"] = False
+        inv["artifact_mutation_scope_allowed"] = False
+        inv["artifact_reference_resolvable"] = False
+        realized = 0
+
+    inv["savings_accounting_consistent"] = (
+        realized >= 0
+        and realized == result.chars_saved
+        and (realized > 0) == bool(result.mutated)
+        and (result.blocks_replaced > 0) == bool(result.mutated)
+    )
+    return inv, realized
+
+
+def run_artifact_validation(
+    cases: list[dict],
+    *,
+    baseline_mode: str = "off",
+    candidate_mode: str,
+    salt: str,
+    min_block_chars: int = DEFAULT_MIN_BLOCK_CHARS,
+    date: str,
+    tokenizer_spec: object | None = None,
+    optimize_fn: Callable[..., tuple[list[dict], ArtifactDedupCanaryResult]] | None = None,
+) -> ValidationReport:
+    """Validate every case under baseline vs candidate for the artifact canary."""
+    optimize_fn = optimize_fn or optimize_artifact_case
+    tokenizer = resolve_tokenizer(tokenizer_spec)
+    tok_status = "available" if tokenizer is not None else "unavailable"
+
+    case_results: list[ValidationCaseResult] = []
+    total_blocks = 0
+    total_chars = 0
+    total_actual_saved = 0 if tokenizer is not None else None
+
+    for case in cases:
+        msgs = _messages(case)
+        baseline_msgs, _ = optimize_fn(
+            list(msgs), mode=baseline_mode, salt=salt, min_block_chars=min_block_chars
+        )
+        candidate_msgs, result = optimize_fn(
+            list(msgs), mode=candidate_mode, salt=salt, min_block_chars=min_block_chars
+        )
+
+        inv, realized = check_artifact_invariants(
+            baseline_msgs, candidate_msgs, result, salt=salt
+        )
+        failed = [name for name, ok in inv.items() if not ok]
+
+        at_before = at_after = at_saved = None
+        if tokenizer is not None:
+            at_before = sum(tokenizer.count(m["content"]) for m in baseline_msgs)
+            at_after = sum(tokenizer.count(m["content"]) for m in candidate_msgs)
+            at_saved = at_before - at_after
+            total_actual_saved += at_saved
+
+        artifact_items = sum(
+            1 for m in msgs if m["block_type"] in MUTABLE_ARTIFACT_BLOCK_TYPES
+        )
+        total_blocks += result.blocks_replaced if result.mutated else 0
+        total_chars += realized
+
+        case_results.append(
+            ValidationCaseResult(
+                case_id=str(case.get("case_id", "")),
+                source=case.get("source"),
+                message_count=len(msgs),
+                skill_item_count=artifact_items,
+                mutated=bool(result.mutated),
+                blocks_replaced=result.blocks_replaced if result.mutated else 0,
+                chars_saved=realized,
+                invariants=inv,
+                passed=not failed,
+                failed_invariants=failed,
+                actual_tokens_before=at_before,
+                actual_tokens_after=at_after,
+                actual_tokens_saved=at_saved,
+            )
+        )
+
+    passed_cases = sum(1 for c in case_results if c.passed)
+    failed_cases = len(case_results) - passed_cases
+    notes = [
+        "baseline runs the artifact canary in 'off' mode and must leave the "
+        "payload byte-identical; the candidate mode is the change under test",
+        "chars_saved is the REALIZED processed-payload before/after char delta, "
+        "not an opportunity count",
+    ]
+    if tokenizer is None:
+        notes.append(
+            "actual-token savings unavailable (no exact tokenizer backend configured); "
+            "no actual-token fields are reported"
+        )
+
+    return ValidationReport(
+        schema_version=VALIDATION_SET_SCHEMA_VERSION,
+        generated_date=date,
+        salt_fingerprint=_salt_fingerprint(salt),
+        baseline_mode=baseline_mode,
+        candidate_mode=candidate_mode,
+        case_count=len(case_results),
+        passed=failed_cases == 0,
+        passed_cases=passed_cases,
+        failed_cases=failed_cases,
+        total_blocks_replaced=total_blocks,
+        total_chars_saved=total_chars,
+        tokenizer_status=tok_status,
+        tokenizer_backend=tokenizer.name if tokenizer is not None else None,
+        total_actual_tokens_saved=total_actual_saved,
+        invariant_names=list(ARTIFACT_INVARIANT_NAMES),
+        cases=case_results,
+        notes=notes,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -365,11 +581,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("corpus", type=Path, help="path to the JSONL validation corpus")
     parser.add_argument(
+        "--gate",
+        choices=["prompt", "artifact"],
+        default="prompt",
+        help=(
+            "which validation gate to run: 'prompt' for skill-prompt dedup "
+            "or 'artifact' for provenance-aware tool/artifact reuse (default: prompt)"
+        ),
+    )
+    parser.add_argument(
         "--candidate-mode",
         default=None,
         help=(
-            "prompt-dedup mode to validate (off|shadow|canary). Defaults to the "
-            "resolved CONTEXTPILOT_PROMPT_DEDUP_MODE environment value."
+            "dedup mode to validate (off|shadow|canary). Defaults to the "
+            "resolved CONTEXTPILOT_*_DEDUP_MODE env for the selected gate."
         ),
     )
     parser.add_argument(
@@ -398,14 +623,16 @@ def main(argv: list[str] | None = None) -> int:
     if not args.corpus.exists():
         raise SystemExit(f"validation corpus not found: {args.corpus}")
 
-    candidate_mode = (
-        args.candidate_mode
-        if args.candidate_mode is not None
-        else resolve_prompt_dedup_mode()
-    )
+    if args.candidate_mode is not None:
+        candidate_mode = args.candidate_mode
+    elif args.gate == "artifact":
+        candidate_mode = resolve_artifact_dedup_mode()
+    else:
+        candidate_mode = resolve_prompt_dedup_mode()
 
     cases = load_cases(args.corpus)
-    report = run_validation(
+    run_fn = run_artifact_validation if args.gate == "artifact" else run_validation
+    report = run_fn(
         cases,
         baseline_mode=args.baseline_mode,
         candidate_mode=candidate_mode,

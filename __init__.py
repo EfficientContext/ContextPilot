@@ -53,6 +53,11 @@ _intercept_index = None
 _hermes_sanitizer_patched = False
 _bootstrap_attempted = False
 
+# Cache for the directly-loaded hermes_opportunities canary modules. ``None``
+# means "not yet attempted"; ``False`` means "attempted and unavailable"; a dict
+# means "loaded".
+_canary_modules: Any = None
+
 
 def _import_contextpilot_submodules():
     global dedup_chat_completions
@@ -324,6 +329,68 @@ def _measure_actual_tokens(
     }
 
 
+def _load_canary_modules():
+    """Load the hermes_opportunities canary modules without importing the
+    ``contextpilot`` package ``__init__``.
+
+    ``from contextpilot.hermes_opportunities.* import ...`` would first execute
+    ``contextpilot/__init__.py``, which pulls in the pipeline / live-index stack
+    (numpy/scipy). Those are unavailable in the Hermes/plugin runtime, so the
+    package import fails and both canaries silently fall back to "off". Instead
+    we load the four pure-Python modules
+    (``models``/``privacy``/``prompt_dedup_canary``/``artifact_dedup_canary``)
+    directly from their files under a lightweight private package
+    (``_contextpilot_canary``) so their relative imports (``from .models``,
+    ``from .privacy``) resolve without touching the heavy package ``__init__``.
+
+    Returns a dict with ``models``/``prompt_dedup_canary``/``artifact_dedup_canary``
+    module objects, or ``None`` when the files cannot be loaded.
+    """
+    global _canary_modules
+    if _canary_modules is not None:
+        return _canary_modules or None
+
+    try:
+        pkg_name = "_contextpilot_canary"
+        ho_dir = _REPO_ROOT / "contextpilot" / "hermes_opportunities"
+
+        pkg = sys.modules.get(pkg_name)
+        if pkg is None:
+            pkg_spec = _ilu.spec_from_loader(pkg_name, loader=None, is_package=True)
+            pkg = _ilu.module_from_spec(pkg_spec)
+            pkg.__path__ = [str(ho_dir)]
+            sys.modules[pkg_name] = pkg
+
+        def _load(sub: str):
+            full = f"{pkg_name}.{sub}"
+            cached = sys.modules.get(full)
+            if cached is not None:
+                return cached
+            spec = _ilu.spec_from_file_location(full, str(ho_dir / f"{sub}.py"))
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot load {full}")
+            mod = _ilu.module_from_spec(spec)
+            # Register before exec so the canary modules' relative imports
+            # (``from .models``/``from .privacy``) resolve to these entries.
+            sys.modules[full] = mod
+            spec.loader.exec_module(mod)
+            return mod
+
+        # Dependencies first: the canary modules import from these.
+        _load("models")
+        _load("privacy")
+        _canary_modules = {
+            "models": sys.modules[f"{pkg_name}.models"],
+            "prompt_dedup_canary": _load("prompt_dedup_canary"),
+            "artifact_dedup_canary": _load("artifact_dedup_canary"),
+        }
+        return _canary_modules
+    except Exception as e:  # noqa: BLE001 - canary must never break requests
+        _canary_modules = False
+        logger.debug("[ContextPilot] canary modules unavailable: %s", e)
+        return None
+
+
 def _classify_prompt_content_for_canary(text: str) -> str:
     """Conservatively classify runtime system text for prompt-dedup canary.
 
@@ -355,14 +422,11 @@ def _apply_prompt_dedup_canary_to_api_messages(
     same_type_skill_prompt_only duplicate. User/assistant/tool and ordinary
     system content are never passed as writable skill_prompt items.
     """
-    try:
-        from contextpilot.hermes_opportunities.models import _LLMContent
-        from contextpilot.hermes_opportunities.prompt_dedup_canary import (
-            apply_prompt_dedup_canary,
-        )
-    except Exception as e:  # noqa: BLE001 - canary must never break requests
-        logger.debug("[ContextPilot] prompt dedup canary unavailable: %s", e)
+    mods = _load_canary_modules()
+    if mods is None:
         return None
+    _LLMContent = mods["models"]._LLMContent
+    apply_prompt_dedup_canary = mods["prompt_dedup_canary"].apply_prompt_dedup_canary
 
     llm_items = []
     message_indexes = []
@@ -388,6 +452,63 @@ def _apply_prompt_dedup_canary_to_api_messages(
         for item, idx in zip(llm_items, message_indexes):
             if item.block_type == "skill_prompt":
                 api_messages[idx]["content"] = item.content
+    return result
+
+
+# Telemetry class for the runtime artifact-dedup path. The analyzer module's
+# ARTIFACT_DEDUP_CLASS is its own internal enum; the runtime path reports this
+# stable, provenance-flavored class string in its telemetry/stats.
+_ARTIFACT_DEDUP_RUNTIME_CLASS = "same_payload_exact_artifact_body"
+
+
+def _apply_artifact_dedup_canary_to_api_messages(
+    api_messages: List[Dict[str, Any]], *, salt: str = "contextpilot-runtime-artifact-dedup-v1"
+):
+    """Apply the default-off artifact-dedup canary to runtime API messages.
+
+    This is a narrow adapter from Hermes/OpenAI-style messages to the analyzer
+    package's in-memory _LLMContent carrier. Only ``role=tool`` (mapped to
+    ``tool_result``) and ``role=assistant`` (mapped to ``assistant_context``)
+    messages are passed as mutable artifact bodies; user/system/skill content is
+    never scanned or rewritten. It mutates api_messages only when
+    CONTEXTPILOT_ARTIFACT_DEDUP_MODE=canary and the canary module replaces a
+    later exact-duplicate artifact body with a strictly shorter reference.
+    """
+    mods = _load_canary_modules()
+    if mods is None:
+        return None
+    _LLMContent = mods["models"]._LLMContent
+    apply_artifact_dedup_canary = mods["artifact_dedup_canary"].apply_artifact_dedup_canary
+
+    llm_items = []
+    message_indexes = []
+    for idx, msg in enumerate(api_messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "tool":
+            block_type = "tool_result"
+        elif role == "assistant":
+            block_type = "assistant_context"
+        else:
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        llm_items.append(_LLMContent(block_type=block_type, content=content))
+        message_indexes.append(idx)
+
+    if not llm_items:
+        return None
+
+    result = apply_artifact_dedup_canary(
+        llm_items,
+        salt=salt,
+        min_block_chars=40,
+    )
+    if result and result.mutated:
+        for item, idx in zip(llm_items, message_indexes):
+            api_messages[idx]["content"] = item.content
     return result
 
 
@@ -812,6 +933,16 @@ class ContextPilotEngine(ContextEngine):
             else 0
         )
 
+        # Step 5b: Optional artifact-dedup canary (default off). The second
+        # runtime mutation path, limited to exact-duplicate tool_result /
+        # assistant_context artifact bodies (provenance-aware reference).
+        artifact_dedup_result = _apply_artifact_dedup_canary_to_api_messages(api_messages)
+        artifact_dedup_chars_saved = (
+            artifact_dedup_result.chars_saved
+            if artifact_dedup_result is not None and artifact_dedup_result.mutated
+            else 0
+        )
+
         # Step 6: Block-level dedup
         sys_content = None
         for msg in api_messages:
@@ -825,7 +956,12 @@ class ContextPilotEngine(ContextEngine):
             {"messages": api_messages},
             system_content=sys_content,
         )
-        turn_chars_saved = doc_chars_saved + dedup_result.chars_saved + prompt_dedup_chars_saved
+        turn_chars_saved = (
+            doc_chars_saved
+            + dedup_result.chars_saved
+            + prompt_dedup_chars_saved
+            + artifact_dedup_chars_saved
+        )
         self._total_chars_saved += turn_chars_saved
 
         # Actual before/after of the full LLM-bound payload (chars). These are
@@ -889,6 +1025,15 @@ class ContextPilotEngine(ContextEngine):
                     if prompt_dedup_result is not None and prompt_dedup_result.mutated else 0
                 ),
                 "prompt_dedup_chars_saved": prompt_dedup_chars_saved,
+                "artifact_dedup_mode": (
+                    artifact_dedup_result.mode if artifact_dedup_result is not None else "off"
+                ),
+                "artifact_dedup_class": _ARTIFACT_DEDUP_RUNTIME_CLASS,
+                "artifact_dedup_blocks_replaced": (
+                    artifact_dedup_result.blocks_replaced
+                    if artifact_dedup_result is not None and artifact_dedup_result.mutated else 0
+                ),
+                "artifact_dedup_chars_saved": artifact_dedup_chars_saved,
                 "blocks_deduped": dedup_result.blocks_deduped,
                 "blocks_total": dedup_result.blocks_total,
                 "docs_deduped": self._total_docs_deduped,
@@ -915,6 +1060,14 @@ class ContextPilotEngine(ContextEngine):
             "prompt_dedup_blocks_replaced": (
                 prompt_dedup_result.blocks_replaced
                 if prompt_dedup_result is not None and prompt_dedup_result.mutated else 0
+            ),
+            "artifact_dedup_mode": (
+                artifact_dedup_result.mode if artifact_dedup_result is not None else "off"
+            ),
+            "artifact_dedup_chars_saved": artifact_dedup_chars_saved,
+            "artifact_dedup_blocks_replaced": (
+                artifact_dedup_result.blocks_replaced
+                if artifact_dedup_result is not None and artifact_dedup_result.mutated else 0
             ),
             "blocks_deduped": dedup_result.blocks_deduped,
             "blocks_total": dedup_result.blocks_total,

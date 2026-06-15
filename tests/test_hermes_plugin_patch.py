@@ -546,3 +546,54 @@ def test_artifact_dedup_canary_mutates_repeated_tool_artifacts_runtime(monkeypat
     raw = telemetry.read_text(encoding="utf-8")
     assert repeated not in raw
     assert "pytest terminal output" not in raw
+
+
+def test_artifact_dedup_canary_runs_when_contextpilot_package_init_unimportable(
+    monkeypatch, tmp_path
+):
+    """Regression: the canary must load via direct-file loading even when the
+    ``contextpilot`` package ``__init__`` cannot be imported (e.g. scipy missing
+    in the Hermes/plugin runtime). Previously the apply helpers imported
+    ``contextpilot.hermes_opportunities.*`` directly, which executed the heavy
+    package ``__init__`` and silently fell back to ``artifact_dedup_mode=off``.
+    """
+    import builtins
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.setenv("CONTEXTPILOT_ARTIFACT_DEDUP_MODE", "canary")
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    # Force a fresh load attempt and simulate the unimportable package.
+    monkeypatch.setattr(module, "_canary_modules", None)
+    for mod_name in list(sys.modules):
+        if mod_name == "contextpilot" or mod_name.startswith("contextpilot."):
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    real_import = builtins.__import__
+
+    def _poisoned_import(name, *args, **kwargs):
+        if name == "contextpilot" or name.startswith("contextpilot."):
+            raise ImportError("simulated: contextpilot package __init__ (scipy) unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _poisoned_import)
+
+    repeated = "pytest terminal output line showing repeated failure details\n" * 12
+    messages = [
+        {"role": "tool", "tool_call_id": "call_1", "content": repeated},
+        {"role": "tool", "tool_call_id": "call_2", "content": repeated},
+    ]
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(messages)
+
+    assert out[0]["content"] == repeated  # canonical full copy kept
+    assert "ContextPilot artifact dedup: duplicate" in out[1]["content"]
+    assert repeated not in out[1]["content"]
+    assert stats["artifact_dedup_mode"] == "canary"
+    assert stats["artifact_dedup_blocks_replaced"] == 1
+    assert stats["artifact_dedup_chars_saved"] > 0

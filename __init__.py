@@ -53,6 +53,11 @@ _intercept_index = None
 _hermes_sanitizer_patched = False
 _bootstrap_attempted = False
 
+# Cache for the directly-loaded hermes_opportunities canary modules. ``None``
+# means "not yet attempted"; ``False`` means "attempted and unavailable"; a dict
+# means "loaded".
+_canary_modules: Any = None
+
 
 def _import_contextpilot_submodules():
     global dedup_chat_completions
@@ -324,6 +329,68 @@ def _measure_actual_tokens(
     }
 
 
+def _load_canary_modules():
+    """Load the hermes_opportunities canary modules without importing the
+    ``contextpilot`` package ``__init__``.
+
+    ``from contextpilot.hermes_opportunities.* import ...`` would first execute
+    ``contextpilot/__init__.py``, which pulls in the pipeline / live-index stack
+    (numpy/scipy). Those are unavailable in the Hermes/plugin runtime, so the
+    package import fails and both canaries silently fall back to "off". Instead
+    we load the four pure-Python modules
+    (``models``/``privacy``/``prompt_dedup_canary``/``artifact_dedup_canary``)
+    directly from their files under a lightweight private package
+    (``_contextpilot_canary``) so their relative imports (``from .models``,
+    ``from .privacy``) resolve without touching the heavy package ``__init__``.
+
+    Returns a dict with ``models``/``prompt_dedup_canary``/``artifact_dedup_canary``
+    module objects, or ``None`` when the files cannot be loaded.
+    """
+    global _canary_modules
+    if _canary_modules is not None:
+        return _canary_modules or None
+
+    try:
+        pkg_name = "_contextpilot_canary"
+        ho_dir = _REPO_ROOT / "contextpilot" / "hermes_opportunities"
+
+        pkg = sys.modules.get(pkg_name)
+        if pkg is None:
+            pkg_spec = _ilu.spec_from_loader(pkg_name, loader=None, is_package=True)
+            pkg = _ilu.module_from_spec(pkg_spec)
+            pkg.__path__ = [str(ho_dir)]
+            sys.modules[pkg_name] = pkg
+
+        def _load(sub: str):
+            full = f"{pkg_name}.{sub}"
+            cached = sys.modules.get(full)
+            if cached is not None:
+                return cached
+            spec = _ilu.spec_from_file_location(full, str(ho_dir / f"{sub}.py"))
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot load {full}")
+            mod = _ilu.module_from_spec(spec)
+            # Register before exec so the canary modules' relative imports
+            # (``from .models``/``from .privacy``) resolve to these entries.
+            sys.modules[full] = mod
+            spec.loader.exec_module(mod)
+            return mod
+
+        # Dependencies first: the canary modules import from these.
+        _load("models")
+        _load("privacy")
+        _canary_modules = {
+            "models": sys.modules[f"{pkg_name}.models"],
+            "prompt_dedup_canary": _load("prompt_dedup_canary"),
+            "artifact_dedup_canary": _load("artifact_dedup_canary"),
+        }
+        return _canary_modules
+    except Exception as e:  # noqa: BLE001 - canary must never break requests
+        _canary_modules = False
+        logger.debug("[ContextPilot] canary modules unavailable: %s", e)
+        return None
+
+
 def _classify_prompt_content_for_canary(text: str) -> str:
     """Conservatively classify runtime system text for prompt-dedup canary.
 
@@ -355,14 +422,11 @@ def _apply_prompt_dedup_canary_to_api_messages(
     same_type_skill_prompt_only duplicate. User/assistant/tool and ordinary
     system content are never passed as writable skill_prompt items.
     """
-    try:
-        from contextpilot.hermes_opportunities.models import _LLMContent
-        from contextpilot.hermes_opportunities.prompt_dedup_canary import (
-            apply_prompt_dedup_canary,
-        )
-    except Exception as e:  # noqa: BLE001 - canary must never break requests
-        logger.debug("[ContextPilot] prompt dedup canary unavailable: %s", e)
+    mods = _load_canary_modules()
+    if mods is None:
         return None
+    _LLMContent = mods["models"]._LLMContent
+    apply_prompt_dedup_canary = mods["prompt_dedup_canary"].apply_prompt_dedup_canary
 
     llm_items = []
     message_indexes = []
@@ -410,14 +474,11 @@ def _apply_artifact_dedup_canary_to_api_messages(
     CONTEXTPILOT_ARTIFACT_DEDUP_MODE=canary and the canary module replaces a
     later exact-duplicate artifact body with a strictly shorter reference.
     """
-    try:
-        from contextpilot.hermes_opportunities.models import _LLMContent
-        from contextpilot.hermes_opportunities.artifact_dedup_canary import (
-            apply_artifact_dedup_canary,
-        )
-    except Exception as e:  # noqa: BLE001 - canary must never break requests
-        logger.debug("[ContextPilot] artifact dedup canary unavailable: %s", e)
+    mods = _load_canary_modules()
+    if mods is None:
         return None
+    _LLMContent = mods["models"]._LLMContent
+    apply_artifact_dedup_canary = mods["artifact_dedup_canary"].apply_artifact_dedup_canary
 
     llm_items = []
     message_indexes = []

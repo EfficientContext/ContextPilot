@@ -116,6 +116,50 @@ class HeavySession:
     api_call_count: int
 
 
+# Source label used when a Hermes session carries no recorded provenance source.
+# Keeps the provenance profile a low-cardinality enum view rather than leaking
+# a null/raw value.
+UNKNOWN_SOURCE = "unknown"
+
+
+@dataclass
+class ProvenanceSourceStat:
+    """Token-monitor rollup for one provenance source.
+
+    Privacy-safe by construction: a low-cardinality source label plus numeric
+    aggregates only -- never raw session ids/hashes, prompts, content, or
+    reasoning. This is the per-source ``by_source`` row of
+    :class:`ProvenanceProfile`.
+    """
+
+    source: str            # low-cardinality provenance label (e.g. "discord")
+    session_count: int
+    input_tokens: int
+    output_tokens: int
+    message_count: int
+    tool_call_count: int
+    api_call_count: int
+    total_tokens: int      # input_tokens + output_tokens
+
+
+@dataclass
+class ProvenanceProfile:
+    """Privacy-safe per-source token-usage profile (the token-monitor view).
+
+    Aggregates :class:`HeavySession` rows by their provenance ``source`` into
+    numeric counters. Emits only low-cardinality source enums and integer
+    aggregates -- no session hashes/ids, prompts, content, or reasoning ever
+    appear in this structure.
+    """
+
+    source_count: int
+    session_count: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    by_source: list[ProvenanceSourceStat]
+
+
 @dataclass
 class TelemetryCoverage:
     events: int
@@ -398,6 +442,8 @@ class OpportunityReport:
     repeated_blocks: list[RepeatedBlock]
     large_tool_outputs_by_tool: list[ToolSizeStat]
     heavy_sessions: list[HeavySession]
+    # Token-monitor/provenance-profiler rollup (source enums + numeric aggregates only).
+    provenance_profile: ProvenanceProfile
     telemetry: TelemetryCoverage
     # LLM-bound block analysis (system/skill prompts, prompts, tool results).
     llm_bound_item_count: int

@@ -13,7 +13,7 @@ RUN useradd -m -s /bin/bash evaluser
 WORKDIR /app
 
 # Install bigcodebench
-RUN pip install --no-cache-dir bigcodebench
+RUN pip install --no-cache-dir bigcodebench transformers torch
 
 # Create results directory and set ownership
 RUN mkdir -p /app/results && chown -R evaluser:evaluser /app

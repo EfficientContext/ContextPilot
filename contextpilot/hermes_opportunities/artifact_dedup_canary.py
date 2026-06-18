@@ -132,6 +132,60 @@ def _parse_artifact_reference(line: str) -> str | None:
     return body_hash
 
 
+def _segment_fenced_blocks(body: str) -> list[tuple[str, str]]:
+    """Split ``body`` into reversible prose/fence segments.
+
+    Only closed triple-backtick fences are marked as ``"fence"``. Unterminated
+    fences are deliberately treated as prose so the canary never guesses a block
+    boundary. Concatenating the segment text always reproduces ``body`` exactly.
+    """
+    segments: list[tuple[str, str]] = []
+    pos = 0
+    n = len(body)
+    while pos < n:
+        start = body.find("```", pos)
+        if start == -1:
+            if pos < n:
+                segments.append(("prose", body[pos:]))
+            break
+        close = body.find("```", start + 3)
+        if close == -1:
+            if pos < n:
+                segments.append(("prose", body[pos:]))
+            break
+        if start > pos:
+            segments.append(("prose", body[pos:start]))
+        end = close + 3
+        segments.append(("fence", body[start:end]))
+        pos = end
+    return segments
+
+
+def _scan_fenced_block_candidates(
+    contents: list[_LLMContent], *, salt: str, min_block_chars: int
+) -> tuple[int, int]:
+    """Advisory duplicate count for exact fenced sub-artifacts."""
+    agg: dict[str, dict] = {}
+    for item in contents:
+        if item.block_type not in MUTABLE_ARTIFACT_BLOCK_TYPES:
+            continue
+        # Whole-body references are not canonical sources for sub-blocks.
+        if _parse_artifact_reference(item.content) is not None:
+            continue
+        for kind, text in _segment_fenced_blocks(item.content):
+            if kind != "fence" or len(text) < min_block_chars:
+                continue
+            if _parse_artifact_reference(text) is not None:
+                continue
+            h = _salted_hash(text, salt)
+            entry = agg.get(h)
+            if entry is None:
+                agg[h] = {"canonical_type": f"{item.block_type}#block", "char_length": len(text), "occ": 1}
+            else:
+                entry["occ"] += 1
+    return _eligible_groups(agg)
+
+
 def _scan_artifacts(
     contents: list[_LLMContent], *, salt: str, min_block_chars: int
 ) -> tuple[dict[str, dict], int]:
@@ -226,6 +280,11 @@ def apply_artifact_dedup_canary(
 
     agg, item_count = _scan_artifacts(items, salt=salt, min_block_chars=min_block_chars)
     candidate_group_count, candidate_chars = _eligible_groups(agg)
+    block_group_count, block_candidate_chars = _scan_fenced_block_candidates(
+        items, salt=salt, min_block_chars=min_block_chars
+    )
+    candidate_group_count += block_group_count
+    candidate_chars += block_candidate_chars
 
     if resolved == "shadow":
         # Measure what a canary would replace, but never touch the payload.
@@ -246,6 +305,8 @@ def apply_artifact_dedup_canary(
     chars_saved = 0
     # hash -> canonical provenance type of the first (kept) occurrence.
     canonical: dict[str, str] = {}
+    # hash -> canonical provenance type for exact fenced sub-artifacts.
+    block_canonical: dict[str, str] = {}
     for item in items:
         if item.block_type not in MUTABLE_ARTIFACT_BLOCK_TYPES:
             continue  # protected content is never touched
@@ -255,15 +316,54 @@ def apply_artifact_dedup_canary(
         if _parse_artifact_reference(body) is not None:
             continue
         h = _salted_hash(body, salt)
-        if h not in canonical:
-            canonical[h] = item.block_type  # keep the first canonical body verbatim
+        already_has_whole_canonical = h in canonical
+        if already_has_whole_canonical:
+            # Later exact duplicate whole body: reference the EARLIER canonical
+            # body's provenance and do not also scan sub-blocks (no double count).
+            ref = _artifact_reference_string(canonical[h], h)
+            if len(ref) < len(body):  # only when it actually shrinks the payload
+                item.content = ref
+                blocks_replaced += 1
+                chars_saved += len(body) - len(ref)
+                continue
+
+        # If the whole body is not replaced, opportunistically dedup exact
+        # duplicate fenced sub-artifacts within/across mutable artifact bodies.
+        segments = _segment_fenced_blocks(body)
+        if not any(kind == "fence" for kind, _text in segments):
+            if not already_has_whole_canonical:
+                canonical[h] = item.block_type  # keep the first canonical body verbatim
             continue
-        # Later exact duplicate: reference the EARLIER canonical body's provenance.
-        ref = _artifact_reference_string(canonical[h], h)
-        if len(ref) < len(body):  # only when it actually shrinks the payload
-            item.content = ref
-            blocks_replaced += 1
-            chars_saved += len(body) - len(ref)
+        new_segments: list[str] = []
+        changed = False
+        for kind, text in segments:
+            if kind != "fence" or len(text) < min_block_chars:
+                new_segments.append(text)
+                continue
+            if _parse_artifact_reference(text) is not None:
+                new_segments.append(text)
+                continue
+            bh = _salted_hash(text, salt)
+            if bh not in block_canonical:
+                block_canonical[bh] = f"{item.block_type}#block"
+                new_segments.append(text)
+                continue
+            ref = _artifact_reference_string(block_canonical[bh], bh)
+            if len(ref) < len(text):
+                new_segments.append(ref)
+                blocks_replaced += 1
+                chars_saved += len(text) - len(ref)
+                changed = True
+            else:
+                new_segments.append(text)
+        if changed:
+            item.content = "".join(new_segments)
+            # Register only the post-mutation whole body as canonical. Registering
+            # the original pre-mutation hash would let a later whole-body
+            # reference point to a body no longer present in the payload.
+            canonical[_salted_hash(item.content, salt)] = item.block_type
+        elif not already_has_whole_canonical:
+            canonical[h] = item.block_type  # keep the first canonical body verbatim
 
     return ArtifactDedupCanaryResult(
         mode="canary",
@@ -287,7 +387,7 @@ def dangling_artifact_references(
     full canonical body whose salted hash matches the reference. A reference with
     no such earlier canonical body (or one that only appears later) is dangling.
     """
-    seen_full: set[str] = set()  # hashes of earlier full canonical artifact bodies
+    seen_full: set[str] = set()  # hashes of earlier full canonical artifact bodies/blocks
     dangling: list[int] = []
     for idx, item in enumerate(contents):
         body = item.content
@@ -296,8 +396,30 @@ def dangling_artifact_references(
             if ref_hash not in seen_full:
                 dangling.append(idx)
             continue
-        if item.block_type in MUTABLE_ARTIFACT_BLOCK_TYPES:
-            seen_full.add(_salted_hash(body, salt))
+        if item.block_type not in MUTABLE_ARTIFACT_BLOCK_TYPES:
+            continue
+
+        # Whole artifact body can satisfy whole-body references.
+        seen_full.add(_salted_hash(body, salt))
+
+        # Within a body, ordering matters: an earlier fenced block can satisfy a
+        # later reference segment in the same body, but a later block cannot.
+        for kind, text in _segment_fenced_blocks(body):
+            if kind != "fence":
+                # References may also appear as standalone prose lines after a
+                # fenced block replacement. Embedded prose around the line stays
+                # protected; only exact standalone reference lines are accepted.
+                for line in text.splitlines():
+                    seg_ref = _parse_artifact_reference(line.strip())
+                    if seg_ref is not None and seg_ref not in seen_full:
+                        dangling.append(idx)
+                continue
+            seg_ref = _parse_artifact_reference(text)
+            if seg_ref is not None:
+                if seg_ref not in seen_full:
+                    dangling.append(idx)
+                continue
+            seen_full.add(_salted_hash(text, salt))
     return dangling
 
 

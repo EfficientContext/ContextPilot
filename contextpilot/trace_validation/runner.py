@@ -43,6 +43,7 @@ from contextpilot.hermes_opportunities.artifact_dedup_canary import (
     MUTABLE_ARTIFACT_BLOCK_TYPES,
     ArtifactDedupCanaryResult,
     _parse_artifact_reference,
+    _segment_fenced_blocks,
     apply_artifact_dedup_canary,
     dangling_artifact_references,
     resolve_artifact_dedup_mode,
@@ -406,11 +407,34 @@ def _artifact_mutation_scope_ok(base: dict, cand: dict) -> bool:
     # Only mutable artifact bodies may ever change.
     if base["block_type"] not in MUTABLE_ARTIFACT_BLOCK_TYPES:
         return False
-    # A changed body must become a reference placeholder strictly shorter than
-    # the body it replaced -- never new free text and never a growth.
-    if _parse_artifact_reference(cand["content"]) is None:
+    if len(cand["content"]) >= len(base["content"]):
         return False
-    return len(cand["content"]) < len(base["content"])
+
+    # Whole-body replacement remains valid.
+    if _parse_artifact_reference(cand["content"]) is not None:
+        return True
+
+    # Fenced sub-artifact replacement: prose must be byte-identical and only a
+    # whole fenced segment may be swapped for one strictly shorter reference line.
+    pos = 0
+    changed = False
+    for kind, text in _segment_fenced_blocks(base["content"]):
+        if kind != "fence":
+            if not cand["content"].startswith(text, pos):
+                return False
+            pos += len(text)
+            continue
+        if cand["content"].startswith(text, pos):
+            pos += len(text)
+            continue
+        newline = cand["content"].find("\n", pos)
+        end = len(cand["content"]) if newline == -1 else newline
+        ref = cand["content"][pos:end]
+        if _parse_artifact_reference(ref) is None or len(ref) >= len(text):
+            return False
+        pos = end
+        changed = True
+    return changed and pos == len(cand["content"])
 
 
 def check_artifact_invariants(

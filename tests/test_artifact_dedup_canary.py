@@ -39,6 +39,7 @@ from contextpilot.hermes_opportunities.artifact_dedup_canary import (
     dangling_artifact_references,
     resolve_artifact_dedup_mode,
     _artifact_reference_string,
+    _segment_fenced_blocks,
 )
 from contextpilot.hermes_opportunities.models import _LLMContent
 from contextpilot.hermes_opportunities.privacy import _salted_hash
@@ -69,6 +70,20 @@ SYS_BLOCK = (
 # Just over min_block_chars but shorter than any reference placeholder, so a
 # replacement would GROW the payload and must be skipped.
 SHORT_ARTIFACT = "Short synthetic artifact body just over forty chars."
+LONG_FENCE_BLOCK = (
+    "```log\n"
+    "synthetic provenance artifact line 001: worker output checksum=alpha\n"
+    "synthetic provenance artifact line 002: worker output checksum=bravo\n"
+    "synthetic provenance artifact line 003: worker output checksum=charlie\n"
+    "```"
+)
+FENCED_PARENT_ARTIFACT = (
+    "Parent aggregation summary before first artifact.\n"
+    f"{LONG_FENCE_BLOCK}\n"
+    "Short prose between artifacts must survive byte-identical.\n"
+    f"{LONG_FENCE_BLOCK}\n"
+    "Parent aggregation summary after duplicate artifact."
+)
 
 
 def _ref(body: str, *, canonical_type: str = "tool_result") -> str:
@@ -78,6 +93,10 @@ def _ref(body: str, *, canonical_type: str = "tool_result") -> str:
 
 def _ref_len(canonical_type: str = "tool_result") -> int:
     return len(_ref(LONG_ARTIFACT, canonical_type=canonical_type))
+
+
+def _block_ref(block: str, *, canonical_type: str = "tool_result#block") -> str:
+    return _artifact_reference_string(canonical_type, _salted_hash(block, SALT))
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +231,76 @@ def test_canary_dedups_across_artifact_types_provenance_canonical_is_first():
     assert "tool_result" in contents[1].content
     assert "assistant_context" not in contents[1].content
     assert result.blocks_replaced == 1
+
+
+def test_segment_fenced_blocks_round_trips_and_marks_closed_fences():
+    segments = _segment_fenced_blocks(FENCED_PARENT_ARTIFACT)
+    assert "".join(text for _kind, text in segments) == FENCED_PARENT_ARTIFACT
+    assert [kind for kind, _text in segments].count("fence") == 2
+
+
+def test_canary_replaces_later_exact_duplicate_fenced_block_inside_artifact_body():
+    contents = [_LLMContent("assistant_context", FENCED_PARENT_ARTIFACT)]
+
+    result = apply_artifact_dedup_canary(
+        contents, salt=SALT, min_block_chars=MIN, mode="canary"
+    )
+
+    assert contents[0].content.count(LONG_FENCE_BLOCK) == 1
+    expected_ref = _block_ref(LONG_FENCE_BLOCK, canonical_type="assistant_context#block")
+    assert expected_ref in contents[0].content
+    assert "Short prose between artifacts must survive byte-identical." in contents[0].content
+    assert result.blocks_replaced == 1
+    assert result.chars_saved == len(LONG_FENCE_BLOCK) - len(expected_ref)
+    assert dangling_artifact_references(contents, salt=SALT) == []
+
+
+def test_canary_replaces_duplicate_fenced_block_across_artifact_types():
+    first = f"tool output wrapper\n{LONG_FENCE_BLOCK}\nend"
+    second = f"assistant rollup wrapper\n{LONG_FENCE_BLOCK}\nend"
+    contents = [
+        _LLMContent("tool_result", first),
+        _LLMContent("assistant_context", second),
+    ]
+
+    result = apply_artifact_dedup_canary(
+        contents, salt=SALT, min_block_chars=MIN, mode="canary"
+    )
+
+    assert contents[0].content == first
+    assert LONG_FENCE_BLOCK not in contents[1].content
+    assert _block_ref(LONG_FENCE_BLOCK, canonical_type="tool_result#block") in contents[1].content
+    assert result.blocks_replaced == 1
+
+
+def test_whole_body_canonical_is_not_registered_before_internal_block_rewrite():
+    contents = [
+        _LLMContent("assistant_context", FENCED_PARENT_ARTIFACT),
+        _LLMContent("assistant_context", FENCED_PARENT_ARTIFACT),
+    ]
+
+    result = apply_artifact_dedup_canary(
+        contents, salt=SALT, min_block_chars=MIN, mode="canary"
+    )
+
+    assert result.blocks_replaced >= 2
+    # A later reference must never point at the pre-mutation whole-body hash after
+    # the first body was internally rewritten; every emitted reference resolves
+    # to an earlier full fenced block/body still present in the payload.
+    assert dangling_artifact_references(contents, salt=SALT) == []
+
+
+def test_unterminated_fence_is_treated_as_prose_and_not_mutated():
+    body = "prefix\n```log\n" + ("unterminated synthetic artifact line\n" * 8)
+    contents = [_LLMContent("tool_result", body + body)]
+    before = contents[0].content
+
+    result = apply_artifact_dedup_canary(
+        contents, salt=SALT, min_block_chars=MIN, mode="canary"
+    )
+
+    assert contents[0].content == before
+    assert result.blocks_replaced == 0
 
 
 def test_canary_reference_carries_no_raw_artifact_body():

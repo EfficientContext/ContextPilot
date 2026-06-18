@@ -45,6 +45,7 @@ from contextpilot.hermes_opportunities.artifact_dedup_canary import (
     ArtifactSpanLink,
     _parse_artifact_reference,
     _segment_fenced_blocks,
+    _line_aligned,
     apply_artifact_dedup_canary,
     dangling_artifact_references,
     resolve_artifact_dedup_mode,
@@ -420,7 +421,13 @@ def optimize_artifact_case(
     return out, result
 
 
-def _artifact_mutation_scope_ok(base: dict, cand: dict) -> bool:
+def _artifact_mutation_scope_ok(
+    idx: int,
+    base: dict,
+    cand: dict,
+    *,
+    span_links: list[ArtifactSpanLink] | None = None,
+) -> bool:
     """A single message changed only within the allowed (artifact-only) scope."""
     if base["content"] == cand["content"]:
         return True
@@ -433,6 +440,28 @@ def _artifact_mutation_scope_ok(base: dict, cand: dict) -> bool:
     # Whole-body replacement remains valid.
     if _parse_artifact_reference(cand["content"]) is not None:
         return True
+
+    # Declared source-span replacement: validate against the declared target
+    # offsets instead of maximal prefix/suffix inference. Prefix/suffix inference
+    # can accidentally consume a trailing ']' from the replacement reference when
+    # the original copied span also ends with ']', causing a false gate failure.
+    for link in span_links or []:
+        if link.target_index != idx:
+            continue
+        if not _line_aligned(base["content"], link.target_start, link.target_end):
+            continue
+        prefix_text = base["content"][: link.target_start]
+        suffix_text = base["content"][link.target_end :]
+        if not (cand["content"].startswith(prefix_text) and cand["content"].endswith(suffix_text)):
+            continue
+        new_mid = cand["content"][len(prefix_text) : len(cand["content"]) - len(suffix_text)]
+        old_mid = base["content"][link.target_start : link.target_end]
+        if (
+            old_mid
+            and _parse_artifact_reference(new_mid) is not None
+            and len(new_mid) < len(old_mid)
+        ):
+            return True
 
     # Declared source-span replacement: a byte-identical line-aligned span may be
     # swapped for one standalone strictly shorter reference while surrounding
@@ -514,7 +543,8 @@ def check_artifact_invariants(
             if b["block_type"] not in MUTABLE_ARTIFACT_BLOCK_TYPES
         )
         inv["artifact_mutation_scope_allowed"] = all(
-            _artifact_mutation_scope_ok(b, c) for b, c in zip(baseline, candidate)
+            _artifact_mutation_scope_ok(i, b, c, span_links=span_links)
+            for i, (b, c) in enumerate(zip(baseline, candidate))
         )
         cand_contents = [
             _LLMContent(c["block_type"], c["content"]) for c in candidate

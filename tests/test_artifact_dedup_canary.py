@@ -730,6 +730,47 @@ def test_artifact_runner_shadow_passes_without_realized_savings():
     assert all(not c.mutated for c in report.cases)
 
 
+def test_artifact_runner_accepts_source_span_that_ends_with_reference_suffix_char():
+    source_span = (
+        "worker copied JSON-ish payload line 001 alpha bravo charlie delta echo\n"
+        "worker copied JSON-ish payload line 002 foxtrot golf hotel india juliet\n"
+        "worker copied JSON-ish payload line 003 kilo lima mike november oscar]"
+    )
+    tool = "tool wrapper before\n" + source_span + "\ntool wrapper after"
+    parent = "parent summary before\n" + source_span + "\nparent summary after"
+    link = ArtifactSpanLink(
+        source_index=0,
+        source_start=tool.index(source_span),
+        source_end=tool.index(source_span) + len(source_span),
+        target_index=1,
+        target_start=parent.index(source_span),
+        target_end=parent.index(source_span) + len(source_span),
+    )
+    case = {
+        "case_id": "syn-art-span-bracket",
+        "source": "synthetic",
+        "span_links": [link.__dict__],
+        "messages": [
+            {"role": "tool", "block_type": "tool_result", "content": tool},
+            {"role": "assistant", "block_type": "assistant_context", "content": parent},
+        ],
+    }
+
+    report = run_artifact_validation(
+        [case],
+        baseline_mode="off",
+        candidate_mode="canary",
+        salt=SALT,
+        min_block_chars=MIN,
+        date="2026-06-15",
+    )
+
+    assert report.passed is True
+    assert report.failed_cases == 0
+    assert report.total_blocks_replaced == 1
+    assert report.total_chars_saved > 0
+
+
 def test_artifact_runner_report_is_privacy_safe():
     report = run_artifact_validation(
         _artifact_cases(),

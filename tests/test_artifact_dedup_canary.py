@@ -34,6 +34,7 @@ from contextpilot.hermes_opportunities.artifact_dedup_canary import (
     ARTIFACT_DEDUP_MODE_ENV,
     MUTABLE_ARTIFACT_BLOCK_TYPES,
     ArtifactDedupCanaryResult,
+    ArtifactSpanLink,
     apply_artifact_dedup_canary,
     build_artifact_canary_telemetry_record,
     dangling_artifact_references,
@@ -84,6 +85,21 @@ FENCED_PARENT_ARTIFACT = (
     f"{LONG_FENCE_BLOCK}\n"
     "Parent aggregation summary after duplicate artifact."
 )
+SOURCE_SPAN_BLOCK = (
+    "worker-span-line-001 provenance payload alpha bravo charlie\n"
+    "worker-span-line-002 provenance payload delta echo foxtrot\n"
+    "worker-span-line-003 provenance payload golf hotel india"
+)
+SOURCE_SPAN_TOOL = (
+    "tool preamble stays canonical\n"
+    f"{SOURCE_SPAN_BLOCK}\n"
+    "tool epilogue stays canonical"
+)
+SOURCE_SPAN_PARENT = (
+    "parent summary before copied worker span\n"
+    f"{SOURCE_SPAN_BLOCK}\n"
+    "parent summary after copied worker span"
+)
 
 
 def _ref(body: str, *, canonical_type: str = "tool_result") -> str:
@@ -97,6 +113,23 @@ def _ref_len(canonical_type: str = "tool_result") -> int:
 
 def _block_ref(block: str, *, canonical_type: str = "tool_result#block") -> str:
     return _artifact_reference_string(canonical_type, _salted_hash(block, SALT))
+
+
+def _source_span_link() -> ArtifactSpanLink:
+    src_start = SOURCE_SPAN_TOOL.index(SOURCE_SPAN_BLOCK)
+    tgt_start = SOURCE_SPAN_PARENT.index(SOURCE_SPAN_BLOCK)
+    return ArtifactSpanLink(
+        source_index=0,
+        source_start=src_start,
+        source_end=src_start + len(SOURCE_SPAN_BLOCK),
+        target_index=1,
+        target_start=tgt_start,
+        target_end=tgt_start + len(SOURCE_SPAN_BLOCK),
+    )
+
+
+def _span_ref(span: str, *, canonical_type: str = "tool_result#span") -> str:
+    return _artifact_reference_string(canonical_type, _salted_hash(span, SALT))
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +336,112 @@ def test_unterminated_fence_is_treated_as_prose_and_not_mutated():
     assert result.blocks_replaced == 0
 
 
+# ---------------------------------------------------------------------------
+# Level 2: declared source-span provenance (metadata-driven, not discovery)
+# ---------------------------------------------------------------------------
+
+
+def test_source_span_canary_replaces_declared_parent_span_only():
+    contents = [
+        _LLMContent("tool_result", SOURCE_SPAN_TOOL),
+        _LLMContent("assistant_context", SOURCE_SPAN_PARENT),
+    ]
+    link = _source_span_link()
+
+    result = apply_artifact_dedup_canary(
+        contents,
+        salt=SALT,
+        min_block_chars=MIN,
+        mode="canary",
+        span_links=[link],
+    )
+
+    expected_ref = _span_ref(SOURCE_SPAN_BLOCK)
+    assert contents[0].content == SOURCE_SPAN_TOOL
+    assert contents[1].content == SOURCE_SPAN_PARENT.replace(SOURCE_SPAN_BLOCK, expected_ref)
+    assert result.span_blocks_replaced == 1
+    assert result.span_chars_saved == len(SOURCE_SPAN_BLOCK) - len(expected_ref)
+    assert result.blocks_replaced == 1
+    assert result.chars_saved == result.span_chars_saved
+    assert dangling_artifact_references(contents, salt=SALT, span_links=[link]) == []
+
+
+def test_source_span_shadow_measures_without_mutating():
+    contents = [
+        _LLMContent("tool_result", SOURCE_SPAN_TOOL),
+        _LLMContent("assistant_context", SOURCE_SPAN_PARENT),
+    ]
+    before = [c.content for c in contents]
+
+    result = apply_artifact_dedup_canary(
+        contents,
+        salt=SALT,
+        min_block_chars=MIN,
+        mode="shadow",
+        span_links=[_source_span_link()],
+    )
+
+    assert [c.content for c in contents] == before
+    assert result.span_blocks_replaced == 0
+    assert result.span_candidate_count == 1
+    assert result.span_candidate_chars == len(SOURCE_SPAN_BLOCK)
+
+
+def test_source_span_mismatch_or_forward_link_is_not_mutated():
+    mismatch_parent = SOURCE_SPAN_PARENT.replace("alpha", "ALPHA", 1)
+    contents = [
+        _LLMContent("tool_result", SOURCE_SPAN_TOOL),
+        _LLMContent("assistant_context", mismatch_parent),
+    ]
+    result = apply_artifact_dedup_canary(
+        contents,
+        salt=SALT,
+        min_block_chars=MIN,
+        mode="canary",
+        span_links=[_source_span_link()],
+    )
+    assert contents[1].content == mismatch_parent
+    assert result.span_blocks_replaced == 0
+
+    forward = ArtifactSpanLink(1, 0, len(SOURCE_SPAN_BLOCK), 0, 0, len(SOURCE_SPAN_BLOCK))
+    before = [c.content for c in contents]
+    result = apply_artifact_dedup_canary(
+        contents,
+        salt=SALT,
+        min_block_chars=MIN,
+        mode="canary",
+        span_links=[forward],
+    )
+    assert [c.content for c in contents] == before
+    assert result.span_blocks_replaced == 0
+
+
+def test_source_span_rejects_protected_or_inline_scope():
+    inline_parent = SOURCE_SPAN_PARENT.replace("\n" + SOURCE_SPAN_BLOCK + "\n", SOURCE_SPAN_BLOCK)
+    contents = [
+        _LLMContent("tool_result", SOURCE_SPAN_TOOL),
+        _LLMContent("assistant_context", inline_parent),
+        _LLMContent("user_prompt", SOURCE_SPAN_PARENT),
+    ]
+    inline_start = inline_parent.index(SOURCE_SPAN_BLOCK)
+    links = [
+        ArtifactSpanLink(0, SOURCE_SPAN_TOOL.index(SOURCE_SPAN_BLOCK), SOURCE_SPAN_TOOL.index(SOURCE_SPAN_BLOCK) + len(SOURCE_SPAN_BLOCK), 1, inline_start, inline_start + len(SOURCE_SPAN_BLOCK)),
+        ArtifactSpanLink(0, SOURCE_SPAN_TOOL.index(SOURCE_SPAN_BLOCK), SOURCE_SPAN_TOOL.index(SOURCE_SPAN_BLOCK) + len(SOURCE_SPAN_BLOCK), 2, SOURCE_SPAN_PARENT.index(SOURCE_SPAN_BLOCK), SOURCE_SPAN_PARENT.index(SOURCE_SPAN_BLOCK) + len(SOURCE_SPAN_BLOCK)),
+    ]
+    before = [c.content for c in contents]
+
+    result = apply_artifact_dedup_canary(
+        contents,
+        salt=SALT,
+        min_block_chars=MIN,
+        mode="canary",
+        span_links=links,
+    )
+
+    assert [c.content for c in contents] == before
+    assert result.span_blocks_replaced == 0
+
+
 def test_canary_reference_carries_no_raw_artifact_body():
     contents = [
         _LLMContent("tool_result", LONG_ARTIFACT),
@@ -502,11 +641,15 @@ def test_telemetry_is_metadata_only_no_artifact_text():
         "artifact_dedup_mode",
         "artifact_dedup_class",
         "artifact_dedup_blocks_replaced",
+        "artifact_span_blocks_replaced",
+        "artifact_span_chars_saved",
         "artifact_dedup_chars_saved",
         "chars_saved",
     }
     for key in (
         "artifact_dedup_blocks_replaced",
+        "artifact_span_blocks_replaced",
+        "artifact_span_chars_saved",
         "artifact_dedup_chars_saved",
         "chars_saved",
     ):

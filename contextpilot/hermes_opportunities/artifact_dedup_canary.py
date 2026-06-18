@@ -56,6 +56,7 @@ MUTABLE_ARTIFACT_BLOCK_TYPES = ("tool_result", "assistant_context")
 # The only duplicate class this canary acts on: an exact-duplicate full artifact
 # body across the mutable artifact types.
 ARTIFACT_DEDUP_CLASS = "same_payload_exact_artifact_body"
+ARTIFACT_SPAN_PROVENANCE_CLASS = "declared_source_span_backref"
 
 # Deterministic placeholder left in place of a later duplicate body. ``<type>``
 # is the CANONICAL (first) body's provenance and ``<hash>`` its salted
@@ -68,6 +69,23 @@ ARTIFACT_DEDUP_CANARY_REFERENCE_TEMPLATE = (
 # Fixed head of the reference string (everything before the first placeholder),
 # used to recognize a reference line without re-rendering it.
 _REF_HEAD = ARTIFACT_DEDUP_CANARY_REFERENCE_TEMPLATE.split("<type>", 1)[0]
+
+
+@dataclass
+class ArtifactSpanLink:
+    """Declared source-span provenance edge, in Python string offsets.
+
+    The canary treats this as untrusted metadata: it rewrites only when the
+    declared target slice byte-equals the earlier source slice and all scope /
+    line-alignment / never-grow gates pass.
+    """
+
+    source_index: int
+    source_start: int
+    source_end: int
+    target_index: int
+    target_start: int
+    target_end: int
 
 
 @dataclass
@@ -88,6 +106,10 @@ class ArtifactDedupCanaryResult:
     candidate_chars: int           # advisory chars later occurrences occupy
     blocks_replaced: int           # REALIZED replacements (canary only)
     chars_saved: int               # REALIZED chars saved (canary only)
+    span_candidate_count: int = 0   # advisory declared span replacements
+    span_candidate_chars: int = 0   # advisory chars later declared spans occupy
+    span_blocks_replaced: int = 0   # REALIZED source-span replacements
+    span_chars_saved: int = 0       # REALIZED source-span chars saved
     notes: list[str] = field(default_factory=list)
 
 
@@ -186,6 +208,104 @@ def _scan_fenced_block_candidates(
     return _eligible_groups(agg)
 
 
+def _in_range(text: str, start: int, end: int) -> bool:
+    return 0 <= start < end <= len(text)
+
+
+def _line_aligned(text: str, start: int, end: int) -> bool:
+    """Require standalone line spans so emitted refs are standalone lines."""
+    return (
+        _in_range(text, start, end)
+        and (start == 0 or text[start - 1] == "\n")
+        and (end == len(text) or text[end] == "\n")
+    )
+
+
+def _valid_span_link(
+    items: list[_LLMContent], link: ArtifactSpanLink, *, min_block_chars: int, salt: str
+) -> tuple[str, str, str] | None:
+    """Return ``(target_text, ref, source_hash)`` if a declared link is safe."""
+    if not (0 <= link.source_index < len(items) and 0 <= link.target_index < len(items)):
+        return None
+    if link.source_index >= link.target_index:
+        return None
+    source = items[link.source_index]
+    target = items[link.target_index]
+    if source.block_type != "tool_result" or target.block_type != "assistant_context":
+        return None
+    if not _line_aligned(source.content, link.source_start, link.source_end):
+        return None
+    if not _line_aligned(target.content, link.target_start, link.target_end):
+        return None
+    source_text = source.content[link.source_start:link.source_end]
+    target_text = target.content[link.target_start:link.target_end]
+    if len(target_text) < min_block_chars or target_text != source_text:
+        return None
+    h = _salted_hash(source_text, salt)
+    ref = _artifact_reference_string(f"{source.block_type}#span", h)
+    if len(ref) >= len(target_text):
+        return None
+    return target_text, ref, h
+
+
+def _scan_span_candidates(
+    items: list[_LLMContent], span_links: Iterable[ArtifactSpanLink], *, salt: str, min_block_chars: int
+) -> tuple[int, int]:
+    count = 0
+    chars = 0
+    seen_targets: set[tuple[int, int, int]] = set()
+    for link in span_links:
+        valid = _valid_span_link(items, link, min_block_chars=min_block_chars, salt=salt)
+        key = (link.target_index, link.target_start, link.target_end)
+        if valid is None or key in seen_targets:
+            continue
+        seen_targets.add(key)
+        target_text, _ref, _h = valid
+        count += 1
+        chars += len(target_text)
+    return count, chars
+
+
+def _apply_span_links(
+    items: list[_LLMContent], span_links: Iterable[ArtifactSpanLink], *, salt: str, min_block_chars: int
+) -> tuple[int, int, set[int], set[int]]:
+    """Apply safe declared source-span replacements right-to-left per target."""
+    by_target: dict[int, dict[tuple[int, int], tuple[int, int, str, int, int]]] = {}
+    for link in span_links:
+        valid = _valid_span_link(items, link, min_block_chars=min_block_chars, salt=salt)
+        if valid is None:
+            continue
+        target_text, ref, _h = valid
+        by_target.setdefault(link.target_index, {})[(link.target_start, link.target_end)] = (
+            link.target_start, link.target_end, ref, len(target_text), link.source_index
+        )
+
+    blocks = 0
+    saved = 0
+    mutated_targets: set[int] = set()
+    preserved_sources: set[int] = set()
+    for target_index, replacement_map in by_target.items():
+        # First-cut validation scope certifies one line-aligned source-span swap
+        # per target body. Keep multi-span targets in shadow/advisory until the
+        # gate can prove several replacements in one message.
+        if len(replacement_map) != 1:
+            continue
+        replacements = list(replacement_map.values())
+        replacements.sort(key=lambda r: r[0], reverse=True)
+        ordered = sorted(replacements, key=lambda r: r[0])
+        if any(a[1] > b[0] for a, b in zip(ordered, ordered[1:])):
+            continue
+        body = items[target_index].content
+        for start, end, ref, old_len, source_index in replacements:
+            body = body[:start] + ref + body[end:]
+            blocks += 1
+            saved += old_len - len(ref)
+            preserved_sources.add(source_index)
+        items[target_index].content = body
+        mutated_targets.add(target_index)
+    return blocks, saved, mutated_targets, preserved_sources
+
+
 def _scan_artifacts(
     contents: list[_LLMContent], *, salt: str, min_block_chars: int
 ) -> tuple[dict[str, dict], int]:
@@ -247,6 +367,7 @@ def apply_artifact_dedup_canary(
     min_block_chars: int,
     mode: str | None = None,
     env: dict | None = None,
+    span_links: Iterable[ArtifactSpanLink] | None = None,
 ) -> ArtifactDedupCanaryResult:
     """Run the artifact-dedup canary over LLM-bound content.
 
@@ -260,6 +381,7 @@ def apply_artifact_dedup_canary(
     the mode comes from :func:`resolve_artifact_dedup_mode`.
     """
     items = list(contents)
+    links = list(span_links or [])
     resolved = mode if mode is not None else resolve_artifact_dedup_mode(env)
     if resolved not in ARTIFACT_DEDUP_MODES:
         resolved = DEFAULT_ARTIFACT_DEDUP_MODE
@@ -283,8 +405,11 @@ def apply_artifact_dedup_canary(
     block_group_count, block_candidate_chars = _scan_fenced_block_candidates(
         items, salt=salt, min_block_chars=min_block_chars
     )
-    candidate_group_count += block_group_count
-    candidate_chars += block_candidate_chars
+    span_candidate_count, span_candidate_chars = _scan_span_candidates(
+        items, links, salt=salt, min_block_chars=min_block_chars
+    )
+    candidate_group_count += block_group_count + span_candidate_count
+    candidate_chars += block_candidate_chars + span_candidate_chars
 
     if resolved == "shadow":
         # Measure what a canary would replace, but never touch the payload.
@@ -297,17 +422,28 @@ def apply_artifact_dedup_canary(
             candidate_chars=candidate_chars,
             blocks_replaced=0,
             chars_saved=0,
+            span_candidate_count=span_candidate_count,
+            span_candidate_chars=span_candidate_chars,
             notes=["artifact-dedup canary shadow: candidates measured, payload unchanged"],
         )
 
     # --- canary: the ONLY branch that mutates LLM-bound payload ---------------
     blocks_replaced = 0
     chars_saved = 0
+    span_blocks_replaced, span_chars_saved, span_mutated_targets, span_preserved_sources = _apply_span_links(
+        items, links, salt=salt, min_block_chars=min_block_chars
+    )
+    blocks_replaced += span_blocks_replaced
+    chars_saved += span_chars_saved
     # hash -> canonical provenance type of the first (kept) occurrence.
     canonical: dict[str, str] = {}
     # hash -> canonical provenance type for exact fenced sub-artifacts.
     block_canonical: dict[str, str] = {}
-    for item in items:
+    for idx, item in enumerate(items):
+        if idx in span_mutated_targets or idx in span_preserved_sources:
+            if item.block_type in MUTABLE_ARTIFACT_BLOCK_TYPES:
+                canonical[_salted_hash(item.content, salt)] = item.block_type
+            continue
         if item.block_type not in MUTABLE_ARTIFACT_BLOCK_TYPES:
             continue  # protected content is never touched
         body = item.content
@@ -374,12 +510,16 @@ def apply_artifact_dedup_canary(
         candidate_chars=candidate_chars,
         blocks_replaced=blocks_replaced,
         chars_saved=chars_saved,
+        span_candidate_count=span_candidate_count,
+        span_candidate_chars=span_candidate_chars,
+        span_blocks_replaced=span_blocks_replaced,
+        span_chars_saved=span_chars_saved,
         notes=["artifact-dedup canary active: exact duplicate artifact bodies only"],
     )
 
 
 def dangling_artifact_references(
-    contents: Iterable[_LLMContent], *, salt: str
+    contents: Iterable[_LLMContent], *, salt: str, span_links: Iterable[ArtifactSpanLink] | None = None
 ) -> list[int]:
     """Return indices of artifact references that do not resolve to an earlier body.
 
@@ -387,9 +527,13 @@ def dangling_artifact_references(
     full canonical body whose salted hash matches the reference. A reference with
     no such earlier canonical body (or one that only appears later) is dangling.
     """
-    seen_full: set[str] = set()  # hashes of earlier full canonical artifact bodies/blocks
+    seen_full: set[str] = set()  # hashes of earlier full canonical artifact bodies/blocks/spans
     dangling: list[int] = []
-    for idx, item in enumerate(contents):
+    items = list(contents)
+    span_by_source: dict[int, list[ArtifactSpanLink]] = {}
+    for link in span_links or []:
+        span_by_source.setdefault(link.source_index, []).append(link)
+    for idx, item in enumerate(items):
         body = item.content
         ref_hash = _parse_artifact_reference(body)
         if ref_hash is not None:
@@ -401,6 +545,14 @@ def dangling_artifact_references(
 
         # Whole artifact body can satisfy whole-body references.
         seen_full.add(_salted_hash(body, salt))
+        # Declared source spans can satisfy later #span references, but only from
+        # their earlier source item and only when the declared source slice is
+        # still byte-identical in the payload.
+        for link in span_by_source.get(idx, []):
+            if link.source_index >= link.target_index:
+                continue
+            if _line_aligned(body, link.source_start, link.source_end):
+                seen_full.add(_salted_hash(body[link.source_start:link.source_end], salt))
 
         # Within a body, ordering matters: an earlier fenced block can satisfy a
         # later reference segment in the same body, but a later block cannot.
@@ -436,6 +588,8 @@ def build_artifact_canary_telemetry_record(result: ArtifactDedupCanaryResult) ->
         "artifact_dedup_mode": result.mode,
         "artifact_dedup_class": result.artifact_dedup_class,
         "artifact_dedup_blocks_replaced": result.blocks_replaced if result.mutated else 0,
+        "artifact_span_blocks_replaced": result.span_blocks_replaced if result.mutated else 0,
+        "artifact_span_chars_saved": result.span_chars_saved if result.mutated else 0,
         # Separated field: always present, mirrors the realized artifact-dedup save.
         "artifact_dedup_chars_saved": realized,
         # Aggregate total: includes artifact dedup only when a mutation occurred.

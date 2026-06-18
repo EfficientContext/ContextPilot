@@ -478,6 +478,7 @@ def _apply_artifact_dedup_canary_to_api_messages(
     if mods is None:
         return None
     _LLMContent = mods["models"]._LLMContent
+    ArtifactSpanLink = mods["artifact_dedup_canary"].ArtifactSpanLink
     apply_artifact_dedup_canary = mods["artifact_dedup_canary"].apply_artifact_dedup_canary
 
     llm_items = []
@@ -501,10 +502,38 @@ def _apply_artifact_dedup_canary_to_api_messages(
     if not llm_items:
         return None
 
+    llm_index_by_message_index = {msg_idx: llm_idx for llm_idx, msg_idx in enumerate(message_indexes)}
+    span_links = []
+    for msg_idx, msg in enumerate(api_messages):
+        raw_links = msg.get("contextpilot_span_links") if isinstance(msg, dict) else None
+        if isinstance(msg, dict):
+            msg.pop("contextpilot_span_links", None)
+        if not isinstance(raw_links, list):
+            continue
+        for raw in raw_links:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                src_msg = int(raw["source_message_index"])
+                tgt_msg = int(raw.get("target_message_index", msg_idx))
+                span_links.append(
+                    ArtifactSpanLink(
+                        source_index=llm_index_by_message_index[src_msg],
+                        source_start=int(raw["source_start"]),
+                        source_end=int(raw["source_end"]),
+                        target_index=llm_index_by_message_index[tgt_msg],
+                        target_start=int(raw["target_start"]),
+                        target_end=int(raw["target_end"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+
     result = apply_artifact_dedup_canary(
         llm_items,
         salt=salt,
         min_block_chars=40,
+        span_links=span_links,
     )
     if result and result.mutated:
         for item, idx in zip(llm_items, message_indexes):

@@ -78,6 +78,8 @@ from .models import (
     PromptDuplicateBlock,
     PromptDuplicateShadow,
     PromptDuplicateTypeCount,
+    ProvenanceProfile,
+    ProvenanceSourceStat,
     RepeatedBlock,
     RouterCandidateBlock,
     RouterLabelCount,
@@ -85,11 +87,13 @@ from .models import (
     TelemetryCoverage,
     ToolSizeStat,
     TypeCount,
+    UNKNOWN_SOURCE,
     WorkerRoutingShadow,
     _est_tokens,
     _LLMContent,
     _ToolMessage,
 )
+from .provenance import build_provenance_profile
 from .privacy import (
     FORBIDDEN_OUTPUT_KEYS,
     _assert_no_forbidden_keys,
@@ -163,7 +167,12 @@ __all__ = [
     "ParentAggregationGroup",
     "ArtifactKindStat",
     "ParentAggregationArtifacts",
+    "ProvenanceSourceStat",
+    "ProvenanceProfile",
     "OpportunityReport",
+    # provenance profile (token-monitor view)
+    "UNKNOWN_SOURCE",
+    "build_provenance_profile",
     # loaders
     "load_tool_messages",
     "load_llm_bound_content",

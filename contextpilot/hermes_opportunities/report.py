@@ -36,6 +36,7 @@ from .models import (
     _ToolMessage,
 )
 from .privacy import _assert_no_forbidden_keys, _salt_fingerprint
+from .provenance import build_provenance_profile
 from .routing import analyze_worker_routing_shadow
 from .tokenizer import TokenizerBackend
 
@@ -126,6 +127,7 @@ def build_report(
         top_n=top_n,
         enabled=parent_aggregation_shadow,
     )
+    provenance_profile = build_provenance_profile(heavy_sessions)
 
     total_chars = sum(len(m.content) for m in tool_messages)
     dup_wasted = sum(d.est_wasted_tokens for d in dups)
@@ -166,6 +168,7 @@ def build_report(
         repeated_blocks=blocks,
         large_tool_outputs_by_tool=sizes,
         heavy_sessions=heavy_sessions,
+        provenance_profile=provenance_profile,
         telemetry=telemetry,
         llm_bound_item_count=len(llm_contents),
         llm_block_types=block_type_stats,
@@ -223,9 +226,20 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         f"- Parent aggregation (shadow): {report.parent_aggregation.duplicate_group_count} "
         f"duplicate artifact groups, "
         f"~{report.parent_aggregation.est_duplicate_tokens} advisory duplicate tokens",
+        f"- Provenance profile: {report.provenance_profile.session_count} sessions across "
+        f"{report.provenance_profile.source_count} sources, "
+        f"{report.provenance_profile.total_tokens} actual input+output tokens",
         "",
-        "## LLM-bound redundancy by block type",
+        "## Token profile by source",
     ]
+    for src in report.provenance_profile.by_source:
+        md.append(
+            f"- {src.source}: sessions={src.session_count} input={src.input_tokens} "
+            f"output={src.output_tokens} total={src.total_tokens} "
+            f"messages={src.message_count} tools={src.tool_call_count} api_calls={src.api_call_count}"
+        )
+    md.append("")
+    md.append("## LLM-bound redundancy by block type")
     for bt in report.llm_block_types:
         md.append(
             f"- {bt.block_type}: items={bt.item_count} blocks={bt.block_count} "

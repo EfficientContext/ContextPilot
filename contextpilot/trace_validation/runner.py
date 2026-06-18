@@ -42,7 +42,10 @@ from contextpilot.hermes_opportunities.prompt_dedup_canary import (
 from contextpilot.hermes_opportunities.artifact_dedup_canary import (
     MUTABLE_ARTIFACT_BLOCK_TYPES,
     ArtifactDedupCanaryResult,
+    ArtifactSpanLink,
     _parse_artifact_reference,
+    _segment_fenced_blocks,
+    _line_aligned,
     apply_artifact_dedup_canary,
     dangling_artifact_references,
     resolve_artifact_dedup_mode,
@@ -379,8 +382,27 @@ ARTIFACT_INVARIANT_NAMES = [
 ]
 
 
+def _span_links(case: dict) -> list[ArtifactSpanLink]:
+    links = []
+    for raw in case.get("span_links") or []:
+        try:
+            links.append(
+                ArtifactSpanLink(
+                    source_index=int(raw["source_index"]),
+                    source_start=int(raw["source_start"]),
+                    source_end=int(raw["source_end"]),
+                    target_index=int(raw["target_index"]),
+                    target_start=int(raw["target_start"]),
+                    target_end=int(raw["target_end"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return links
+
+
 def optimize_artifact_case(
-    messages: list[dict], *, mode: str, salt: str, min_block_chars: int
+    messages: list[dict], *, mode: str, salt: str, min_block_chars: int, span_links: list[ArtifactSpanLink] | None = None
 ) -> tuple[list[dict], ArtifactDedupCanaryResult]:
     """Run the artifact-dedup canary over a case's messages in the given mode.
 
@@ -390,7 +412,7 @@ def optimize_artifact_case(
     """
     contents = [_LLMContent(m["block_type"], m["content"]) for m in messages]
     result = apply_artifact_dedup_canary(
-        contents, salt=salt, min_block_chars=min_block_chars, mode=mode
+        contents, salt=salt, min_block_chars=min_block_chars, mode=mode, span_links=span_links
     )
     out = [
         {"role": m["role"], "block_type": m["block_type"], "content": c.content}
@@ -399,18 +421,97 @@ def optimize_artifact_case(
     return out, result
 
 
-def _artifact_mutation_scope_ok(base: dict, cand: dict) -> bool:
+def _artifact_mutation_scope_ok(
+    idx: int,
+    base: dict,
+    cand: dict,
+    *,
+    span_links: list[ArtifactSpanLink] | None = None,
+) -> bool:
     """A single message changed only within the allowed (artifact-only) scope."""
     if base["content"] == cand["content"]:
         return True
     # Only mutable artifact bodies may ever change.
     if base["block_type"] not in MUTABLE_ARTIFACT_BLOCK_TYPES:
         return False
-    # A changed body must become a reference placeholder strictly shorter than
-    # the body it replaced -- never new free text and never a growth.
-    if _parse_artifact_reference(cand["content"]) is None:
+    if len(cand["content"]) >= len(base["content"]):
         return False
-    return len(cand["content"]) < len(base["content"])
+
+    # Whole-body replacement remains valid.
+    if _parse_artifact_reference(cand["content"]) is not None:
+        return True
+
+    # Declared source-span replacement: validate against the declared target
+    # offsets instead of maximal prefix/suffix inference. Prefix/suffix inference
+    # can accidentally consume a trailing ']' from the replacement reference when
+    # the original copied span also ends with ']', causing a false gate failure.
+    for link in span_links or []:
+        if link.target_index != idx:
+            continue
+        if not _line_aligned(base["content"], link.target_start, link.target_end):
+            continue
+        prefix_text = base["content"][: link.target_start]
+        suffix_text = base["content"][link.target_end :]
+        if not (cand["content"].startswith(prefix_text) and cand["content"].endswith(suffix_text)):
+            continue
+        new_mid = cand["content"][len(prefix_text) : len(cand["content"]) - len(suffix_text)]
+        old_mid = base["content"][link.target_start : link.target_end]
+        if (
+            old_mid
+            and _parse_artifact_reference(new_mid) is not None
+            and len(new_mid) < len(old_mid)
+        ):
+            return True
+
+    # Declared source-span replacement: a byte-identical line-aligned span may be
+    # swapped for one standalone strictly shorter reference while surrounding
+    # prose remains byte-identical.
+    base_text = base["content"]
+    cand_text = cand["content"]
+    prefix = 0
+    while prefix < len(base_text) and prefix < len(cand_text) and base_text[prefix] == cand_text[prefix]:
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < len(base_text) - prefix
+        and suffix < len(cand_text) - prefix
+        and base_text[len(base_text) - 1 - suffix] == cand_text[len(cand_text) - 1 - suffix]
+    ):
+        suffix += 1
+    base_end = len(base_text) - suffix
+    cand_end = len(cand_text) - suffix
+    old_mid = base_text[prefix:base_end]
+    new_mid = cand_text[prefix:cand_end]
+    if (
+        old_mid
+        and _parse_artifact_reference(new_mid.strip()) is not None
+        and len(new_mid.strip()) < len(old_mid)
+        and (prefix == 0 or base_text[prefix - 1] == "\n")
+        and (base_end == len(base_text) or base_text[base_end] == "\n")
+    ):
+        return True
+
+    # Fenced sub-artifact replacement: prose must be byte-identical and only a
+    # whole fenced segment may be swapped for one strictly shorter reference line.
+    pos = 0
+    changed = False
+    for kind, text in _segment_fenced_blocks(base["content"]):
+        if kind != "fence":
+            if not cand["content"].startswith(text, pos):
+                return False
+            pos += len(text)
+            continue
+        if cand["content"].startswith(text, pos):
+            pos += len(text)
+            continue
+        newline = cand["content"].find("\n", pos)
+        end = len(cand["content"]) if newline == -1 else newline
+        ref = cand["content"][pos:end]
+        if _parse_artifact_reference(ref) is None or len(ref) >= len(text):
+            return False
+        pos = end
+        changed = True
+    return changed and pos == len(cand["content"])
 
 
 def check_artifact_invariants(
@@ -419,6 +520,7 @@ def check_artifact_invariants(
     result: ArtifactDedupCanaryResult,
     *,
     salt: str,
+    span_links: list[ArtifactSpanLink] | None = None,
 ) -> tuple[dict[str, bool], int]:
     """Check accuracy-preservation invariants for an artifact-dedup pass.
 
@@ -441,13 +543,14 @@ def check_artifact_invariants(
             if b["block_type"] not in MUTABLE_ARTIFACT_BLOCK_TYPES
         )
         inv["artifact_mutation_scope_allowed"] = all(
-            _artifact_mutation_scope_ok(b, c) for b, c in zip(baseline, candidate)
+            _artifact_mutation_scope_ok(i, b, c, span_links=span_links)
+            for i, (b, c) in enumerate(zip(baseline, candidate))
         )
         cand_contents = [
             _LLMContent(c["block_type"], c["content"]) for c in candidate
         ]
         inv["artifact_reference_resolvable"] = (
-            dangling_artifact_references(cand_contents, salt=salt) == []
+            dangling_artifact_references(cand_contents, salt=salt, span_links=span_links) == []
         )
         realized = sum(
             len(b["content"]) - len(c["content"])
@@ -493,15 +596,24 @@ def run_artifact_validation(
 
     for case in cases:
         msgs = _messages(case)
-        baseline_msgs, _ = optimize_fn(
-            list(msgs), mode=baseline_mode, salt=salt, min_block_chars=min_block_chars
-        )
-        candidate_msgs, result = optimize_fn(
-            list(msgs), mode=candidate_mode, salt=salt, min_block_chars=min_block_chars
-        )
+        span_links = _span_links(case)
+        if span_links:
+            baseline_msgs, _ = optimize_fn(
+                list(msgs), mode=baseline_mode, salt=salt, min_block_chars=min_block_chars, span_links=span_links
+            )
+            candidate_msgs, result = optimize_fn(
+                list(msgs), mode=candidate_mode, salt=salt, min_block_chars=min_block_chars, span_links=span_links
+            )
+        else:
+            baseline_msgs, _ = optimize_fn(
+                list(msgs), mode=baseline_mode, salt=salt, min_block_chars=min_block_chars
+            )
+            candidate_msgs, result = optimize_fn(
+                list(msgs), mode=candidate_mode, salt=salt, min_block_chars=min_block_chars
+            )
 
         inv, realized = check_artifact_invariants(
-            baseline_msgs, candidate_msgs, result, salt=salt
+            baseline_msgs, candidate_msgs, result, salt=salt, span_links=span_links
         )
         failed = [name for name, ok in inv.items() if not ok]
 

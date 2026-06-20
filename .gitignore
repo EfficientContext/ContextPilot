@@ -12,3 +12,9 @@ dist/
 *.prof
 evaluation/sandbox/results/*
 !evaluation/sandbox/results/.gitkeep
+
+# Sandbox SIF images
+*.sif
+
+# Sandbox Cache
+evaluation/sandbox/cache/

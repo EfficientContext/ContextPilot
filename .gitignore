@@ -10,8 +10,12 @@ dist/
 # raw conversation content and must never be committed. The in-repo convenience
 # dir is ignored; raw corpora also match the *.jsonl rule above.
 .contextpilot_validation/
-# ...but the committed SYNTHETIC test fixture (no real trace data) is kept.
+# ...but committed SYNTHETIC fixtures (no real trace data) are kept.
 !tests/fixtures/trace_validation/synthetic_cases.jsonl
+!datasets/
+!datasets/provenance_linking/
+!datasets/provenance_linking/synthetic_v1.jsonl
+!datasets/provenance_linking/synthetic_v1.jsonl.manifest.json
 */.DS_Store
 *.DS_Store
 

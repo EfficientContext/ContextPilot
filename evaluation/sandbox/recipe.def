@@ -8,6 +8,7 @@ From: python:3.10-slim
     
     apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
+        wget \
         && rm -rf /var/lib/apt/lists/*
 
     useradd -m -s /bin/bash evaluser
@@ -17,9 +18,18 @@ From: python:3.10-slim
     pip install --no-cache-dir torch transformers
     
     # 3. 终极补刀：
+    # Fetch and install evaluation requirements
+    wget https://raw.githubusercontent.com/bigcode-project/bigcodebench/main/Requirements/requirements-eval.txt
+    
+    # Install requirements-eval normally (allows build isolation for scikit-image)
+    pip install --no-cache-dir -r requirements-eval.txt
+    
     # 使用 --no-build-isolation 参数安装 bigcodebench！
     # 这会强制 pip 继承现有的全局环境变量，绝不派生抹除变量的子虚拟环境！
     pip install --no-cache-dir --no-build-isolation bigcodebench
+    
+    # Force downgrade numpy, pandas, and protobuf to avoid binary incompatibility
+    pip install --no-cache-dir "numpy<1.23.0" "pandas<2.1.0" "protobuf<3.20"
 
     mkdir -p /app/results && chown -R evaluser:evaluser /app
 

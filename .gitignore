@@ -18,3 +18,8 @@ evaluation/sandbox/results/*
 
 # Sandbox Cache
 evaluation/sandbox/cache/
+
+# Slurm and Apptainer temporary files
+*.err
+*.out
+build-temp-*/

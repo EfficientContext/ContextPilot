@@ -12,6 +12,7 @@ dist/
 *.prof
 evaluation/sandbox/results/*
 !evaluation/sandbox/results/.gitkeep
+!evaluation/sandbox/results/run_local_eval.py
 
 # Sandbox SIF images
 *.sif

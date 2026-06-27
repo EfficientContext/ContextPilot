@@ -1,16 +1,12 @@
+import argparse
 import asyncio
 import json
 import logging
 import os
 import re
 
-# pip install datasets
 from datasets import load_dataset
 from openai import AsyncOpenAI
-
-# Set PYTHONPATH in the environment before running
-from refactored_plugins.skill_index import SkillAwareContextPlugin
-from refactored_plugins.dedup import ContextDedupPlugin
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -27,13 +23,12 @@ DUMMY_TOOL_REGISTRY = {
     for i in range(1, 11)
 }
 
-async def process_task(task, skill_plugin, dedup_plugin, client, semaphore, output_file, turn_1_id):
+async def process_task(task, client, semaphore, output_file, turn_1_id, mode, model_name):
     """
-    Processes a single BigCodeBench task through our ContextPilot plugins and ELM API.
+    Processes a single BigCodeBench task through our ELM API (bypassing or routing to proxy).
     """
     async with semaphore:
         task_id = task.get("task_id", "unknown_task")
-        # BigCodeBench prompts are usually in 'complete_prompt' or 'instruction'
         prompt = task.get("complete_prompt", task.get("instruction", "No prompt found."))
         
         # Mock heavy agent request with redundant history and bloated tools
@@ -50,24 +45,27 @@ async def process_task(task, skill_plugin, dedup_plugin, client, semaphore, outp
             "tools": list(DUMMY_TOOL_REGISTRY.values())
         }
         
-        # Pass through ContextPilot local plugins
-        optimized_request = await dedup_plugin.process(request)
-        optimized_request = await skill_plugin.process(optimized_request)
-        
         # Prepare ELM API request (OpenAI-compatible)
         api_kwargs = {
-            "model": "gpt-5.5",
-            "messages": optimized_request.get("messages", [])
+            "model": model_name,
+            "messages": request["messages"],
+            "tools": request["tools"]
         }
-        if "tools" in optimized_request and optimized_request["tools"]:
-            api_kwargs["tools"] = optimized_request["tools"]
-            
+        
+        if mode == "with_plugin":
+            # Send extra_body for ContextPilot proxy to intercept
+            api_kwargs["extra_body"] = {
+                "user_id": request["user_id"],
+                "parent_id": request["parent_id"],
+                "_required_skills": request["_required_skills"]
+            }
+
         try:
-            logger.info(f"Sending optimized task {task_id} to ELM API...")
+            logger.info(f"[{mode}] Sending task {task_id}...")
             response = await client.chat.completions.create(**api_kwargs)
             response_content = response.choices[0].message.content
         except Exception as e:
-            logger.error(f"API Error for {task_id}: {str(e)}")
+            logger.error(f"[{mode}] API Error for {task_id}: {str(e)}")
             response_content = ""
             
         # Extract code block using regex
@@ -84,28 +82,38 @@ async def process_task(task, skill_plugin, dedup_plugin, client, semaphore, outp
         with open(output_file, "a", encoding="utf-8") as f:
             f.write(json.dumps({"task_id": task_id, "solution": extracted_code}) + "\n")
             
-        logger.info(f"Finished {task_id}")
+        logger.info(f"[{mode}] Finished {task_id}")
+
+async def run_evaluation(mode, args, tasks):
+    if mode == "baseline":
+        client = AsyncOpenAI(api_key=args.api_key, base_url=args.api_base)
+    else:
+        client = AsyncOpenAI(api_key=args.api_key, base_url="http://localhost:8000/v1")
+        
+    # We use a dummy turn_1_id for simulation
+    turn_1_id = "test-turn-1-id"
+        
+    output_file = os.path.join(os.path.dirname(__file__), f"results_{mode}_{args.model}.jsonl")
+    if os.path.exists(output_file):
+        os.remove(output_file)
+        
+    # Use configurable Semaphore to allow high concurrency
+    semaphore = asyncio.Semaphore(args.concurrency)
+    
+    coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model) for t in tasks]
+    await asyncio.gather(*coroutines)
+    
+    print(f"\n=== Evaluation Complete for mode: {mode} ===")
+    print(f"Results saved to {output_file}")
+
 
 async def main():
-    api_key = os.environ.get("OPENAI_API_KEY", "dummy-elm-key")
-    base_url = os.environ.get("BASE_URL", "https://api.openai.com/v1")
-    
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-    
-    skill_plugin = SkillAwareContextPlugin(tool_registry=DUMMY_TOOL_REGISTRY)
-    dedup_plugin = ContextDedupPlugin()
-    
-    # Pre-warm Dedup plugin with the initial messages to simulate conversation history
-    turn_1 = {
-        "user_id": "evaluator_1",
-        "messages": [
-            {"role": "system", "content": "You are a senior python developer. Always wrap your code in ```python blocks."},
-            {"role": "user", "content": "Please help me write some code."},
-            {"role": "assistant", "content": "Of course! I can help you with that."}
-        ]
-    }
-    turn_1_res = await dedup_plugin.process(turn_1)
-    turn_1_id = turn_1_res.get("current_id")
+    parser = argparse.ArgumentParser(description="BigCodeBench ELM API Runner")
+    parser.add_argument("--model", default="gpt-5.5", help="Model name to evaluate")
+    parser.add_argument("--api_base", default=os.environ.get("BASE_URL", "https://api.openai.com/v1"), help="Baseline ELM API Base URL")
+    parser.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY", "dummy-elm-key"), help="API Key")
+    parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent requests")
+    args = parser.parse_args()
 
     # Load BigCodeBench dataset
     logger.info("Loading BigCodeBench dataset...")
@@ -123,25 +131,9 @@ async def main():
     tasks = list(dataset)
     logger.info(f"Loaded {len(tasks)} tasks for full evaluation.")
     
-    output_file = os.path.join(os.path.dirname(__file__), "elm_samples_full.jsonl")
-    if os.path.exists(output_file):
-        os.remove(output_file)
+    for mode in ["baseline", "with_plugin"]:
+        logger.info(f"\n--- Starting Evaluation: {mode} ---")
+        await run_evaluation(mode, args, tasks)
         
-    # Use a Semaphore with 1 to process sequentially and avoid early rate limits
-    semaphore = asyncio.Semaphore(1) 
-    
-    coroutines = [process_task(t, skill_plugin, dedup_plugin, client, semaphore, output_file, turn_1_id) for t in tasks]
-    await asyncio.gather(*coroutines)
-    
-    print("\n=== Phase 2 Full Evaluation Complete ===")
-    print(f"Results saved to {output_file}")
-    
-    print("\n=== Combined Cost-Savings Telemetry ===")
-    metrics = {
-        "skill_plugin_metrics": skill_plugin.get_plugin_metrics(),
-        "dedup_plugin_metrics": dedup_plugin.get_plugin_metrics()
-    }
-    print(json.dumps(metrics, indent=2))
-
 if __name__ == "__main__":
     asyncio.run(main())

@@ -229,6 +229,9 @@ class DeduplicateRequest(BaseModel):
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown."""
     global _aiohttp_session
+    global _total_prompt_cache_hit_tokens
+
+    _total_prompt_cache_hit_tokens = 0
 
     # Initialize config from environment variables
     _init_config()
@@ -244,6 +247,10 @@ async def lifespan(app: FastAPI):
     if _aiohttp_session:
         await _aiohttp_session.close()
     logger.info("ContextPilot Index Server shutting down...")
+    
+    print("\n=== Final Telemetry Summary ===")
+    print(f"Total Prompt Cache Hit Tokens: {_total_prompt_cache_hit_tokens}")
+    # (Note: chars_saved_percentage and tools_filtered_percentage will be output here when plugins are fully integrated)
 
 
 app = FastAPI(
@@ -944,6 +951,12 @@ async def proxy_completions(request: Request):
 
         async with _aiohttp_session.post(api_url, json=body) as response:
             result = await response.json()
+
+            global _total_prompt_cache_hit_tokens
+            if response.status == 200 and isinstance(result, dict):
+                usage = result.get("usage", {})
+                if isinstance(usage, dict) and "prompt_cache_hit_tokens" in usage:
+                    _total_prompt_cache_hit_tokens += int(usage["prompt_cache_hit_tokens"])
 
             # Token tracking is handled by the inference engine via CONTEXTPILOT_INDEX_URL
             # The engine calls /evict after its internal cache eviction

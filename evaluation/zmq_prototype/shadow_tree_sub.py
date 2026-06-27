@@ -14,6 +14,9 @@ Project: Middleware Token Proxy Middleware - WP2 ZMQ Prototype
 import zmq
 import json
 import sys
+import argparse
+import time
+import urllib.request
 from collections import defaultdict
 
 # ANSI Escape Sequences for beautiful terminal output
@@ -88,6 +91,45 @@ def print_radix_tree(shadow_cache):
     print()
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=["zmq", "http"], default="zmq")
+    args = parser.parse_args()
+
+    if args.mode == "http":
+        print(f"{Colors.HEADER}{Colors.BOLD}" + "="*60 + f"{Colors.ENDC}")
+        print(f"{Colors.HEADER}{Colors.BOLD}SGLang Shadow KV Cache Tree Subscriber (HTTP Polling){Colors.ENDC}")
+        print(f"{Colors.CYAN}Polling from:{Colors.ENDC} http://localhost:8000/cache_status")
+        print(f"{Colors.HEADER}{Colors.BOLD}" + "="*60 + f"{Colors.ENDC}")
+        print("Waiting for HTTP server... (Press Ctrl+C to terminate)\n")
+        
+        # Disable proxies to avoid 503 errors on cluster environments
+        proxy_handler = urllib.request.ProxyHandler({})
+        opener = urllib.request.build_opener(proxy_handler)
+        urllib.request.install_opener(opener)
+        
+        try:
+            while True:
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:8000/cache_status") as response:
+                        data = response.read()
+                        cache_data = json.loads(data)
+                        
+                        # Convert string keys back to int for print_radix_tree sorting
+                        shadow_cache = {}
+                        for k, v in cache_data.items():
+                            shadow_cache[int(k)] = v
+                            
+                        print_radix_tree(shadow_cache)
+                        print("-" * 60)
+                except Exception as e:
+                    print(f"{Colors.FAIL}[ERROR] Failed to fetch HTTP cache status: {e}{Colors.ENDC}")
+                
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            print(f"\n{Colors.WARNING}Shutting down subscriber...{Colors.ENDC}")
+            print(f"{Colors.GREEN}Subscriber terminated cleanly.{Colors.ENDC}")
+            sys.exit(0)
+
     # Setup ZMQ Context and SUB Socket
     context = zmq.Context()
     subscriber = context.socket(zmq.SUB)

@@ -15,6 +15,28 @@ import json
 import time
 import random
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+active_blocks = {}
+
+class CacheStatusHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/cache_status':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(active_blocks).encode('utf-8'))
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        pass # Suppress logging to keep terminal clean
+
+def run_http_server():
+    server = HTTPServer(('localhost', 8000), CacheStatusHandler)
+    server.serve_forever()
 
 # ANSI Escape Sequences for beautiful terminal output
 class Colors:
@@ -60,7 +82,13 @@ def main():
 
     # Local state to ensure logically consistent events
     # Maps block_hash -> parent_block_hash
+    global active_blocks
     active_blocks = {}
+
+    # Start HTTP server in a background thread
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
+    log_info("HTTP server started on port 8000")
     
     # Track sequence number to simulate SGLang's monotonic event sequence
     sequence_number = 0

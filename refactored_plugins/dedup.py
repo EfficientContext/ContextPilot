@@ -22,6 +22,7 @@ class ContextDedupPlugin(BasePlugin):
         self._next_id = 0
 
         # Telemetry
+        self.total_original_chars = 0
         self.total_chars_saved = 0
         self.total_requests_processed = 0
         self.last_execution_time_ms = 0.0
@@ -74,6 +75,7 @@ class ContextDedupPlugin(BasePlugin):
 
         # Update Telemetry
         dedup_len = sum(len(m.get("content", "")) for m in new_messages)
+        self.total_original_chars += original_len
         self.total_chars_saved += original_len - dedup_len
         self.total_requests_processed += 1
         self.last_execution_time_ms = (time.perf_counter() - start_time) * 1000
@@ -85,8 +87,11 @@ class ContextDedupPlugin(BasePlugin):
 
     def get_plugin_metrics(self) -> Dict[str, float]:
         """Return deduplication metrics."""
+        saving_percentage = (self.total_chars_saved / self.total_original_chars * 100) if self.total_original_chars > 0 else 0.0
         return {
+            "total_original_chars": float(self.total_original_chars),
             "total_chars_saved": float(self.total_chars_saved),
+            "chars_saved_percentage": saving_percentage,
             "total_requests_processed": float(self.total_requests_processed),
             "last_execution_time_ms": self.last_execution_time_ms,
         }

@@ -17,6 +17,7 @@ class SkillAwareContextPlugin(BasePlugin):
         self.tool_registry = tool_registry
 
         # Telemetry variables
+        self.total_original_tools = 0
         self.total_tools_filtered = 0
         self.last_execution_time_ms = 0.0
 
@@ -40,8 +41,11 @@ class SkillAwareContextPlugin(BasePlugin):
             optimized_request["tools"] = injected_tools
 
             # Update telemetry
+            original_tools_count = len(self.tool_registry)
+            self.total_original_tools += original_tools_count
+            
             # Number of tools filtered out = total available - total injected
-            filtered_count = len(self.tool_registry) - len(injected_tools)
+            filtered_count = original_tools_count - len(injected_tools)
             self.total_tools_filtered += filtered_count
 
         self.last_execution_time_ms = (time.perf_counter() - start_time) * 1000
@@ -51,7 +55,10 @@ class SkillAwareContextPlugin(BasePlugin):
         """
         Return the telemetry data.
         """
+        saving_percentage = (self.total_tools_filtered / self.total_original_tools * 100) if self.total_original_tools > 0 else 0.0
         return {
+            "total_original_tools": float(self.total_original_tools),
             "total_tools_filtered": float(self.total_tools_filtered),
+            "tools_filtered_percentage": saving_percentage,
             "last_execution_time_ms": self.last_execution_time_ms,
         }

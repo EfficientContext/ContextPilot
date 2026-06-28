@@ -8,6 +8,9 @@ import re
 from datasets import load_dataset
 from openai import AsyncOpenAI
 
+from refactored_plugins.dedup import ContextDedupPlugin
+from refactored_plugins.skill_index import SkillAwareContextPlugin
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -44,20 +47,34 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
             ],
             "tools": list(DUMMY_TOOL_REGISTRY.values())
         }
-        
-        # Prepare ELM API request (OpenAI-compatible)
-        api_kwargs = {
-            "model": model_name,
-            "messages": request["messages"],
-            "tools": request["tools"]
-        }
-        
         if mode == "with_plugin":
             # Send extra_body for ContextPilot proxy to intercept
+            request["_required_skills"] = ["tool_1", "tool_3", "tool_7"]
+            
+            # 1. Apply plugins on the client before sending
+            request = await dedup_plugin.process(request)
+            request = await skill_plugin.process(request)
+            
+            # The proxy needs user_id and parent_id for cache tracking if implemented, 
+            # though our http_server currently just forwards.
+            # But we must ensure the tools array is updated properly in api_kwargs!
+            
+            api_kwargs = {
+                "model": model_name,
+                "messages": request["messages"],
+                "tools": request["tools"]
+            }
+            
             api_kwargs["extra_body"] = {
-                "user_id": request["user_id"],
-                "parent_id": request["parent_id"],
-                "_required_skills": request["_required_skills"]
+                "user_id": request.get("user_id"),
+                "parent_id": request.get("parent_id"),
+                "_required_skills": request.get("_required_skills")
+            }
+        else:
+            api_kwargs = {
+                "model": model_name,
+                "messages": request["messages"],
+                "tools": request["tools"]
             }
 
         try:
@@ -100,6 +117,13 @@ async def run_evaluation(mode, args, tasks):
     # Use configurable Semaphore to allow high concurrency
     semaphore = asyncio.Semaphore(args.concurrency)
     
+    # Instantiate plugins
+    from refactored_plugins.dedup import ContextDedupPlugin
+    from refactored_plugins.skill_index import SkillAwareContextPlugin
+    global dedup_plugin, skill_plugin
+    dedup_plugin = ContextDedupPlugin()
+    skill_plugin = SkillAwareContextPlugin(DUMMY_TOOL_REGISTRY)
+
     coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model) for t in tasks]
     await asyncio.gather(*coroutines)
     
@@ -113,6 +137,7 @@ async def main():
     parser.add_argument("--api_base", default=os.environ.get("BASE_URL", "https://api.openai.com/v1"), help="Baseline ELM API Base URL")
     parser.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY", "dummy-elm-key"), help="API Key")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent requests")
+    parser.add_argument("--limit", type=int, default=0, help="Limit number of tasks to run (0 for all)")
     args = parser.parse_args()
 
     # Load BigCodeBench dataset
@@ -129,7 +154,11 @@ async def main():
             
     # Select all tasks for full evaluation
     tasks = list(dataset)
-    logger.info(f"Loaded {len(tasks)} tasks for full evaluation.")
+    if args.limit > 0:
+        tasks = tasks[:args.limit]
+        logger.info(f"Loaded {len(tasks)} tasks (LIMITED) for evaluation.")
+    else:
+        logger.info(f"Loaded {len(tasks)} tasks for full evaluation.")
     
     for mode in ["baseline", "with_plugin"]:
         logger.info(f"\n--- Starting Evaluation: {mode} ---")

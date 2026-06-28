@@ -242,7 +242,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"  max_tokens: {_max_tokens}")
     logger.info(f"  infer_api_url: {_infer_api_url}")
 
-    _aiohttp_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3600))
+    _aiohttp_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3600), trust_env=True)
     yield
     if _aiohttp_session:
         await _aiohttp_session.close()
@@ -937,11 +937,9 @@ async def proxy_completions(request: Request):
             _index.track_request(request_id)
 
         # Pass request_id to inference engine so it can use the same ID for request tracking
-        # Engine will notify ContextPilot via /evict callback when this request is evicted
+        # We don't inject request_id into body anymore to avoid breaking strict APIs.
         if request_id:
-            body["rid"] = request_id          # SGLang
-            body["request_id"] = request_id   # vLLM
-            logger.info(f"Proxy: forwarding request with request_id={request_id}")
+            logger.info(f"Proxy: tracking request with request_id={request_id}")
         else:
             logger.info("Proxy: forwarding request without rid (no ContextPilot tracking)")
 
@@ -949,7 +947,13 @@ async def proxy_completions(request: Request):
         api_url = f"{infer_api_url}/v1/completions"
         logger.debug(f"Proxying to {api_url}")
 
-        async with _aiohttp_session.post(api_url, json=body) as response:
+        # Extract headers to forward
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+        headers["accept-encoding"] = "gzip, deflate"
+
+        async with _aiohttp_session.post(api_url, json=body, headers=headers) as response:
             result = await response.json()
 
             global _total_prompt_cache_hit_tokens
@@ -1012,16 +1016,26 @@ async def proxy_engine(path: str, request: Request):
 
             # Inject rid for SGLang cache tracking (same logic as proxy_completions)
             request_id = body.pop("request_id", None) or body.get("rid", None)
+            
+            # Pop custom proxy parameters so upstream OpenAI doesn't reject them
+            body.pop("user_id", None)
+            body.pop("parent_id", None)
+            body.pop("_required_skills", None)
+
             if not request_id:
                 request_id = f"req-{uuid.uuid4().hex[:12]}"
                 logger.debug(f"Auto-assigned request_id={request_id}")
             if _index:
                 _index.track_request(request_id)
-            if request_id:
-                body["rid"] = request_id
-                body["request_id"] = request_id
 
-            async with _aiohttp_session.post(target_url, json=body) as response:
+            # Extract headers to forward (excluding hop-by-hop headers that aiohttp manages)
+            headers = dict(request.headers)
+            # Remove proxy-specific headers
+            headers.pop("host", None)
+            headers.pop("content-length", None)
+            headers["accept-encoding"] = "gzip, deflate"
+
+            async with _aiohttp_session.post(target_url, json=body, headers=headers) as response:
                 result = await response.json()
                 return JSONResponse(content=result, status_code=response.status)
 

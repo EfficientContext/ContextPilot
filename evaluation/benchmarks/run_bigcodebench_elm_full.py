@@ -130,6 +130,13 @@ async def run_evaluation(mode, args, tasks):
     print(f"\n=== Evaluation Complete for mode: {mode} ===")
     print(f"Results saved to {output_file}")
 
+    if mode == "with_plugin":
+        print("\n=== ContextPilot Client Telemetry ===")
+        dedup_metrics = dedup_plugin.get_plugin_metrics()
+        skill_metrics = skill_plugin.get_plugin_metrics()
+        print(f"[Dedup] Chars Saved: {dedup_metrics['total_chars_saved']} / {dedup_metrics['total_original_chars']} ({dedup_metrics['chars_saved_percentage']:.2f}%)")
+        print(f"[Skill] Tools Filtered: {skill_metrics['total_tools_filtered']} / {skill_metrics.get('total_original_tools', 'N/A')} ({skill_metrics.get('tools_filtered_percentage', 0):.2f}%)")
+
 
 async def main():
     parser = argparse.ArgumentParser(description="BigCodeBench ELM API Runner")

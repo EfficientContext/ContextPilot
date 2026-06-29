@@ -959,8 +959,13 @@ async def proxy_completions(request: Request):
             global _total_prompt_cache_hit_tokens
             if response.status == 200 and isinstance(result, dict):
                 usage = result.get("usage", {})
-                if isinstance(usage, dict) and "prompt_cache_hit_tokens" in usage:
-                    _total_prompt_cache_hit_tokens += int(usage["prompt_cache_hit_tokens"])
+                if isinstance(usage, dict):
+                    # Legacy DeepSeek V3 format
+                    if "prompt_cache_hit_tokens" in usage:
+                        _total_prompt_cache_hit_tokens += int(usage["prompt_cache_hit_tokens"])
+                    # DeepSeek V4 / OpenAI standard format
+                    elif "prompt_tokens_details" in usage and isinstance(usage["prompt_tokens_details"], dict):
+                        _total_prompt_cache_hit_tokens += int(usage["prompt_tokens_details"].get("cached_tokens", 0))
 
             # Token tracking is handled by the inference engine via CONTEXTPILOT_INDEX_URL
             # The engine calls /evict after its internal cache eviction
@@ -1041,8 +1046,13 @@ async def proxy_engine(path: str, request: Request):
                 global _total_prompt_cache_hit_tokens
                 if response.status == 200 and isinstance(result, dict):
                     usage = result.get("usage", {})
-                    if isinstance(usage, dict) and "prompt_cache_hit_tokens" in usage:
-                        _total_prompt_cache_hit_tokens += int(usage["prompt_cache_hit_tokens"])
+                    if isinstance(usage, dict):
+                        # Legacy DeepSeek V3 format
+                        if "prompt_cache_hit_tokens" in usage:
+                            _total_prompt_cache_hit_tokens += int(usage["prompt_cache_hit_tokens"])
+                        # DeepSeek V4 / OpenAI standard format
+                        elif "prompt_tokens_details" in usage and isinstance(usage["prompt_tokens_details"], dict):
+                            _total_prompt_cache_hit_tokens += int(usage["prompt_tokens_details"].get("cached_tokens", 0))
                         
                 return JSONResponse(content=result, status_code=response.status)
 

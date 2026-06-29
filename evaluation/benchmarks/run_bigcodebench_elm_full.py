@@ -102,10 +102,8 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
         logger.info(f"[{mode}] Finished {task_id}")
 
 async def run_evaluation(mode, args, tasks):
-    if mode == "baseline":
-        client = AsyncOpenAI(api_key=args.api_key, base_url=args.api_base)
-    else:
-        client = AsyncOpenAI(api_key=args.api_key, base_url="http://localhost:8000/v1")
+    # Route BOTH baseline and with_plugin through the proxy to intercept prompt_cache_hit_tokens
+    client = AsyncOpenAI(api_key=args.api_key, base_url="http://localhost:8000/v1")
         
     # We use a dummy turn_1_id for simulation
     turn_1_id = "test-turn-1-id"
@@ -156,6 +154,7 @@ async def main():
     parser.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY", "dummy-elm-key"), help="API Key")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent requests")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of tasks to run (0 for all)")
+    parser.add_argument("--eval_mode", choices=["baseline", "with_plugin", "all"], default="all", help="Evaluation mode")
     args = parser.parse_args()
 
     # Load BigCodeBench dataset
@@ -178,7 +177,12 @@ async def main():
     else:
         logger.info(f"Loaded {len(tasks)} tasks for full evaluation.")
     
-    for mode in ["baseline", "with_plugin"]:
+    if args.eval_mode == "all":
+        modes = ["baseline", "with_plugin"]
+    else:
+        modes = [args.eval_mode]
+        
+    for mode in modes:
         logger.info(f"\n--- Starting Evaluation: {mode} ---")
         await run_evaluation(mode, args, tasks)
         

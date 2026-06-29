@@ -1037,6 +1037,13 @@ async def proxy_engine(path: str, request: Request):
 
             async with _aiohttp_session.post(target_url, json=body, headers=headers) as response:
                 result = await response.json()
+                
+                global _total_prompt_cache_hit_tokens
+                if response.status == 200 and isinstance(result, dict):
+                    usage = result.get("usage", {})
+                    if isinstance(usage, dict) and "prompt_cache_hit_tokens" in usage:
+                        _total_prompt_cache_hit_tokens += int(usage["prompt_cache_hit_tokens"])
+                        
                 return JSONResponse(content=result, status_code=response.status)
 
     except aiohttp.ClientError as e:

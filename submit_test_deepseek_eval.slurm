@@ -29,7 +29,7 @@ PROXY_PID=$!
 sleep 5
 
 echo "[2/4] Running Baseline Evaluation (LIMIT 5)..."
-python evaluation/benchmarks/run_bigcodebench_elm_full.py --model deepseek-coder --api_base https://api.deepseek.com/v1 --api_key $OPENAI_API_KEY --concurrency 20 --limit 5 --eval_mode baseline
+python evaluation/benchmarks/run_bigcodebench_elm_full.py --model deepseek-v4-pro --api_base https://api.deepseek.com/v1 --api_key $OPENAI_API_KEY --concurrency 20 --limit 5 --eval_mode baseline
 
 echo "Shutting down Proxy Server to flush Baseline telemetry..."
 kill -INT $PROXY_PID
@@ -44,7 +44,7 @@ PROXY_PID=$!
 sleep 5
 
 echo "[4/4] Running With-Plugin Evaluation (LIMIT 5)..."
-python evaluation/benchmarks/run_bigcodebench_elm_full.py --model deepseek-coder --api_base https://api.deepseek.com/v1 --api_key $OPENAI_API_KEY --concurrency 20 --limit 5 --eval_mode with_plugin
+python evaluation/benchmarks/run_bigcodebench_elm_full.py --model deepseek-v4-pro --api_base https://api.deepseek.com/v1 --api_key $OPENAI_API_KEY --concurrency 20 --limit 5 --eval_mode with_plugin
 
 echo "Shutting down Proxy Server to flush With-Plugin telemetry..."
 kill -INT $PROXY_PID
@@ -57,12 +57,12 @@ echo "Executing Apptainer Sandbox Evaluations..."
 cd evaluation/benchmarks
 
 echo "--- Evaluating Baseline Results ---"
-cp results_baseline_deepseek-coder.jsonl elm_samples_full.jsonl
+cp results_baseline_deepseek-v4-pro.jsonl elm_samples_full.jsonl
 bash run_sandbox_eval_full.sh
 mv ../sandbox/results/elm_samples_full_eval_results.json ../sandbox/results/test_baseline_deepseek_eval_results.json
 
 echo "--- Evaluating With-Plugin Results ---"
-cp results_with_plugin_deepseek-coder.jsonl elm_samples_full.jsonl
+cp results_with_plugin_deepseek-v4-pro.jsonl elm_samples_full.jsonl
 bash run_sandbox_eval_full.sh
 mv ../sandbox/results/elm_samples_full_eval_results.json ../sandbox/results/test_with_plugin_deepseek_eval_results.json
 

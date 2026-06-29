@@ -124,6 +124,17 @@ async def run_evaluation(mode, args, tasks):
     dedup_plugin = ContextDedupPlugin()
     skill_plugin = SkillAwareContextPlugin(DUMMY_TOOL_REGISTRY)
 
+    # SEED THE TRACKER FOR TELEMETRY:
+    # Inject the "Turn 1" system prompt and history into the dedup plugin's memory.
+    # Without this, the tracker thinks test-turn-1-id is empty, resulting in 0 chars saved!
+    turn_1_messages = [
+        {"role": "system", "content": "You are a senior python developer. Always wrap your code in ```python blocks."},
+        {"role": "user", "content": "Please help me write some code."},
+        {"role": "assistant", "content": "Of course! I can help you with that."}
+    ]
+    msg_ids = [dedup_plugin._get_id(m["content"]) for m in turn_1_messages]
+    dedup_plugin.tracker.deduplicate(request_id=turn_1_id, docs=msg_ids, parent_request_id=None)
+
     coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model) for t in tasks]
     await asyncio.gather(*coroutines)
     

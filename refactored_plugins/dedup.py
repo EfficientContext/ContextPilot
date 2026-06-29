@@ -13,11 +13,12 @@ class ContextDedupPlugin(BasePlugin):
     Uses ContextPilot's ConversationTracker to replace repeated messages with reference hints.
     """
 
-    def __init__(self, hint_template: str = "[Reference to Turn {turn_number}]"):
+    def __init__(self, hint_template: str = "[Reference to Turn {turn_number}]", shadow_mode: bool = False):
         super().__init__("context_dedup")
         from contextpilot.server.conversation_tracker import ConversationTracker
 
         self.tracker = ConversationTracker(hint_template=hint_template)
+        self.shadow_mode = shadow_mode
         self._content_to_id = {}
         self._next_id = 0
 
@@ -68,11 +69,16 @@ class ContextDedupPlugin(BasePlugin):
             else:
                 new_messages.append(m)
 
-        # Update Request (SHADOW MODE: We do not actually send the hints to the LLM 
-        # because black-box APIs like ELM/DeepSeek cannot resolve them without our modified SGLang engine.
-        # We restore the original messages to ensure 63.9% Pass@1 accuracy is preserved).
+        # Update Request
         optimized_request = dict(request_data)
-        optimized_request["messages"] = messages  # Keep original!
+        if self.shadow_mode:
+            # SHADOW MODE: We do not actually send the hints to the LLM 
+            # because black-box APIs like ELM/DeepSeek cannot resolve them without our modified engine.
+            # We restore the original messages to ensure accuracy is preserved.
+            optimized_request["messages"] = messages
+        else:
+            optimized_request["messages"] = new_messages
+            
         optimized_request["current_id"] = current_req_id
 
         # Update Telemetry

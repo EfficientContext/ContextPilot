@@ -119,7 +119,7 @@ async def run_evaluation(mode, args, tasks):
     from refactored_plugins.dedup import ContextDedupPlugin
     from refactored_plugins.skill_index import SkillAwareContextPlugin
     global dedup_plugin, skill_plugin
-    dedup_plugin = ContextDedupPlugin()
+    dedup_plugin = ContextDedupPlugin(shadow_mode=True)
     skill_plugin = SkillAwareContextPlugin(DUMMY_TOOL_REGISTRY)
 
     # SEED THE TRACKER FOR TELEMETRY:

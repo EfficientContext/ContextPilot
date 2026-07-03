@@ -44,6 +44,12 @@ async def process_task(task, client, semaphore, mode, model_name):
         
         ground_truth_tool = None
         answers = task.get("answers", [])
+        if isinstance(answers, str):
+            try:
+                answers = json.loads(answers)
+            except:
+                answers = []
+                
         if answers and isinstance(answers, list) and len(answers) > 0:
             if isinstance(answers[0], dict):
                 ground_truth_tool = answers[0].get("name")
@@ -145,7 +151,8 @@ async def main():
 
     logger.info("Loading Tool-Use dataset...")
     try:
-        dataset = load_dataset("Salesforce/xlam-function-calling-60k", split="train")
+        # Load a 500-task slice of the dataset to keep evaluation time and cost manageable
+        dataset = load_dataset("Salesforce/xlam-function-calling-60k", split="train[:500]")
     except Exception as e:
         logger.warning(f"Failed to load standard dataset. Generating dummy tasks. Error: {e}")
         dataset = [

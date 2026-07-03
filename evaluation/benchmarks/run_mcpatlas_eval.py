@@ -152,7 +152,7 @@ async def main():
     logger.info("Loading Tool-Use dataset...")
     try:
         # Load a 500-task slice of the dataset to keep evaluation time and cost manageable
-        dataset = load_dataset("Salesforce/xlam-function-calling-60k", split="train[:500]")
+        dataset = load_dataset("NobodyExistsOnTheInternet/xlam-function-calling-60k", split="train[:500]")
     except Exception as e:
         logger.warning(f"Failed to load standard dataset. Generating dummy tasks. Error: {e}")
         dataset = [

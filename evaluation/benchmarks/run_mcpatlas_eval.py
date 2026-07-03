@@ -31,12 +31,45 @@ async def process_task(task, client, semaphore, mode, model_name):
         formatted_tools = []
         for t in available_tools:
             if isinstance(t, dict) and "name" in t:
+                raw_params = t.get("parameters", {})
+                if not isinstance(raw_params, dict):
+                    raw_params = {}
+                    
+                openai_params = {"type": "object", "properties": {}, "required": []}
+                for p_name, p_info in raw_params.items():
+                    if not isinstance(p_info, dict):
+                        continue
+                    
+                    p_type = p_info.get("type", "string")
+                    if isinstance(p_type, str):
+                        p_type_lower = p_type.lower()
+                        if "str" in p_type_lower: p_type = "string"
+                        elif "int" in p_type_lower: p_type = "integer"
+                        elif "float" in p_type_lower: p_type = "number"
+                        elif "bool" in p_type_lower: p_type = "boolean"
+                        elif "dict" in p_type_lower: p_type = "object"
+                        elif "list" in p_type_lower: p_type = "array"
+                        else: p_type = "string"
+                    else:
+                        p_type = "string"
+                        
+                    prop = {"type": p_type}
+                    if "description" in p_info:
+                        prop["description"] = str(p_info["description"])
+                        
+                    openai_params["properties"][p_name] = prop
+                    
+                    if "default" not in p_info:
+                        raw_type_str = str(p_info.get("type", "")).lower()
+                        if "optional" not in raw_type_str:
+                            openai_params["required"].append(p_name)
+                            
                 formatted_tools.append({
                     "type": "function",
                     "function": {
                         "name": t.get("name"),
                         "description": t.get("description", ""),
-                        "parameters": t.get("parameters", {})
+                        "parameters": openai_params
                     }
                 })
             elif isinstance(t, dict) and "type" in t and t["type"] == "function":

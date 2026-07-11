@@ -149,8 +149,8 @@ async def process_task(task, client, semaphore, mode, model_name):
         return is_correct, metrics
 
 async def run_evaluation(mode, args, tasks):
-    # Both baseline and with_plugin use the proxy base_url to capture proxy-level telemetry
-    client = AsyncOpenAI(api_key=args.api_key, base_url="http://localhost:8000/v1")
+    # Both baseline and with_plugin use the provided api_base
+    client = AsyncOpenAI(api_key=args.api_key, base_url=args.api_base)
     semaphore = asyncio.Semaphore(args.concurrency)
     
     coroutines = [process_task(t, client, semaphore, mode, args.model) for t in tasks]

@@ -15,7 +15,7 @@ DEFAULT_MIN_BLOCK_CHARS = 40       # ignore trivial lines when fingerprinting
 DEFAULT_MIN_BLOCK_REPEAT = 3       # a block must recur this often to be a "repeat"
 DEFAULT_LARGE_OUTPUT_CHARS = 8000  # tool outputs at/above this are "large"
 DEFAULT_TOP_N = 20
-EST_CHARS_PER_TOKEN = 4
+EST_CHARS_PER_TOKEN = 4  # legacy advisory only; runtime token accounting uses tokenizer fields
 
 
 def _est_tokens(chars: int) -> int:
@@ -164,9 +164,9 @@ class ProvenanceProfile:
 class TelemetryCoverage:
     events: int
     chars_saved: int
-    tokens_saved: int                 # legacy derived counter (chars_saved // 4), not tokenizer/API usage
-    avg_tokens_saved_per_event: float # derived from the legacy chars/4 counter
-    coverage_ratio_pct: float         # derived ratio using the legacy chars/4 counter
+    tokens_saved: int                 # tokenizer-measured saved tokens only
+    avg_tokens_saved_per_event: float # derived from tokenizer-measured tokens
+    coverage_ratio_pct: float         # derived ratio using tokenizer-measured tokens
     malformed_records_skipped: int
 
 

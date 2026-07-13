@@ -265,10 +265,11 @@ def _get_exact_tokenizer():
     when no backend is available the caller records an ``unavailable`` status
     rather than emitting a fake (chars/4) token count.
 
-    Backend selection via ``CONTEXTPILOT_EXACT_TOKENIZER`` = ``off`` (default)
-    | ``tiktoken``. It is opt-in so merely having a tokenizer library installed
-    never creates a misleading provider/tokenizer mismatch. The separate
-    disable environment flag also returns ``None`` immediately.
+    Backend selection via ``CONTEXTPILOT_EXACT_TOKENIZER`` = ``tiktoken``
+    (default) | ``off``. Background/accounting tasks must use tokenizer counts;
+    when a tokenizer is unavailable they record ``unavailable`` rather than
+    substituting a chars/4 proxy. The separate disable environment flag also
+    returns ``None`` immediately.
     """
 
     global _exact_tokenizer_cache
@@ -277,7 +278,7 @@ def _get_exact_tokenizer():
     _exact_tokenizer_cache = None
     if os.environ.get("CONTEXTPILOT_DISABLE_EXACT_TOKENIZER") == "1":
         return None
-    backend = os.environ.get("CONTEXTPILOT_EXACT_TOKENIZER", "off").lower()
+    backend = os.environ.get("CONTEXTPILOT_EXACT_TOKENIZER", "tiktoken").lower()
     if backend in ("off", "none", "disabled", "auto"):
         return None
     if backend == "tiktoken":
@@ -1015,14 +1016,12 @@ class ContextPilotEngine(ContextEngine):
             # Metadata-only telemetry so the monitor does not depend solely on
             # gateway log lines. No content, prompts, or tool payloads here.
             #
-            # Token fields are deliberately separated by provenance:
-            #   * ``tokens_saved`` is the LEGACY DERIVED estimate (chars/4); the
-            #     ``tokens_saved_method`` tag makes that explicit so it is never
-            #     mistaken for a tokenizer/API measurement.
-            #   * ``actual_tokens_*`` come from an EXACT tokenizer and are present
-            #     only when ``actual_token_status == "available"``. When no exact
-            #     tokenizer backend is configured the status is ``unavailable``
-            #     and no token numbers are emitted (no fake counts).
+            # Token fields use tokenizer measurements only:
+            #   * ``actual_tokens_*`` come from a tokenizer backend and are present
+            #     only when ``actual_token_status == "available"``.
+            #   * When no tokenizer backend is configured or available, status is
+            #     ``unavailable`` and no token numbers are emitted; background
+            #     accounting must not substitute chars/4.
             telemetry_record = {
                 "ts": time.time(),
                 "type": "turn",
@@ -1037,9 +1036,6 @@ class ContextPilotEngine(ContextEngine):
                 "payload_chars_before": payload_chars_before,
                 "payload_chars_after": payload_chars_after,
                 "payload_chars_saved": payload_chars_saved,
-                # Legacy DERIVED token estimate (chars/4) -- NOT exact tokens.
-                "tokens_saved": turn_chars_saved // 4,
-                "tokens_saved_method": "estimated_chars_div_4",
                 "doc_chars_saved": doc_chars_saved,
                 "block_chars_saved": dedup_result.chars_saved,
                 "prompt_dedup_mode": (

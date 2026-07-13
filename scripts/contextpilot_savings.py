@@ -51,15 +51,9 @@ def summarize_telemetry(
         "window_start_iso": None,
         "events": 0,
         "chars_saved": 0,
-        # ``tokens_saved`` is a LEGACY DERIVED estimate (chars/4), NOT a real
-        # tokenizer/API count. ``tokens_saved_method`` makes that explicit so it
-        # is never mistaken for actual tokens.
-        "tokens_saved": 0,
-        "tokens_saved_method": "estimated_chars_div_4",
-        "avg_tokens_per_event": None,
-        # EXACT tokenizer measurements, surfaced separately and only populated
-        # from records that carry ``actual_token_status == "available"``. No
-        # fake/derived numbers are ever written into these fields.
+        # Token savings are tokenizer-measured only. Legacy ``tokens_saved``
+        # fields from older telemetry are ignored rather than treated as char/4
+        # proxies.
         "actual_token_status": "unavailable",
         "actual_token_events": 0,
         "actual_tokens_before": 0,
@@ -82,7 +76,6 @@ def summarize_telemetry(
 
     events = 0
     chars = 0
-    tokens = 0
     skipped = 0
     actual_events = 0
     actual_before = 0
@@ -113,19 +106,10 @@ def summarize_telemetry(
             if not isinstance(cs, (int, float)) or cs < 0:
                 skipped += 1
                 continue
-            saved_tokens = record.get("tokens_saved")
-            if isinstance(saved_tokens, (int, float)) and saved_tokens < 0:
-                skipped += 1
-                continue
             events += 1
             chars += int(cs)
-            tokens += (
-                int(saved_tokens)
-                if isinstance(saved_tokens, (int, float))
-                else int(cs) // 4
-            )
 
-            # EXACT tokenizer measurement, only when the writer marked it as
+            # Tokenizer measurement, only when the writer marked it as
             # available. Anything else (missing/unavailable) is left out -- we
             # never substitute the chars/4 estimate into the actual-token totals.
             if record.get("actual_token_status") == "available":
@@ -145,10 +129,7 @@ def summarize_telemetry(
 
     result["events"] = events
     result["chars_saved"] = chars
-    result["tokens_saved"] = tokens
     result["skipped_lines"] = skipped
-    if events > 0:
-        result["avg_tokens_per_event"] = round(tokens / events, 1)
     if actual_events > 0:
         result["actual_token_status"] = "available"
         result["actual_token_events"] = actual_events
@@ -200,15 +181,9 @@ def render_text(summary: Dict[str, Any]) -> str:
         f"ContextPilot savings ({window})",
         f"  Events:                  {summary['events']}",
         f"  Chars saved:             {summary['chars_saved']:,}",
-        # Make provenance unmistakable: this is a chars/4 estimate, not real tokens.
-        f"  Est. tokens saved (chars/4, derived): {summary['tokens_saved']:,}",
     ]
-    if summary["avg_tokens_per_event"] is not None:
-        lines.append(
-            f"  Avg est. tokens/event:   {summary['avg_tokens_per_event']:,}"
-        )
-    # Actual tokenizer tokens are shown ONLY when the telemetry recorded them
-    # from an exact tokenizer backend; otherwise we say so rather than fake it.
+    # Token savings are shown ONLY when telemetry recorded tokenizer counts.
+    # Legacy derived fields are ignored; no chars/4 fallback is displayed.
     if summary["actual_token_status"] == "available":
         backends = ", ".join(summary["actual_tokenizer_backends"]) or "unknown"
         lines.append(

@@ -228,7 +228,6 @@ def test_optimize_writes_metadata_only_telemetry_line(monkeypatch, tmp_path):
 
     # Numeric/metadata only — savings recorded.
     assert record["chars_saved"] > 0
-    assert record["tokens_saved"] == record["chars_saved"] // 4
     assert record["turn"] == 1
     assert record["session_hash"] == module._hash_text("session-XYZ")
     assert "session" not in record
@@ -242,8 +241,8 @@ def test_optimize_writes_metadata_only_telemetry_line(monkeypatch, tmp_path):
     assert forbidden.isdisjoint(record.keys())
 
 
-def test_telemetry_records_payload_chars_and_derived_token_method(monkeypatch, tmp_path):
-    """Before/after payload chars are actual; the chars/4 counter is labelled derived."""
+def test_telemetry_records_payload_chars_and_unavailable_tokenizer_status(monkeypatch, tmp_path):
+    """Before/after payload chars are actual; no char/4 token proxy is emitted."""
     import json
 
     module, _ = _load_plugin_module(monkeypatch)
@@ -271,10 +270,9 @@ def test_telemetry_records_payload_chars_and_derived_token_method(monkeypatch, t
         record["payload_chars_saved"]
         == record["payload_chars_before"] - record["payload_chars_after"]
     )
-    # The legacy token counter is explicitly tagged as a derived chars/4 estimate.
-    assert record["tokens_saved"] == record["chars_saved"] // 4
-    assert record["tokens_saved_method"] == "estimated_chars_div_4"
-    # No exact tokenizer -> a clear status and NO fabricated token numbers.
+    # No tokenizer -> a clear status and NO fabricated token numbers.
+    assert "tokens_saved" not in record
+    assert "tokens_saved_method" not in record
     assert record["actual_token_status"] == "unavailable"
     assert "actual_tokens_before" not in record
     assert "actual_tokens_after" not in record
@@ -318,8 +316,7 @@ def test_telemetry_records_exact_tokens_when_backend_available(monkeypatch, tmp_
         record["actual_tokens_saved"]
         == record["actual_tokens_before"] - record["actual_tokens_after"]
     )
-    # Actual tokens are distinct from the legacy chars/4 estimate.
-    assert "tokens_saved_method" in record
+    assert "tokens_saved_method" not in record
 
 
 def test_optimize_telemetry_skipped_when_nothing_saved(monkeypatch, tmp_path):

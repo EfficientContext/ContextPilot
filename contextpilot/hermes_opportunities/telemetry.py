@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from .db import _window_cutoff
-from .models import EST_CHARS_PER_TOKEN, TelemetryCoverage
+from .models import TelemetryCoverage
 
 
 def parse_telemetry(
@@ -52,14 +52,12 @@ def parse_telemetry(
                 if not isinstance(cs, (int, float)):
                     malformed += 1
                     continue
-                saved_tokens = record.get("tokens_saved")
                 events += 1
                 chars += int(cs)
-                tokens += (
-                    int(saved_tokens)
-                    if isinstance(saved_tokens, (int, float))
-                    else int(cs) // EST_CHARS_PER_TOKEN
-                )
+                if record.get("actual_token_status") == "available":
+                    saved = record.get("actual_tokens_saved")
+                    if isinstance(saved, (int, float)):
+                        tokens += int(saved)
 
     denom = tokens + total_input_tokens
     coverage = (tokens / denom * 100.0) if denom else 0.0

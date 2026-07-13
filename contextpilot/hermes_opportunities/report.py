@@ -137,7 +137,7 @@ def build_report(
     notes = [
         "content-aware analysis: message/tool text was hashed in-memory only and never written to reports",
         "all identifiers are salted SHA-256 fingerprints; counters are aggregates",
-        "wasted-token figures are heuristic estimates (chars/4); validate before acting",
+        "token figures use tokenizer-measured telemetry only; no chars/4 fallback is used",
         "session 'source', 'tool_name', and block_type are emitted verbatim as low-cardinality enums, not raw text",
         "llm-bound scan covers only content sent to the LLM: system/skill prompts, active user/assistant/tool messages",
         "worker-routing section is SHADOW MODE P0: it labels blocks for a future router but never drops/summarizes context",
@@ -219,7 +219,7 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         f"- Prompt dedup A/B (simulation): "
         f"{_dedup_ab_summary(report.prompt_dedup_ab)} — NOT realized savings",
         f"- Telemetry: {t.events} events, {t.chars_saved} chars saved by processing; "
-        f"derived chars/4 tokens={t.tokens_saved}, ratio={t.coverage_ratio_pct}%",
+        f"tokenizer tokens saved={t.tokens_saved}, ratio={t.coverage_ratio_pct}%",
         f"- Worker routing (shadow): {report.worker_routing.classified_block_count} blocks "
         f"classified, {report.worker_routing.must_keep_block_count} must-keep, "
         f"~{report.worker_routing.est_candidate_tokens_total} advisory candidate tokens",
@@ -365,9 +365,9 @@ def write_report(report: OpportunityReport, out_dir: Path) -> tuple[Path, Path]:
         [
             f"- Events: {t.events}",
             f"- Chars saved by ContextPilot processing: {t.chars_saved}",
-            f"- Derived chars/4 token counter: {t.tokens_saved} (not actual tokenizer/API usage)",
-            f"- Avg derived chars/4 tokens / event: {t.avg_tokens_saved_per_event}",
-            f"- Derived ratio: {t.coverage_ratio_pct}%",
+            f"- Tokenizer tokens saved: {t.tokens_saved}",
+            f"- Avg tokenizer tokens / event: {t.avg_tokens_saved_per_event}",
+            f"- Tokenizer-token ratio: {t.coverage_ratio_pct}%",
             f"- Malformed records skipped: {t.malformed_records_skipped}",
         ]
     )

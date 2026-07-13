@@ -183,8 +183,8 @@ def test_malformed_telemetry_tolerated(tmp_path):
     tel.write_text(
         "\n".join(
             [
-                json.dumps({"ts": FAR_FUTURE, "chars_saved": 400, "tokens_saved": 100}),
-                json.dumps({"ts": FAR_FUTURE, "chars_saved": 200}),  # missing tokens_saved
+                json.dumps({"ts": FAR_FUTURE, "chars_saved": 400, "actual_token_status": "available", "actual_tokens_saved": 100}),
+                json.dumps({"ts": FAR_FUTURE, "chars_saved": 200}),  # valid char metadata, token unavailable
                 "this is not json at all",
                 json.dumps([1, 2, 3]),  # not a dict
                 json.dumps({"ts": FAR_FUTURE, "note": "no counters here"}),
@@ -196,10 +196,11 @@ def test_malformed_telemetry_tolerated(tmp_path):
     )
     report = _analyze(db, tmp_path, telemetry=tel)
     t = report.telemetry
-    # Two valid records aggregated; second infers tokens from chars (200//4=50).
+    # Two valid char-metadata records aggregated; only tokenizer-measured token
+    # telemetry is counted, and missing actual tokens remain unavailable/zero.
     assert t.events == 2
     assert t.chars_saved == 600
-    assert t.tokens_saved == 150
+    assert t.tokens_saved == 100
     # Non-json, non-dict, and missing-counter lines are skipped, not fatal.
     assert t.malformed_records_skipped == 3
     assert t.coverage_ratio_pct > 0

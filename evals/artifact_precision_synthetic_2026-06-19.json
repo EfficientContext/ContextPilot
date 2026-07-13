@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-19T01:12:09+0200",
+  "corpus": "synthetic_labeled_artifact_precision_v1",
+  "claim_scope": "synthetic exact/provenance gate self-consistency; not field/model/product precision",
+  "case_count": 16,
+  "synthetic_event_tp": 7,
+  "synthetic_event_fp": 0,
+  "synthetic_event_fn": 0,
+  "synthetic_negative_case_tn": 10,
+  "synthetic_negative_case_fpr": 0.0,
+  "synthetic_event_precision": 1.0,
+  "synthetic_event_recall": 1.0,
+  "synthetic_case_accuracy": 1.0,
+  "predicted_replacements": 7,
+  "expected_replacements": 7,
+  "synthetic_realized_chars_saved": 2158,
+  "mode_gate_checks": {
+    "off_no_mutation": true,
+    "shadow_no_mutation": true,
+    "disable_env_no_mutation": true
+  },
+  "validation_gate_checks": {
+    "forged_reference_detected": true
+  },
+  "rows": [
+    {
+      "name": "whole_tool_exact_duplicate",
+      "expected_replacements": 1,
+      "actual_replacements": 1,
+      "pass": true,
+      "chars_saved": 293,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "whole_cross_type_exact_duplicate",
+      "expected_replacements": 1,
+      "actual_replacements": 1,
+      "pass": true,
+      "chars_saved": 293,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "whole_near_duplicate_not_mutated",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "fenced_internal_duplicate",
+      "expected_replacements": 1,
+      "actual_replacements": 1,
+      "pass": true,
+      "chars_saved": 358,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "two_fenced_duplicates",
+      "expected_replacements": 2,
+      "actual_replacements": 2,
+      "pass": true,
+      "chars_saved": 716,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "protected_user_system_duplicates",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "short_duplicate_never_grow",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "unterminated_fence_not_mutated",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "copied_plain_span_without_declared_link",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "protected_duplicate_tool_vs_user",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "protected_duplicate_tool_vs_system",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "declared_source_span_exact",
+      "expected_replacements": 1,
+      "actual_replacements": 1,
+      "pass": true,
+      "chars_saved": 249,
+      "span_replacements": 1,
+      "dangling": []
+    },
+    {
+      "name": "declared_span_content_differs",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "forward_span_link_rejected",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "oob_span_link_rejected",
+      "expected_replacements": 0,
+      "actual_replacements": 0,
+      "pass": true,
+      "chars_saved": 0,
+      "span_replacements": 0,
+      "dangling": []
+    },
+    {
+      "name": "duplicate_span_declaration_counts_once",
+      "expected_replacements": 1,
+      "actual_replacements": 1,
+      "pass": true,
+      "chars_saved": 249,
+      "span_replacements": 1,
+      "dangling": []
+    }
+  ]
+}

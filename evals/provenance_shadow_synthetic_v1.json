@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "corpus": "provenance_linking_shadow_eval",
+  "claim_scope": "shadow claim→evidence linking; does not mutate online context",
+  "example_count": 3,
+  "gold_links": 4,
+  "predicted_links": 3,
+  "shadow_link_tp": 3,
+  "shadow_link_fp": 0,
+  "shadow_link_fn": 1,
+  "shadow_link_precision": 1.0,
+  "shadow_link_recall": 0.75,
+  "cases": [
+    {
+      "example_id": "synthetic_coding_review",
+      "claim_count": 2,
+      "gold_links": 2,
+      "predicted_links": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 1
+    },
+    {
+      "example_id": "synthetic_research_claim",
+      "claim_count": 1,
+      "gold_links": 1,
+      "predicted_links": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    {
+      "example_id": "synthetic_ops_metrics",
+      "claim_count": 1,
+      "gold_links": 1,
+      "predicted_links": 1,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    }
+  ]
+}

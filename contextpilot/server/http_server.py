@@ -1733,11 +1733,10 @@ async def _intercept_and_forward(request: Request, api_format: str):
 
             if total_reordered > 0 or total_deduped > 0 or total_slimmed > 0:
                 saved = chars_before_slim - chars_after_slim
-                saved_tokens = saved // 4 if saved > 0 else 0
                 logger.info(
                     f"Intercept ({api_format}): reordered {total_reordered}, "
                     f"deduped {total_deduped}, slimmed {total_slimmed} "
-                    f"(saved {saved:,} chars ≈ {saved_tokens:,} tokens)"
+                    f"(saved {saved:,} chars; tokenizer accounting required for tokens)"
                 )
 
             _dedup_result = DedupResult()

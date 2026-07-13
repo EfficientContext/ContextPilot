@@ -106,12 +106,30 @@ def test_monitor_reads_metadata_only_and_hashes_session_ids(tmp_path):
     data = json.loads(json_path.read_text(encoding="utf-8"))
     md = md_path.read_text(encoding="utf-8")
     assert data["session_count"] == 1
-    assert data["contextpilot_tokens_saved"] == 100
-    assert data["estimated_input_token_reduction_pct"] > 0
+    assert data["contextpilot_tokens_saved"] == 0
+    assert data["contextpilot_token_status"] == "unavailable"
+    assert data["estimated_input_token_reduction_pct"] == 0
+    assert "~100 tokens" not in md
+    assert "tokenizer): unavailable" in md
     assert "raw-session-id" not in md
     assert "DO NOT READ ME" not in md
     assert "SECRET SYSTEM PROMPT" not in md
     assert data["top_token_sessions"][0]["session_hash"] != "raw-session-id"
+
+
+def test_parse_contextpilot_savings_accepts_char_only_log(tmp_path):
+    log = tmp_path / "gateway.log"
+    log.write_text(
+        "2026-01-01 INFO [ContextPilot] Turn 2: saved 400 chars | "
+        "cumulative: 400 chars\n",
+        encoding="utf-8",
+    )
+
+    events, chars, tokens = monitor.parse_contextpilot_savings(log, since_hours=24)
+
+    assert events == 1
+    assert chars == 400
+    assert tokens == 0
 
 
 def _write_telemetry(path, records):
@@ -127,9 +145,9 @@ def test_parse_telemetry_aggregates_recent_records(tmp_path):
         tel,
         [
             {"ts": far_future, "type": "turn", "session": "s1", "turn": 1,
-             "chars_saved": 400, "tokens_saved": 100},
+             "chars_saved": 400, "actual_token_status": "available", "actual_tokens_saved": 100},
             {"ts": far_future, "type": "turn", "session": "s1", "turn": 2,
-             "chars_saved": 200, "tokens_saved": 50},
+             "chars_saved": 200, "actual_token_status": "available", "actual_tokens_saved": 50},
             # Stale record far in the past must be excluded by the window.
             {"ts": 1000.0, "type": "turn", "session": "s0", "turn": 1,
              "chars_saved": 999999, "tokens_saved": 999999},
@@ -137,14 +155,15 @@ def test_parse_telemetry_aggregates_recent_records(tmp_path):
         ],
     )
 
-    events, chars, tokens = monitor.parse_contextpilot_telemetry(tel, since_hours=24)
+    events, chars, tokens, token_events = monitor.parse_contextpilot_telemetry(tel, since_hours=24)
     assert events == 2
     assert chars == 600
     assert tokens == 150
+    assert token_events == 2
 
 
 def test_parse_telemetry_missing_file_is_safe(tmp_path):
-    assert monitor.parse_contextpilot_telemetry(tmp_path / "nope.jsonl", since_hours=24) == (0, 0, 0)
+    assert monitor.parse_contextpilot_telemetry(tmp_path / "nope.jsonl", since_hours=24) == (0, 0, 0, 0)
 
 
 def test_build_report_prefers_telemetry_over_logs(tmp_path):
@@ -157,7 +176,7 @@ def test_build_report_prefers_telemetry_over_logs(tmp_path):
         date="2100-01-01",
         since_hours=24,
         log_stats=(5, 4000, 1000),
-        telemetry_stats=(2, 600, 150),
+        telemetry_stats=(2, 600, 150, 2),
     )
     # Telemetry is authoritative when present; logs are not summed on top.
     assert report.contextpilot_tokens_saved == 150
@@ -165,6 +184,7 @@ def test_build_report_prefers_telemetry_over_logs(tmp_path):
     assert report.contextpilot_telemetry_events == 2
     assert report.contextpilot_log_events == 5
     assert report.contextpilot_savings_source == "telemetry"
+    assert report.contextpilot_token_status == "available"
 
 
 def test_build_report_falls_back_to_logs_without_telemetry(tmp_path):
@@ -177,7 +197,8 @@ def test_build_report_falls_back_to_logs_without_telemetry(tmp_path):
         date="2100-01-01",
         since_hours=24,
         log_stats=(5, 4000, 1000),
-        telemetry_stats=(0, 0, 0),
+        telemetry_stats=(0, 0, 0, 0),
     )
-    assert report.contextpilot_tokens_saved == 1000
-    assert report.contextpilot_savings_source == "gateway-log"
+    assert report.contextpilot_tokens_saved == 0
+    assert report.contextpilot_token_status == "unavailable"
+    assert report.contextpilot_savings_source == "gateway-log-chars-only"

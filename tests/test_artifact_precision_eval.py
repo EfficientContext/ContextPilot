@@ -1,12 +1,18 @@
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-from scripts.evaluate_artifact_precision import build_report
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MODULE_PATH = REPO_ROOT / "scripts" / "evaluate_artifact_precision.py"
+spec = importlib.util.spec_from_file_location("evaluate_artifact_precision", MODULE_PATH)
+assert spec is not None and spec.loader is not None
+evaluator = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = evaluator
+spec.loader.exec_module(evaluator)
+build_report = evaluator.build_report
 
 
 def test_synthetic_artifact_precision_report_is_namespaced_and_reproducible():

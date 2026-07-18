@@ -4,11 +4,11 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
-#SBATCH --output=quantized_eval_%j.out
-#SBATCH --error=quantized_eval_%j.err
+#SBATCH --output=fp16_eval_%j.out
+#SBATCH --error=fp16_eval_%j.err
 
 echo "=========================================================="
-echo "  ContextPilot Quantized AWQ Evaluation (vLLM + MCP-Atlas)"
+echo "  ContextPilot Full Precision Evaluation (vLLM + MCP-Atlas)"
 echo "=========================================================="
 
 export PYTHONPATH="$(pwd):$PYTHONPATH"
@@ -23,7 +23,7 @@ export TMP="$(pwd)/tmp"
 PORT=$(shuf -i 15000-20000 -n 1)
 echo "Generated vLLM Port: $PORT"
 
-MODEL_NAME="Qwen/Qwen2.5-7B-Instruct-AWQ"
+MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
 
 echo "[0/3] Installing dependencies..."
 pip install --no-cache-dir -r requirements.txt 2>/dev/null || true
@@ -34,12 +34,11 @@ pip install --no-cache-dir --upgrade scipy "numpy<2.0" 2>/dev/null || true
 start_vllm() {
     local log_file=$1
     echo "Booting vLLM on port $PORT..."
-    # Boot vLLM with 0.4 gpu utilization for tiny footprint
+    # Boot vLLM with 0.8 gpu utilization for tiny footprint
     python -m vllm.entrypoints.openai.api_server \
         --model "$MODEL_NAME" \
         --port "$PORT" \
         --gpu-memory-utilization 0.8 \
-        --quantization awq \
         --max-model-len 4096 \
         --enforce-eager \
         --enable-auto-tool-choice \
@@ -71,10 +70,10 @@ start_vllm() {
 # PHASE 1: Baseline Evaluation
 # ==========================================
 echo "[1/3] Phase 1: Baseline Evaluation"
-start_vllm "vllm_baseline.log"
+start_vllm "fp16_vllm_baseline.log"
 
 echo "Starting Metrics Logger for Baseline..."
-python scripts/vllm_metrics_logger.py --port $PORT --output baseline_metrics.json &
+python scripts/vllm_metrics_logger.py --port $PORT --output fp16_baseline_metrics.json &
 LOGGER_PID=$!
 
 echo "Running Baseline Evaluation (100 Tasks)..."
@@ -101,10 +100,10 @@ PORT=$(shuf -i 15000-20000 -n 1)
 # PHASE 2: With-Plugin Evaluation
 # ==========================================
 echo "[2/3] Phase 2: With-Plugin Evaluation"
-start_vllm "vllm_plugin.log"
+start_vllm "fp16_vllm_plugin.log"
 
 echo "Starting Metrics Logger for With-Plugin..."
-python scripts/vllm_metrics_logger.py --port $PORT --output plugin_metrics.json &
+python scripts/vllm_metrics_logger.py --port $PORT --output fp16_plugin_metrics.json &
 LOGGER_PID=$!
 
 echo "Running With-Plugin Evaluation (100 Tasks)..."
@@ -125,10 +124,10 @@ kill -9 $VLLM_PID
 
 echo "[3/3] Displaying Metrics Summaries:"
 echo "=== Baseline Peak VRAM ==="
-cat baseline_metrics.json
+cat fp16_baseline_metrics.json
 echo ""
 echo "=== With-Plugin Peak VRAM ==="
-cat plugin_metrics.json
+cat fp16_plugin_metrics.json
 echo ""
 
 echo "=========================================================="

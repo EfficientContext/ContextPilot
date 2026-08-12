@@ -9,6 +9,7 @@ from datasets import load_dataset
 from openai import AsyncOpenAI
 
 from refactored_plugins.dedup import ContextDedupPlugin
+from refactored_plugins.dynamic_pruning import DynamicPruningPlugin
 from refactored_plugins.skill_index import SkillAwareContextPlugin
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -26,9 +27,9 @@ DUMMY_TOOL_REGISTRY = {
     for i in range(1, 11)
 }
 
-async def process_task(task, client, semaphore, output_file, turn_1_id, mode, model_name):
+async def process_task(task, client, semaphore, output_file, turn_1_id, mode, model_name, active_plugins):
     """
-    Processes a single BigCodeBench task through our ELM API (bypassing or routing to proxy).
+    Processes a single BigCodeBench task through our API.
     """
     async with semaphore:
         task_id = task.get("task_id", "unknown_task")
@@ -51,13 +52,13 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
             # Send extra_body for ContextPilot proxy to intercept
             request["_required_skills"] = ["tool_1", "tool_3", "tool_7"]
             
-            # 1. Apply plugins on the client before sending
-            request = await dedup_plugin.process(request)
-            request = await skill_plugin.process(request)
-            
-            # The proxy needs user_id and parent_id for cache tracking if implemented, 
-            # though our http_server currently just forwards.
-            # But we must ensure the tools array is updated properly in api_kwargs!
+            # Apply plugins selectively
+            if "dedup" in active_plugins or "all" in active_plugins:
+                request = await dedup_plugin.process(request)
+            if "dynamic" in active_plugins or "all" in active_plugins:
+                request = await dynamic_plugin.process(request)
+            if "skill" in active_plugins or "all" in active_plugins:
+                request = await skill_plugin.process(request)
             
             api_kwargs = {
                 "model": model_name,
@@ -92,7 +93,6 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
             if match:
                 extracted_code = match.group(1).strip()
             else:
-                # Fallback if the LLM didn't use the markdown block
                 extracted_code = response_content.strip()
 
         # Append result to JSONL
@@ -102,29 +102,23 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
         logger.info(f"[{mode}] Finished {task_id}")
 
 async def run_evaluation(mode, args, tasks):
-    # Route BOTH baseline and with_plugin through the proxy to intercept prompt_cache_hit_tokens
-    client = AsyncOpenAI(api_key=args.api_key, base_url="http://localhost:8000/v1")
+    client = AsyncOpenAI(api_key=args.api_key, base_url="http://localhost:8000/v1" if mode == "with_plugin" else args.api_base)
         
-    # We use a dummy turn_1_id for simulation
     turn_1_id = "test-turn-1-id"
-        
     output_file = os.path.join(os.path.dirname(__file__), f"results_{mode}_{args.model}.jsonl")
     if os.path.exists(output_file):
         os.remove(output_file)
         
-    # Use configurable Semaphore to allow high concurrency
     semaphore = asyncio.Semaphore(args.concurrency)
+    active_plugins = [p.strip() for p in args.plugins.split(",")]
     
     # Instantiate plugins
-    from refactored_plugins.dedup import ContextDedupPlugin
-    from refactored_plugins.skill_index import SkillAwareContextPlugin
-    global dedup_plugin, skill_plugin
+    global dedup_plugin, dynamic_plugin, skill_plugin
     dedup_plugin = ContextDedupPlugin(shadow_mode=True)
+    dynamic_plugin = DynamicPruningPlugin(similarity_threshold=args.threshold)
     skill_plugin = SkillAwareContextPlugin(DUMMY_TOOL_REGISTRY)
 
-    # SEED THE TRACKER FOR TELEMETRY:
-    # Inject the "Turn 1" system prompt and history into the dedup plugin's memory.
-    # Without this, the tracker thinks test-turn-1-id is empty, resulting in 0 chars saved!
+    # SEED THE TRACKER FOR TELEMETRY
     turn_1_messages = [
         {"role": "system", "content": "You are a senior python developer. Always wrap your code in ```python blocks."},
         {"role": "user", "content": "Please help me write some code."},
@@ -133,7 +127,7 @@ async def run_evaluation(mode, args, tasks):
     msg_ids = [dedup_plugin._get_id(m["content"]) for m in turn_1_messages]
     dedup_plugin.tracker.deduplicate(request_id=turn_1_id, docs=msg_ids, parent_request_id=None)
 
-    coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model) for t in tasks]
+    coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model, active_plugins) for t in tasks]
     await asyncio.gather(*coroutines)
     
     print(f"\n=== Evaluation Complete for mode: {mode} ===")
@@ -142,34 +136,49 @@ async def run_evaluation(mode, args, tasks):
     if mode == "with_plugin":
         print("\n=== ContextPilot Client Telemetry ===")
         dedup_metrics = dedup_plugin.get_plugin_metrics()
+        dynamic_metrics = dynamic_plugin.get_plugin_metrics()
         skill_metrics = skill_plugin.get_plugin_metrics()
-        print(f"[Dedup] Chars Saved: {dedup_metrics['total_chars_saved']} / {dedup_metrics['total_original_chars']} ({dedup_metrics['chars_saved_percentage']:.2f}%)")
-        print(f"[Skill] Tools Filtered: {skill_metrics['total_tools_filtered']} / {skill_metrics.get('total_original_tools', 'N/A')} ({skill_metrics.get('tools_filtered_percentage', 0):.2f}%)")
+        
+        total_saved = 0
+        total_orig = dynamic_metrics['total_original_chars']
+        
+        if "dedup" in active_plugins or "all" in active_plugins:
+            print(f"[Dedup] Chars Saved: {dedup_metrics['total_chars_saved']} / {dedup_metrics['total_original_chars']} ({dedup_metrics['chars_saved_percentage']:.2f}%)")
+            total_saved += dedup_metrics['total_chars_saved']
+            
+        if "dynamic" in active_plugins or "all" in active_plugins:
+            print(f"[Dynamic Pruning] Chars Saved: {dynamic_metrics['total_chars_saved']} / {dynamic_metrics['total_original_chars']} ({dynamic_metrics['chars_saved_percentage']:.2f}%)")
+            total_saved += dynamic_metrics['total_chars_saved']
+            
+        if "skill" in active_plugins or "all" in active_plugins:
+            print(f"[Skill] Tools Filtered: {skill_metrics['total_tools_filtered']} / {skill_metrics.get('total_original_tools', 'N/A')} ({skill_metrics.get('tools_filtered_percentage', 0):.2f}%)")
 
+        if total_orig > 0 and ("dedup" in active_plugins or "all" in active_plugins) and ("dynamic" in active_plugins or "all" in active_plugins):
+            combined_pct = (total_saved / total_orig * 100)
+            print(f"[COMBINED THEORETICAL SAVINGS]: {total_saved} / {total_orig} ({combined_pct:.2f}%)")
 
 async def main():
-    parser = argparse.ArgumentParser(description="BigCodeBench ELM API Runner")
+    parser = argparse.ArgumentParser(description="BigCodeBench Evaluation Script")
     parser.add_argument("--model", default="gpt-5.5", help="Model name to evaluate")
-    parser.add_argument("--api_base", default=os.environ.get("BASE_URL", "https://api.openai.com/v1"), help="Baseline ELM API Base URL")
-    parser.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY", "dummy-elm-key"), help="API Key")
+    parser.add_argument("--api_base", default=os.environ.get("BASE_URL", "https://api.openai.com/v1"), help="Baseline API Base URL")
+    parser.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY", "dummy-key"), help="API Key")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent requests")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of tasks to run (0 for all)")
     parser.add_argument("--eval_mode", choices=["baseline", "with_plugin", "all"], default="all", help="Evaluation mode")
+    parser.add_argument("--plugins", default="all", help="Comma-separated list of plugins (dedup,dynamic,skill,all)")
+    parser.add_argument("--threshold", type=float, default=0.3, help="Threshold for DynamicPruningPlugin")
     args = parser.parse_args()
 
-    # Load BigCodeBench dataset
     logger.info("Loading BigCodeBench dataset...")
     try:
         dataset = load_dataset("bigcode/bigcodebench", split="train")
     except Exception as e:
         logger.warning(f"Failed to load split='train'. Trying standard default split. Error: {e}")
-        # Fallback to the common default split format if 'train' split does not exist
         try:
             dataset = load_dataset("bigcode/bigcodebench", split="v0.1.2")
         except Exception:
             dataset = load_dataset("bigcode/bigcodebench", split="v0.1.0_240822")
             
-    # Select all tasks for full evaluation
     tasks = list(dataset)
     if args.limit > 0:
         tasks = tasks[:args.limit]
@@ -177,10 +186,7 @@ async def main():
     else:
         logger.info(f"Loaded {len(tasks)} tasks for full evaluation.")
     
-    if args.eval_mode == "all":
-        modes = ["baseline", "with_plugin"]
-    else:
-        modes = [args.eval_mode]
+    modes = ["baseline", "with_plugin"] if args.eval_mode == "all" else [args.eval_mode]
         
     for mode in modes:
         logger.info(f"\n--- Starting Evaluation: {mode} ---")

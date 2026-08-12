@@ -8,6 +8,7 @@ import re
 from datasets import load_dataset
 from openai import AsyncOpenAI
 
+from refactored_plugins.dedup import ContextDedupPlugin
 from refactored_plugins.dynamic_pruning import DynamicPruningPlugin
 from refactored_plugins.skill_index import SkillAwareContextPlugin
 
@@ -28,7 +29,7 @@ DUMMY_TOOL_REGISTRY = {
 
 async def process_task(task, client, semaphore, output_file, turn_1_id, mode, model_name):
     """
-    Processes a single BigCodeBench task through our ELM API (bypassing or routing to proxy).
+    Processes a single BigCodeBench task through our ELM API.
     """
     async with semaphore:
         task_id = task.get("task_id", "unknown_task")
@@ -51,7 +52,8 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
             # Send extra_body for ContextPilot proxy to intercept
             request["_required_skills"] = ["tool_1", "tool_3", "tool_7"]
             
-            # 1. Apply plugins on the client before sending
+            # 1. Apply ALL THREE plugins on the client before sending
+            request = await dedup_plugin.process(request)
             request = await dynamic_plugin.process(request)
             request = await skill_plugin.process(request)
             
@@ -98,13 +100,13 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
         logger.info(f"[{mode}] Finished {task_id}")
 
 async def run_evaluation(mode, args, tasks):
-    # Route BOTH baseline and with_plugin through the proxy to intercept prompt_cache_hit_tokens
+    # Route BOTH baseline and with_plugin through the proxy
     client = AsyncOpenAI(api_key=args.api_key, base_url="http://localhost:8000/v1")
         
     # We use a dummy turn_1_id for simulation
     turn_1_id = "test-turn-1-id"
         
-    output_file = os.path.join(os.path.dirname(__file__), f"results_dynamic_skill_{mode}_{args.model}.jsonl")
+    output_file = os.path.join(os.path.dirname(__file__), f"results_ablation_{args.threshold}_{mode}_{args.model}.jsonl")
     if os.path.exists(output_file):
         os.remove(output_file)
         
@@ -112,34 +114,53 @@ async def run_evaluation(mode, args, tasks):
     semaphore = asyncio.Semaphore(args.concurrency)
     
     # Instantiate plugins
-    from refactored_plugins.dynamic_pruning import DynamicPruningPlugin
-    from refactored_plugins.skill_index import SkillAwareContextPlugin
-    global dynamic_plugin, skill_plugin
-    dynamic_plugin = DynamicPruningPlugin(similarity_threshold=0.3)
+    global dedup_plugin, dynamic_plugin, skill_plugin
+    dedup_plugin = ContextDedupPlugin(shadow_mode=True)
+    dynamic_plugin = DynamicPruningPlugin(similarity_threshold=args.threshold)
     skill_plugin = SkillAwareContextPlugin(DUMMY_TOOL_REGISTRY)
+
+    # SEED THE TRACKER FOR TELEMETRY:
+    # Inject the "Turn 1" system prompt and history into the dedup plugin's memory.
+    turn_1_messages = [
+        {"role": "system", "content": "You are a senior python developer. Always wrap your code in ```python blocks."},
+        {"role": "user", "content": "Please help me write some code."},
+        {"role": "assistant", "content": "Of course! I can help you with that."}
+    ]
+    msg_ids = [dedup_plugin._get_id(m["content"]) for m in turn_1_messages]
+    dedup_plugin.tracker.deduplicate(request_id=turn_1_id, docs=msg_ids, parent_request_id=None)
 
     coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model) for t in tasks]
     await asyncio.gather(*coroutines)
     
-    print(f"\n=== Evaluation Complete for mode: {mode} ===")
+    print(f"\n=== Evaluation Complete for mode: {mode} (Threshold {args.threshold}) ===")
     print(f"Results saved to {output_file}")
 
     if mode == "with_plugin":
-        print("\n=== ContextPilot Client Telemetry ===")
+        print(f"\n=== ContextPilot Client Telemetry (ALL PLUGINS) [Threshold {args.threshold}] ===")
+        dedup_metrics = dedup_plugin.get_plugin_metrics()
         dynamic_metrics = dynamic_plugin.get_plugin_metrics()
         skill_metrics = skill_plugin.get_plugin_metrics()
+        
+        # Calculate theoretical stacked savings
+        total_orig = dynamic_metrics['total_original_chars']
+        total_saved = dedup_metrics['total_chars_saved'] + dynamic_metrics['total_chars_saved']
+        combined_pct = (total_saved / total_orig * 100) if total_orig > 0 else 0.0
+        
+        print(f"[Dedup] Chars Saved: {dedup_metrics['total_chars_saved']} / {dedup_metrics['total_original_chars']} ({dedup_metrics['chars_saved_percentage']:.2f}%)")
         print(f"[Dynamic Pruning] Chars Saved: {dynamic_metrics['total_chars_saved']} / {dynamic_metrics['total_original_chars']} ({dynamic_metrics['chars_saved_percentage']:.2f}%)")
+        print(f"[COMBINED THEORETICAL SAVINGS]: {total_saved} / {total_orig} ({combined_pct:.2f}%)")
         print(f"[Skill] Tools Filtered: {skill_metrics['total_tools_filtered']} / {skill_metrics.get('total_original_tools', 'N/A')} ({skill_metrics.get('tools_filtered_percentage', 0):.2f}%)")
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="BigCodeBench ELM API Runner")
+    parser = argparse.ArgumentParser(description="BigCodeBench ELM API Runner (Ablation)")
     parser.add_argument("--model", default="gpt-5.5", help="Model name to evaluate")
     parser.add_argument("--api_base", default=os.environ.get("BASE_URL", "https://api.openai.com/v1"), help="Baseline ELM API Base URL")
     parser.add_argument("--api_key", default=os.environ.get("OPENAI_API_KEY", "dummy-elm-key"), help="API Key")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent requests")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of tasks to run (0 for all)")
     parser.add_argument("--eval_mode", choices=["baseline", "with_plugin", "all"], default="all", help="Evaluation mode")
+    parser.add_argument("--threshold", type=float, default=0.3, help="Similarity threshold for Dynamic Pruning")
     args = parser.parse_args()
 
     # Load BigCodeBench dataset
@@ -148,7 +169,6 @@ async def main():
         dataset = load_dataset("bigcode/bigcodebench", split="train")
     except Exception as e:
         logger.warning(f"Failed to load split='train'. Trying standard default split. Error: {e}")
-        # Fallback to the common default split format if 'train' split does not exist
         try:
             dataset = load_dataset("bigcode/bigcodebench", split="v0.1.2")
         except Exception:
@@ -168,7 +188,7 @@ async def main():
         modes = [args.eval_mode]
         
     for mode in modes:
-        logger.info(f"\n--- Starting Evaluation: {mode} ---")
+        logger.info(f"\n--- Starting Evaluation: {mode} (Threshold: {args.threshold}) ---")
         await run_evaluation(mode, args, tasks)
         
 if __name__ == "__main__":

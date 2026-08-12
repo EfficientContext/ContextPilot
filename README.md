@@ -86,15 +86,4 @@ cd evaluation/slurm_launchers/
 sbatch submit_test_all_plugins_elm.slurm
 ```
 
-## Citation
-If you utilize this proxy architecture or the associated benchmarks in your research, please consider citing this work:
 
-```bibtex
-@mastersthesis{contextpilot_msc_2026,
-  author  = {Anonymous},
-  title   = {ContextPilot: Optimizing Multi-Agent Orchestration via L7 Middleware Cache Homogenization},
-  school  = {University of Edinburgh},
-  year    = {2026},
-  note    = {MSc Dissertation Repository}
-}
-```

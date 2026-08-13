@@ -2,7 +2,7 @@ Bootstrap: docker
 From: python:3.10-slim
 
 %post
-    # 1. 强行锁定容器内的临时目录
+    # 1. Pin the container's temporary directory
     export TMPDIR=/disk/scratch/s2206068/tmp
     export PIP_CACHE_DIR=/disk/scratch/s2206068/pip_cache
     
@@ -13,19 +13,21 @@ From: python:3.10-slim
 
     useradd -m -s /bin/bash evaluser
 
-    # 2. 核心修正：
-    # 先把大头（torch 和 transformers）单独装好。因为它们是现成的二进制轮子，不需要编译。
+    # 2. Core fix:
+    # Install the heavy dependencies (torch and transformers) separately first,
+    # since they ship as prebuilt binary wheels and do not need to be compiled.
     pip install --no-cache-dir torch transformers
     
-    # 3. 终极补刀：
-    # Fetch and install evaluation requirements
+    # 3. Final fix:
+    # Fetch and install the evaluation requirements
     wget https://raw.githubusercontent.com/bigcode-project/bigcodebench/main/Requirements/requirements-eval.txt
     
     # Install requirements-eval normally (allows build isolation for scikit-image)
     pip install --no-cache-dir -r requirements-eval.txt
     
-    # 使用 --no-build-isolation 参数安装 bigcodebench！
-    # 这会强制 pip 继承现有的全局环境变量，绝不派生抹除变量的子虚拟环境！
+    # Install bigcodebench with --no-build-isolation.
+    # This forces pip to inherit the existing global environment variables
+    # instead of spawning a sub-venv that would drop them.
     pip install --no-cache-dir --no-build-isolation bigcodebench
     
     # Force downgrade numpy, pandas, and protobuf to avoid binary incompatibility

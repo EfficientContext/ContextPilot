@@ -2,7 +2,7 @@
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Status: Production Ready](https://img.shields.io/badge/status-production_ready-brightgreen.svg)
+![Status: Research Prototype](https://img.shields.io/badge/status-research_prototype-blue.svg)
 
 ## Overview
 ContextPilot is an advanced Layer-7 middleware proxy designed to neutralize the **"Orchestration Tax"** in multi-agent LLM deployments. By seamlessly intercepting API traffic between agents and inference endpoints, ContextPilot applies extreme context compression and Cache-Homogenization techniques. This forces divergent, bloated agent requests to realign with the strict radix-tree structures of state-of-the-art KV-Caches (like vLLM), dramatically reducing network I/O, API costs, and VRAM consumption on edge devices.
@@ -20,11 +20,11 @@ This repository serves as the empirical apparatus for an MSc Dissertation, built
 ## Core Architecture (The 5 Plugins)
 ContextPilot achieves cache homogenization through a pipeline of 5 decoupling plugins:
 
-*   **`ContextDedupPlugin`**: Eliminates redundant conversational history across multi-turn agent execution by substituting identical context windows with lightweight cryptographic hashes.
+*   **`ContextDedupPlugin`**: Deduplicates redundant conversational history across multi-turn agent execution by substituting repeated messages with lightweight reference hints (e.g., `[Reference to Turn N]`). On black-box APIs it runs in shadow mode, reporting theoretical savings without mutating the payload.
 *   **`DynamicPruningPlugin`**: Leverages `all-MiniLM-L6-v2` to aggressively prune historically irrelevant semantic noise, applying a dynamic cutoff threshold to protect critical context while maximizing compression.
 *   **`SkillAwareContextPlugin`**: Filters monolithic tool registries, dropping unused functions dynamically based on an oracle or predictive router to ensure bloated JSON schemas do not invalidate prefixes.
 *   **`ContextReorderPlugin`**: Deterministically sorts system prompts, tool schemas, and few-shot examples to guarantee rigid prefix alignment for the backend KV-Cache.
-*   **`KVCacheLookupPlugin`**: A high-speed ZeroMQ (ZMQ) IPC backbone that bypasses HTTP overheads entirely, allowing native agents to directly inject cache references to the engine.
+*   **`KVCacheLookupPlugin`**: Subscribes to worker cache events over ZeroMQ (ZMQ) and maintains a shadow Radix tree per worker, routing each request to the endpoint with the longest cached prefix.
 
 ### Architectural Diagram
 ![ContextPilot Architecture](assets/architecture.png)
@@ -44,21 +44,23 @@ By systematically excising task-specific tool noise and deduplicating prefixes, 
 | **BigCodeBench** | 457,344 | 289,152 | Client-Side Bandwidth Conservation |
 | **MCP-Atlas** | 18,688 | 66,304 | Cache-Homogenization via Prefix Alignment |
 
-### Compression Ceilings & Accuracy (ELM GPT-5.5)
-The Full Triple Pipeline demonstrates that hash-based deduplication and semantic-based pruning stack flawlessly with negligible accuracy variance.
+### Compression & Accuracy (ELM GPT-5.5)
+The Full Triple Pipeline demonstrates that hash-based deduplication and semantic-based pruning stack without degrading accuracy (McNemar $p = 0.28$).
 
-| Pipeline Configuration | Pass@1 Accuracy | History Saved (Chars / %) | Tools Reduced |
-| :--- | :--- | :--- | :--- |
-| **Baseline (Unoptimized)** | 62.4% | 0 (0%) | 0% |
-| **Semantic Pruning Only** | 63.2% | 76,380 (5.33%) | 70% |
-| **Full Triple Pipeline** | 63.2% | 168,720 (11.78%) | 70% |
+| Pipeline Configuration | Paired Baseline | Pass@1 | History Saved (Chars / %) | Tools Reduced |
+| :--- | :--- | :--- | :--- | :--- |
+| **Semantic Pruning Only** | 62.4% | 63.2% | 76,380 (5.33%) | 70% |
+| **Full Triple Pipeline** | 62.2% | 63.2% | 168,720 (11.78%)† | 70% |
+
+† Includes a 6.45% referential-deduplication component reported as a theoretical shadow-mode projection.
 
 ## Quick Start / Installation
 Clone the repository and install the proxy server and all associated dependencies locally.
 
 ```bash
-git clone https://github.com/SNM-SNM/contextpilot-openclaw-token-proxy.git
-cd contextpilot-openclaw-token-proxy
+git clone https://github.com/EfficientContext/ContextPilot.git
+cd ContextPilot
+git checkout feature/msc-cache-optimization
 python -m venv venv
 source venv/bin/activate
 pip install -e .

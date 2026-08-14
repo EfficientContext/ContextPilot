@@ -27,7 +27,7 @@ python -m contextpilot.server.http_server --port 8000 --infer-api-url "$PROXY_TA
 PROXY_PID=$!
 sleep 5
 
-THRESHOLDS=(0.1 0.2 0.4 0.5)
+THRESHOLDS=(0.6 0.7)
 
 echo "[2/3] Running Ablation Scripts (FULL)..."
 for THRESHOLD in "${THRESHOLDS[@]}"; do

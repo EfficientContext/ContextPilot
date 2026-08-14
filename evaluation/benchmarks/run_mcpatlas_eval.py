@@ -123,10 +123,7 @@ async def process_task(task, client, semaphore, mode, model_name, distractor_rat
             api_kwargs = {
                 "model": model_name,
                 "messages": request["messages"],
-                "tools": request["tools"],
-                "extra_body": {
-                    "_required_skills": request.get("_required_skills")
-                }
+                "tools": request["tools"]
             }
         else:
             api_kwargs = {

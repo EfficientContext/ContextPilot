@@ -14,6 +14,14 @@ from refactored_plugins.skill_index import SkillAwareContextPlugin
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+DISTRACTOR_POOL = [
+    {"type": "function", "function": {
+        "name": f"distractor_tool_{i}",
+        "description": f"An unrelated utility function number {i}."
+    }}
+    for i in range(50)
+]
+
 async def process_task(task, client, semaphore, mode, model_name, distractor_ratio):
     async with semaphore:
         task_id = task.get("id", str(time.time()))
@@ -75,6 +83,8 @@ async def process_task(task, client, semaphore, mode, model_name, distractor_rat
                 })
             elif isinstance(t, dict) and "type" in t and t["type"] == "function":
                 formatted_tools.append(t)
+                
+        formatted_tools = formatted_tools + DISTRACTOR_POOL
         
         ground_truth_tool = None
         answers = task.get("answers", [])

@@ -14,15 +14,7 @@ from refactored_plugins.skill_index import SkillAwareContextPlugin
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-DISTRACTOR_POOL = [
-    {"type": "function", "function": {
-        "name": f"distractor_tool_{i}",
-        "description": f"An unrelated utility function number {i}."
-    }}
-    for i in range(50)
-]
-
-async def process_task(task, client, semaphore, mode, model_name, distractor_ratio):
+async def process_task(task, client, semaphore, mode, model_name, distractor_ratio, global_tool_pool=None):
     async with semaphore:
         task_id = task.get("id", str(time.time()))
         
@@ -35,6 +27,30 @@ async def process_task(task, client, semaphore, mode, model_name, distractor_rat
                 available_tools = json.loads(available_tools)
             except:
                 available_tools = []
+
+        ground_truth_tool = None
+        answers = task.get("answers", [])
+        if isinstance(answers, str):
+            try:
+                answers = json.loads(answers)
+            except:
+                answers = []
+                
+        if answers and isinstance(answers, list) and len(answers) > 0:
+            if isinstance(answers[0], dict):
+                ground_truth_tool = answers[0].get("name")
+            else:
+                ground_truth_tool = answers[0]
+                
+        if not ground_truth_tool:
+            ground_truth_tool = task.get("expected_tool", "unknown_tool")
+            
+        if global_tool_pool:
+            import random
+            random.seed(42)
+            distractor_candidates = [t for t in global_tool_pool if t.get("name") != ground_truth_tool and t.get("name") not in [ex.get("name") for ex in available_tools if isinstance(ex, dict)]]
+            sampled_distractors = random.sample(distractor_candidates, min(50, len(distractor_candidates)))
+            available_tools.extend(sampled_distractors)
                 
         # Format the tools for OpenAI API
         formatted_tools = []
@@ -83,25 +99,6 @@ async def process_task(task, client, semaphore, mode, model_name, distractor_rat
                 })
             elif isinstance(t, dict) and "type" in t and t["type"] == "function":
                 formatted_tools.append(t)
-                
-        formatted_tools = formatted_tools + DISTRACTOR_POOL
-        
-        ground_truth_tool = None
-        answers = task.get("answers", [])
-        if isinstance(answers, str):
-            try:
-                answers = json.loads(answers)
-            except:
-                answers = []
-                
-        if answers and isinstance(answers, list) and len(answers) > 0:
-            if isinstance(answers[0], dict):
-                ground_truth_tool = answers[0].get("name")
-            else:
-                ground_truth_tool = answers[0]
-                
-        if not ground_truth_tool:
-            ground_truth_tool = task.get("expected_tool", "unknown_tool")
 
         request = {
             "messages": [
@@ -164,12 +161,12 @@ async def process_task(task, client, semaphore, mode, model_name, distractor_rat
         metrics = skill_plugin.get_plugin_metrics() if skill_plugin else None
         return is_correct, metrics
 
-async def run_evaluation(mode, args, tasks):
+async def run_evaluation(mode, args, tasks, global_tool_pool=None):
     # Both baseline and with_plugin use the provided api_base
     client = AsyncOpenAI(api_key=args.api_key, base_url=args.api_base)
     semaphore = asyncio.Semaphore(args.concurrency)
     
-    coroutines = [process_task(t, client, semaphore, mode, args.model, args.distractor_ratio) for t in tasks]
+    coroutines = [process_task(t, client, semaphore, mode, args.model, args.distractor_ratio, global_tool_pool) for t in tasks]
     results = await asyncio.gather(*coroutines)
     
     correct_count = sum(r[0] for r in results)
@@ -221,6 +218,17 @@ async def main():
             for i in range(10)
         ]
             
+    global_tool_schemas = {}
+    for task in dataset:
+        raw_tools = task.get("tools", [])
+        if isinstance(raw_tools, str):
+            try: raw_tools = json.loads(raw_tools)
+            except: raw_tools = []
+        for t in raw_tools:
+            if isinstance(t, dict) and "name" in t:
+                global_tool_schemas[t["name"]] = t
+    global_tool_pool = list(global_tool_schemas.values())
+
     tasks = list(dataset)
     if args.limit > 0:
         tasks = tasks[:args.limit]
@@ -235,7 +243,7 @@ async def main():
         
     for mode in modes:
         logger.info(f"\n--- Starting Evaluation: {mode} ---")
-        await run_evaluation(mode, args, tasks)
+        await run_evaluation(mode, args, tasks, global_tool_pool)
         
 if __name__ == "__main__":
     asyncio.run(main())

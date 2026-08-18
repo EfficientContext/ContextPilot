@@ -26,7 +26,7 @@ pip install fastapi uvicorn pydantic aiohttp datasets
 echo "[2/3] Running Sweep..."
 for R in 0.0 0.25 0.5 0.75 1.0; do
     echo "--- Distractor Ratio: $R ---"
-    python evaluation/benchmarks/run_mcpatlas_eval.py --model gpt-5.5 --api_base "$ELM_BASE_URL" --api_key "$OPENAI_API_KEY" --concurrency 1 --eval_mode with_plugin --distractor_ratio $R --limit 10
+    python evaluation/benchmarks/run_mcpatlas_eval.py --model gpt-5.5 --api_base "$ELM_BASE_URL" --api_key "$OPENAI_API_KEY" --concurrency 1 --eval_mode with_plugin --distractor_ratio $R
 done
 
 

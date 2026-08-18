@@ -26,7 +26,7 @@ DUMMY_TOOL_REGISTRY = {
     for i in range(1, 11)
 }
 
-async def process_task(task, client, semaphore, output_file, turn_1_id, mode, model_name):
+async def process_task(task, client, semaphore, output_file, turn_1_id, mode, model_name, seed=None):
     """
     Processes a single BigCodeBench task through our ELM API (bypassing or routing to proxy).
     """
@@ -77,6 +77,9 @@ async def process_task(task, client, semaphore, output_file, turn_1_id, mode, mo
                 "tools": request["tools"]
             }
 
+        if seed is not None:
+            api_kwargs["seed"] = seed
+
         try:
             logger.info(f"[{mode}] Sending task {task_id}...")
             response = await client.chat.completions.create(**api_kwargs)
@@ -108,7 +111,8 @@ async def run_evaluation(mode, args, tasks):
     # We use a dummy turn_1_id for simulation
     turn_1_id = "test-turn-1-id"
         
-    output_file = os.path.join(os.path.dirname(__file__), f"results_{mode}_{args.model}.jsonl")
+    seed_suffix = f"_seed{args.seed}" if args.seed is not None else ""
+    output_file = os.path.join(os.path.dirname(__file__), f"results_{mode}_{args.model}{seed_suffix}.jsonl")
     if os.path.exists(output_file):
         os.remove(output_file)
         
@@ -133,7 +137,7 @@ async def run_evaluation(mode, args, tasks):
     msg_ids = [dedup_plugin._get_id(m["content"]) for m in turn_1_messages]
     dedup_plugin.tracker.deduplicate(request_id=turn_1_id, docs=msg_ids, parent_request_id=None)
 
-    coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model) for t in tasks]
+    coroutines = [process_task(t, client, semaphore, output_file, turn_1_id, mode, args.model, args.seed) for t in tasks]
     await asyncio.gather(*coroutines)
     
     print(f"\n=== Evaluation Complete for mode: {mode} ===")
@@ -155,6 +159,7 @@ async def main():
     parser.add_argument("--concurrency", type=int, default=1, help="Number of concurrent requests")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of tasks to run (0 for all)")
     parser.add_argument("--eval_mode", choices=["baseline", "with_plugin", "all"], default="all", help="Evaluation mode")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for the LLM (None = not set)")
     args = parser.parse_args()
 
     # Load BigCodeBench dataset

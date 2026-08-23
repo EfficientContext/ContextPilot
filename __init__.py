@@ -815,6 +815,5 @@ def register(ctx):
             _CONTEXTPILOT_IMPORT_ERROR,
         )
         return
-    _patch_hermes_sanitizer()
     _auto_set_context_engine()
     ctx.register_context_engine(ContextPilotEngine())

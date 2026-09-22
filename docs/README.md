@@ -29,6 +29,7 @@
 |-----------|-------------|
 | [OpenClaw](benchmarks/openclaw.md) | 60 enterprise document analysis tasks on RTX 5090 |
 | [RAG](benchmarks/rag.md) | MultihopRAG and NarrativeQA on Qwen3-32B and DeepSeek-R1 |
+| [Video RAG](benchmarks/video_rag.md) | Video-MME frame reordering: accuracy, cache hits and where the time goes |
 
 ## Reference
 

@@ -37,6 +37,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from contextpilot.multimodal import (  # noqa: E402
@@ -84,11 +85,49 @@ _ANSWER_IS_RE = re.compile(r"(?:answer|option)\s*(?:is|:)\s*\(?([A-J])\)?", re.I
 _b64_cache: Dict[str, str] = {}
 
 
+def _encode(path: str) -> str:
+    with open(path, "rb") as f:
+        return "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
+
+
 def _data_uri(path: str) -> str:
     if path not in _b64_cache:
-        with open(path, "rb") as f:
-            _b64_cache[path] = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
+        _b64_cache[path] = _encode(path)
     return _b64_cache[path]
+
+
+def warm_frame_cache(paths, workers: int = 32) -> None:
+    """Read and encode frames in parallel.
+
+    Frames live on a network filesystem where a single-threaded read of a few
+    thousand small files takes minutes; the requests themselves then only need
+    memory.
+    """
+    todo = [p for p in dict.fromkeys(paths) if p not in _b64_cache]
+    if not todo:
+        return
+    t0 = time.perf_counter()
+    with ThreadPoolExecutor(workers) as ex:
+        for path, uri in zip(todo, ex.map(_encode, todo)):
+            _b64_cache[path] = uri
+    print(f"  prefetched {len(todo)} frames in {time.perf_counter() - t0:.1f}s", flush=True)
+
+
+def all_frame_paths(questions, retrieval, frames_root, k, meta_cache):
+    """Every frame file the run will need (top-k of each question, per video)."""
+    paths = []
+    for q in questions:
+        ret = retrieval.get(q["qid"])
+        if ret is None:
+            continue
+        vid = q["video_id"]
+        if vid not in meta_cache:
+            with open(os.path.join(frames_root, vid, "frames.json")) as f:
+                meta_cache[vid] = json.load(f)
+        meta = meta_cache[vid]
+        for idx in ret["topk"][:k]:
+            paths.append(os.path.join(frames_root, vid, meta["frames"][idx]))
+    return paths
 
 
 def load_jsonl(p):
@@ -360,8 +399,9 @@ def main():
     if a.limit:
         questions = questions[: a.limit]
     print(f"{len(questions)} questions, k={a.k}, conditions={a.conditions}")
-    extra_body = json.loads(a.extra_body) if a.extra_body else {}
     meta_cache: Dict[str, Any] = {}
+    warm_frame_cache(all_frame_paths(questions, retrieval, a.frames, a.k, meta_cache))
+    extra_body = json.loads(a.extra_body) if a.extra_body else {}
 
     summary_path = os.path.join(a.out, "summary.json")
     summary = json.load(open(summary_path)) if os.path.exists(summary_path) else {}

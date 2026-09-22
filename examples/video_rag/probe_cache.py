@@ -31,7 +31,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import requests  # noqa: E402
 
-from run_video_rag_bench import CONDITIONS, load_jsonl, make_requests  # noqa: E402
+from run_video_rag_bench import (  # noqa: E402
+    CONDITIONS,
+    all_frame_paths,
+    load_jsonl,
+    make_requests,
+    warm_frame_cache,
+)
 
 
 def shared_prefix(a, b):
@@ -118,6 +124,7 @@ def main():
         questions = questions[: a.limit]
     conds = [c.strip() for c in a.conditions.split(",") if c.strip() in CONDITIONS]
     print(f"{len(questions)} questions, k={a.k}")
+    warm_frame_cache(all_frame_paths(questions, retrieval, a.frames, a.k, {}))
     offline(conds, questions, retrieval, a.frames, a.k, a.seed, budget=not a.no_budget)
     if a.api and a.model:
         online(a.api, a.model, conds, questions, retrieval, a.frames, a.k, a.seed, a.max_tokens, budget=not a.no_budget)

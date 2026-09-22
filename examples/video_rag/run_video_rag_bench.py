@@ -43,25 +43,43 @@ from contextpilot.multimodal import (  # noqa: E402
     ImageBlock,
     build_multimodal_messages,
     frame_label,
+    group_execution_order,
+    plan_canonical_batch,
     reorder_blocks_batch,
     true_order,
 )
 from contextpilot.server.live_index import ContextPilot  # noqa: E402
 
 CONDITIONS = {
-    #  name:            (ordering,  order_hint, in_order_note)
-    "chrono_plain":     ("chrono",  "none",     False),
-    "chrono_labels":    ("chrono",  "labels",   False),
-    "cp_sentence":      ("cp",      "sentence", True),
-    "cp_labels":        ("cp",      "labels",   False),
-    "cp_both":          ("cp",      "both",     True),
-    "cp_none":          ("cp",      "none",     False),
-    "shuffle_sentence": ("shuffle", "sentence", True),
-    "shuffle_none":     ("shuffle", "none",     False),
+    #  name:              (ordering,   order_hint, in_order_note)
+    "chrono_plain":       ("chrono",   "none",     False),
+    "chrono_labels":      ("chrono",   "labels",   False),
+    "cp_sentence":        ("cp",       "sentence", True),
+    "cp_labels":          ("cp",       "labels",   False),
+    "cp_both":            ("cp",       "both",     True),
+    "cp_none":            ("cp",       "none",     False),
+    "shuffle_sentence":   ("shuffle",  "sentence", True),
+    "shuffle_none":       ("shuffle",  "none",     False),
+    # Canonical per-video core prefix (see contextpilot.multimodal.canonical).
+    # "canon"  = core padded so every request of a video shares one boundary
+    # "canons" = soft, only the core frames this request retrieved
+    "canon_sentence":     ("canon",    "sentence", True),
+    "canon_labels":       ("canon",    "labels",   False),
+    "canon_both":         ("canon",    "both",     True),
+    "canon_none":         ("canon",    "none",     False),
+    "canon_soft_sentence": ("canons",  "sentence", True),
 }
 
-ANSWER_SUFFIX = "Answer with the option's letter from the given choices directly."
+# Official Video-MME / LVBench style answer instruction: without the trailing
+# "The best answer is:" small models write a paragraph and the letter never
+# appears inside the token budget.
+ANSWER_SUFFIX = (
+    "Select the best answer to the above multiple-choice question based on the "
+    "video frames. Respond with only the letter of the correct option.\n\n"
+    "The best answer is:"
+)
 LETTER_RE = re.compile(r"\b([A-J])\b")
+_ANSWER_IS_RE = re.compile(r"(?:answer|option)\s*(?:is|:)\s*\(?([A-J])\)?", re.IGNORECASE)
 
 _b64_cache: Dict[str, str] = {}
 
@@ -102,19 +120,27 @@ def format_query(q) -> str:
 
 
 def parse_letter(text: str, n_opts: int) -> Optional[str]:
+    """Extract the chosen option letter, preferring an explicit statement."""
     text = text.strip()
+    limit = max(n_opts, 1)
+    candidates = [m.group(1) for m in _ANSWER_IS_RE.finditer(text)]
+    if candidates:
+        letter = candidates[-1]
+        return letter if ord(letter) - ord("A") < limit else None
     m = LETTER_RE.search(text)
     if not m:
         m = re.search(r"\(?([A-J])\)?[\.\:\)]", text)
     if not m:
         return None
     letter = m.group(1)
-    if ord(letter) - ord("A") >= n_opts:
+    if ord(letter) - ord("A") >= limit:
         return None
     return letter
 
 
-def make_requests(condition: str, questions, retrieval, frames_root, k, seed, meta_cache):
+def make_requests(condition: str, questions, retrieval, frames_root, k, seed, meta_cache,
+                  min_share: float = 0.5, core_size: Optional[int] = None,
+                  budget: bool = True):
     ordering, hint, in_order_note = CONDITIONS[condition]
     all_blocks = [build_blocks(q, retrieval[q["qid"]], frames_root, k, meta_cache) for q in questions]
     queries = [format_query(q) for q in questions]
@@ -126,6 +152,19 @@ def make_requests(condition: str, questions, retrieval, frames_root, k, seed, me
     if ordering == "cp":
         pilot = ContextPilot(use_gpu=False)
         displayed_batch, order = reorder_blocks_batch(all_blocks, pilot=pilot)
+    elif ordering in ("canon", "canons"):
+        groups = [q["video_id"] for q in questions]
+        displayed_batch, _cores = plan_canonical_batch(
+            all_blocks, groups,
+            min_share=min_share, core_size=core_size,
+            include_missing=(ordering == "canon"),
+            # keep the frame count equal to the baseline so a prefill saving
+            # is not paid for with extra pinned frames
+            budget=(k if budget else None),
+        )
+        # send each video's questions consecutively so the core is warm
+        order = group_execution_order(groups)
+        displayed_batch = [displayed_batch[i] for i in order]
     elif ordering == "chrono":
         displayed_batch = [true_order(b) for b in all_blocks]
         order = list(range(len(questions)))
@@ -297,12 +336,18 @@ def main():
     ap.add_argument("--api", required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--k", type=int, default=64)
-    ap.add_argument("--conditions", default="chrono_plain,cp_sentence,cp_none,chrono_labels,cp_labels,cp_both,shuffle_sentence")
+    ap.add_argument("--conditions", default="chrono_plain,cp_sentence,canon_sentence,canon_none,chrono_labels,cp_none,shuffle_sentence")
     ap.add_argument("--concurrency", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--max-tokens", type=int, default=16)
+    ap.add_argument("--max-tokens", type=int, default=24)
     ap.add_argument("--timeout", type=float, default=600)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--min-share", type=float, default=0.5,
+                    help="canonical core: minimum fraction of a video's questions that must retrieve a frame")
+    ap.add_argument("--core-size", type=int, default=None,
+                    help="canonical core: cap on the number of pinned frames")
+    ap.add_argument("--no-budget", action="store_true",
+                    help="canonical: do not cap the frame count at k (prompts grow)")
     ap.add_argument("--no-flush", action="store_true")
     ap.add_argument("--extra-body", default='{"chat_template_kwargs": {"enable_thinking": false}}')
     ap.add_argument("--out", required=True)
@@ -333,7 +378,9 @@ def main():
             continue
         print(f"[{cond}] building requests...", flush=True)
         t0 = time.perf_counter()
-        reqs = make_requests(cond, questions, retrieval, a.frames, a.k, a.seed, meta_cache)
+        reqs = make_requests(cond, questions, retrieval, a.frames, a.k, a.seed, meta_cache,
+                             min_share=a.min_share, core_size=a.core_size,
+                             budget=not a.no_budget)
         build_s = time.perf_counter() - t0
         if not a.no_flush:
             st = asyncio.run(flush_cache(a.api))

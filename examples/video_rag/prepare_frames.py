@@ -15,6 +15,7 @@ Usage:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -41,12 +42,31 @@ def _seek_frame(path: str, ts: float, out_path: str, width: int, quality: int) -
     return r.returncode == 0 and os.path.exists(out_path)
 
 
-def extract(video_id: str, path: str, out_dir: str, fps: float, max_frames: int, width: int, quality: int = 4):
+def extract(video_id: str, path: str, out_dir: str, fps: float, max_frames: int, width: int,
+            quality: int = 4, tmp_dir: str = ""):
     vdir = os.path.join(out_dir, video_id)
     done = os.path.join(vdir, "frames.json")
     if os.path.exists(done):
         return video_id, "skip", None
     os.makedirs(vdir, exist_ok=True)
+    local = None
+    if tmp_dir:
+        # Network filesystems serve random seeks slowly: stage the file on local disk first.
+        os.makedirs(tmp_dir, exist_ok=True)
+        local = os.path.join(tmp_dir, f"{os.getpid()}_{os.path.basename(path)}")
+        try:
+            shutil.copyfile(path, local)
+            path = local
+        except OSError as e:
+            return video_id, "error", f"copy failed: {e}"
+    try:
+        return _extract_impl(video_id, path, vdir, done, fps, max_frames, width, quality)
+    finally:
+        if local and os.path.exists(local):
+            os.remove(local)
+
+
+def _extract_impl(video_id, path, vdir, done, fps, max_frames, width, quality):
     dur = probe_duration(path)
     if dur <= 0:
         return video_id, "error", "ffprobe failed"
@@ -94,6 +114,7 @@ def main():
     ap.add_argument("--width", type=int, default=448)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--tmp", default="", help="local scratch dir to stage each video before seeking")
     a = ap.parse_args()
 
     vids = [json.loads(l) for l in open(a.manifest) if l.strip()]
@@ -102,7 +123,7 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     ok = err = skip = 0
     with ProcessPoolExecutor(a.workers) as ex:
-        futs = [ex.submit(extract, v["video_id"], v["video_path"], a.out, a.fps, a.max_frames, a.width) for v in vids]
+        futs = [ex.submit(extract, v["video_id"], v["video_path"], a.out, a.fps, a.max_frames, a.width, 4, a.tmp) for v in vids]
         for i, fut in enumerate(as_completed(futs), 1):
             vid, status, info = fut.result()
             if status == "ok":

@@ -388,3 +388,130 @@ class TestServerIntegration:
         ]
         assert "true chronological order" in content[-1]["text"]
         assert content[-1]["text"].endswith("Which happens first?")
+
+
+# ── canonical prefixes ───────────────────────────────────────────────────
+
+
+from contextpilot.multimodal import (  # noqa: E402
+    group_execution_order,
+    plan_canonical,
+    plan_canonical_batch,
+    select_core,
+)
+
+
+class TestCanonicalPrefix:
+    def test_select_core_by_share(self):
+        f = [_blk(i) for i in range(6)]
+        lists = [[f[0], f[1], f[4]], [f[1], f[0], f[5]], [f[0], f[2], f[3]]]
+        core = select_core(lists, min_share=0.5)          # >= 2 of 3 requests
+        assert [b.key for b in core] == [f[0].key, f[1].key]
+        core = select_core(lists, min_share=1.0)          # all 3 requests
+        assert [b.key for b in core] == [f[0].key]
+
+    def test_select_core_is_chronological(self):
+        f = [_blk(i) for i in range(4)]
+        lists = [[f[3], f[1]], [f[1], f[3]]]
+        assert [b.order for b in select_core(lists, min_share=1.0)] == [1.0, 3.0]
+
+    def test_select_core_size_cap_and_min_core(self):
+        f = [_blk(i) for i in range(5)]
+        lists = [[f[0], f[1], f[2]], [f[0], f[1], f[3]], [f[0], f[4], f[1]]]
+        core = select_core(lists, min_share=1.0, core_size=2)
+        assert len(core) == 2
+        # no frame shared by all → min_core still returns something
+        lists = [[f[0]], [f[1]], [f[2]]]
+        assert len(select_core(lists, min_share=1.0, min_core=1)) == 1
+        assert select_core([], min_share=1.0) == []
+
+    def test_plan_canonical_prefix_then_tail(self):
+        f = [_blk(i) for i in range(6)]
+        core = [f[1], f[2]]
+        out = plan_canonical([f[4], f[2], f[0]], core, include_missing=True)
+        # core first (in core order, incl. the frame not retrieved), then tail
+        assert [b.key for b in out] == [f[1].key, f[2].key, f[0].key, f[4].key]
+
+    def test_plan_canonical_without_missing(self):
+        f = [_blk(i) for i in range(6)]
+        out = plan_canonical([f[4], f[2], f[0]], [f[1], f[2]], include_missing=False)
+        assert [b.key for b in out] == [f[2].key, f[0].key, f[4].key]
+
+    def test_plan_canonical_tail_order(self):
+        f = [_blk(i) for i in range(6)]
+        out = plan_canonical([f[5], f[3]], [f[1]], include_missing=True, tail_chronological=False)
+        assert [b.key for b in out] == [f[1].key, f[5].key, f[3].key]
+
+    def test_batch_gives_one_identical_boundary_per_group(self):
+        f = [_blk(i) for i in range(10)]
+        reqs = [
+            [f[0], f[1], f[5]],          # video A
+            [f[1], f[0], f[6]],          # video A
+            [f[0], f[7]],                # video A
+            [f[2], f[3]],                # video B
+            [f[3], f[2], f[8]],          # video B
+        ]
+        groups = ["A", "A", "A", "B", "B"]
+        displayed, cores = plan_canonical_batch(reqs, groups, min_share=0.5)
+        assert [b.key for b in cores["A"]] == [f[0].key, f[1].key]
+        assert [b.key for b in cores["B"]] == [f[2].key, f[3].key]
+        # every request of a group starts with that group's full core
+        for d, g in zip(displayed, groups):
+            assert [b.key for b in d[: len(cores[g])]] == [b.key for b in cores[g]]
+        # each request still shows all of its own frames
+        for d, r in zip(displayed, reqs):
+            assert {b.key for b in r} <= {b.key for b in d}
+
+    def test_batch_length_mismatch(self):
+        with pytest.raises(ValueError):
+            plan_canonical_batch([[_blk(0)]], ["a", "b"])
+
+    def test_group_execution_order(self):
+        assert group_execution_order(["a", "b", "a", "c", "b"]) == [0, 2, 1, 4, 3]
+        assert group_execution_order([]) == []
+
+    def test_canonical_messages_share_a_prefix(self):
+        """The assembled prompts of one group share their leading parts."""
+        f = [_blk(i) for i in range(8)]
+        # core frames (5, 6) are LATER in time than the per-request frames,
+        # so the canonical display order is not chronological
+        reqs = [[f[5], f[6], f[0]], [f[6], f[5], f[1]], [f[5], f[6], f[2]]]
+        displayed, cores = plan_canonical_batch(reqs, ["v", "v", "v"], min_share=0.5)
+        assert [b.key for b in cores["v"]] == [f[5].key, f[6].key]
+        msgs = [build_multimodal_messages(d, f"q{i}?", order_hint="sentence")
+                for i, d in enumerate(displayed)]
+        contents = [m[-1]["content"] for m in msgs]
+        # intro + 2 core images identical across all three prompts
+        assert contents[0][:3] == contents[1][:3] == contents[2][:3]
+        # only the trailing text (hint + question) differs
+        assert contents[0][-1] != contents[1][-1]
+        # and the hint states the true chronological order
+        tail = contents[0][-1]["text"]
+        assert tail.startswith("Note: the frames above are NOT")
+        assert "[Frame 1], [Frame 6], [Frame 7]" in tail
+        assert tail.endswith("q0?")
+
+    def test_budget_keeps_frame_count_constant(self):
+        f = [_blk(i) for i in range(10)]
+        core = [f[7], f[8]]           # neither retrieved by this request
+        blocks = [f[0], f[1], f[2], f[3]]   # retrieval order, best first
+        out = plan_canonical(blocks, core, include_missing=True, budget=4)
+        assert len(out) == 4
+        assert [b.key for b in out[:2]] == [f[7].key, f[8].key]
+        # lowest-ranked own frames dropped, survivors chronological
+        assert [b.key for b in out[2:]] == [f[0].key, f[1].key]
+
+    def test_budget_never_truncates_the_core(self):
+        f = [_blk(i) for i in range(6)]
+        out = plan_canonical([f[0]], [f[3], f[4], f[5]], include_missing=True, budget=2)
+        assert [b.key for b in out] == [f[3].key, f[4].key, f[5].key]
+
+    def test_budget_in_batch_equalizes_length(self):
+        f = [_blk(i) for i in range(12)]
+        reqs = [[f[0], f[1], f[9], f[10]], [f[1], f[0], f[8], f[11]], [f[0], f[1], f[7], f[6]]]
+        displayed, cores = plan_canonical_batch(
+            reqs, ["v"] * 3, min_share=0.5, budget=4
+        )
+        assert all(len(d) == 4 for d in displayed)
+        n = len(cores["v"])
+        assert all([b.key for b in d[:n]] == [b.key for b in cores["v"]] for d in displayed)

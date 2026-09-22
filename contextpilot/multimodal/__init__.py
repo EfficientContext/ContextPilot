@@ -13,6 +13,10 @@ Public API:
   assembly primitives.
 * :func:`extract_image_blocks` / :func:`reconstruct_image_blocks` —
   intercept-proxy helpers for OpenAI chat bodies containing images.
+* :func:`plan_canonical_batch` / :func:`select_core` — pin a per-video core
+  set of frames to the front of every prompt so all requests of that video
+  share one identical prefix boundary (required for KV reuse on hybrid
+  linear-attention models).
 """
 
 from .blocks import ImageBlock, frame_label, video_frames_to_blocks
@@ -32,6 +36,12 @@ from .api import (
     reorder_blocks,
     reorder_blocks_batch,
 )
+from .canonical import (
+    group_execution_order,
+    plan_canonical,
+    plan_canonical_batch,
+    select_core,
+)
 from .intercept import (
     ImageExtraction,
     extract_image_blocks,
@@ -50,6 +60,10 @@ __all__ = [
     "optimize_multimodal_batch",
     "reorder_blocks",
     "reorder_blocks_batch",
+    "select_core",
+    "plan_canonical",
+    "plan_canonical_batch",
+    "group_execution_order",
     "ImageExtraction",
     "extract_image_blocks",
     "reconstruct_image_blocks",

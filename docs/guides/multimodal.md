@@ -70,6 +70,35 @@ Headers:
 The true order is parsed from labels (`t=12.5s` or `Frame 3`) when every image
 has one; otherwise the incoming display order is assumed chronological.
 
+## Canonical prefixes (video RAG)
+
+Reordering each request on its own turns *set* overlap into *prefix* overlap,
+but every pair of questions then shares a slightly different number of leading
+frames. Engines that restore state only at recorded checkpoints (see below)
+never reuse a boundary that occurs once. ``plan_canonical_batch`` removes that
+variance: it picks the frames most questions of a video retrieved anyway, pins
+them to the front of every prompt of that video in one fixed order, and appends
+each question's remaining frames.
+
+```python
+from contextpilot.multimodal import (
+    plan_canonical_batch, group_execution_order, build_multimodal_messages,
+)
+
+displayed, cores = plan_canonical_batch(
+    all_blocks, group_keys=[q["video_id"] for q in questions],
+    min_share=0.5,      # a frame joins the core if half the questions want it
+    budget=k,           # keep the frame count equal to the baseline
+)
+for i in group_execution_order(groups):          # same video back to back
+    send(build_multimodal_messages(displayed[i], questions[i]["question"]))
+```
+
+``budget`` matters: pinning core frames a question did not retrieve would make
+its prompt longer, and the extra tokens can cost more than the cache saves.
+With a budget the lowest-ranked own frames are dropped instead, so prompt
+length is unchanged. The core itself is never truncated.
+
 ## Engine notes (SGLang)
 
 * SGLang hashes image content into the radix-cache key, so identical frames in
@@ -81,6 +110,33 @@ has one; otherwise the incoming display order is assumed chronological.
   attention models do not have this restriction.
 * Reordering frames changes the token sequence, so a frame moved to a new
   position is a miss — that is exactly what the reorder avoids across requests.
+
+### Measured on SGLang v0.5.20, Qwen3.5-4B, 1×H100 (2026-09)
+
+Prefix reuse shows up in *tokens*, not in wall time, because a multi-image
+request is dominated by host-side per-image work that the KV cache does not
+cover:
+
+| Measurement | Result |
+|---|---|
+| 16 frames (1871 prompt tokens), cold | 3.17 s |
+| same request, 99 % of tokens KV-cached | 3.06 s |
+| 3817-token text prompt, cold / cached | 0.14 s / 0.05 s |
+| cost per frame, 64×64 … 896×504 | 191 … 233 ms (flat in resolution) |
+| throughput at concurrency 1 / 4 / 8 | 0.33 req/s at every level |
+
+GPU utilisation stays at 0 % during those requests, and the figure is unchanged
+by `--image-processor-backend pil`, `--mm-preprocess-cache-size-mb`,
+`--mm-io-worker-num`, `--mm-processor-worker-num`, `--mm-feature-transport
+cuda_ipc --keep-mm-feature-on-device`, and by sending frames as http URLs
+instead of `data:` URIs. `--enable-mm-global-cache`, which would skip repeated
+vision-encoder work, is only wired into the disaggregated encoder mode
+(`--encoder-only`).
+
+So on this stack reordering frames raises the cached-token ratio but does not
+shorten prefill. Expect a wall-time win only where the vision path is not the
+bottleneck: engines that cache vision embeddings across requests, disaggregated
+encoder deployments, or prompts whose text dominates the frames.
 
 See `examples/video_rag/` for a complete benchmark (frame extraction, SigLIP
 retrieval, and the reorder-vs-chronological accuracy/TTFT study).

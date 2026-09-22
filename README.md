@@ -17,6 +17,7 @@
 
 ## News
 
+- [2026/09] Multimodal contexts: reorder retrieved **video frames / images** for prefix-cache sharing with a one-sentence true-order hint — [guide](docs/guides/multimodal.md) | [video-RAG benchmark](examples/video_rag/)
 - [2026/05] Supports [Hermes Agent](https://github.com/NousResearch/hermes-agent) as a native context engine plugin — [guide](docs/guides/hermes.md)
 - [2026/03] Supports [OpenClaw](https://openclaw.ai) — [guide](docs/guides/openclaw.md) | [benchmark](docs/benchmarks/openclaw.md)
 - [2026/03] Supports cloud APIs (OpenAI, Anthropic, MiniMax) — [cache sync](docs/guides/cache_sync.md)

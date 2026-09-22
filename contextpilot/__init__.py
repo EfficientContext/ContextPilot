@@ -46,6 +46,12 @@ from .dedup import (
 
 from .api import optimize, optimize_batch
 
+from .multimodal import (
+    ImageBlock,
+    optimize_multimodal,
+    optimize_multimodal_batch,
+)
+
 from .retriever import (
     BM25Retriever,
     FAISSRetriever,
@@ -76,6 +82,10 @@ __all__ = [
     # Convenience functions
     "optimize",
     "optimize_batch",
+    # Multimodal (image / video-frame blocks)
+    "ImageBlock",
+    "optimize_multimodal",
+    "optimize_multimodal_batch",
     # Retrievers
     "BM25Retriever",
     "FAISSRetriever",

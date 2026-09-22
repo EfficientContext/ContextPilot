@@ -12,6 +12,7 @@ Video manifest row (jsonl):
 Supported datasets:
     videomme   lmms-eval/Video-MME (parquet + videos/<videoID>.mp4)
     egoschema  lmms-eval/egoschema (parquet + videos/<video_idx>.mp4)
+    lvbench    lmms-lab/LVBench (parquet + videos/<key>.mp4)
 
 Usage:
     python build_questions.py videomme --root /mnt/cp/data/videomme \
@@ -22,6 +23,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
 
 
@@ -94,15 +96,53 @@ def egoschema(root, durations):
     return qs, vids
 
 
+_OPT_RE = re.compile(r"^\(([A-J])\)\s*(.*)$")
+
+
+def lvbench(root, durations):
+    """lmms-lab/LVBench: options are inline in the question as '(A) ...' lines."""
+    import pandas as pd
+    pq = sorted(glob.glob(os.path.join(root, "raw", "**", "*.parquet"), recursive=True))
+    df = pd.concat([pd.read_parquet(p) for p in pq], ignore_index=True)
+    videos_dir = os.path.join(root, "videos")
+    qs, vids, missing = [], {}, set()
+    for _, r in df.iterrows():
+        vid = str(r["key"])
+        if vid not in vids:
+            p = _find_video(videos_dir, vid)
+            if p is None:
+                missing.add(vid)
+                continue
+            vids[vid] = p
+        stem_lines, opts = [], []
+        for line in str(r["question"]).split("\n"):
+            m = _OPT_RE.match(line.strip())
+            if m:
+                opts.append(f"{m.group(1)}. {m.group(2).strip()}")
+            elif not opts:
+                stem_lines.append(line)
+        if not opts:
+            continue
+        qs.append({
+            "qid": str(r["uid"]), "video_id": vid,
+            "question": "\n".join(stem_lines).strip(), "options": opts,
+            "answer": str(r["answer"]).strip(), "duration": "long",
+            "task_type": str(r.get("question_type", "")), "domain": str(r.get("type", "")),
+            "time_reference": str(r.get("time_reference", "")),
+        })
+    print(f"lvbench: {len(qs)} questions, {len(vids)} videos, {len(missing)} missing", file=sys.stderr)
+    return qs, vids
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("dataset", choices=["videomme", "egoschema"])
+    ap.add_argument("dataset", choices=["videomme", "egoschema", "lvbench"])
     ap.add_argument("--root", required=True)
     ap.add_argument("--out-questions", required=True)
     ap.add_argument("--out-manifest", required=True)
     ap.add_argument("--duration", nargs="*", default=None, help="videomme: short/medium/long filter")
     a = ap.parse_args()
-    fn = {"videomme": videomme, "egoschema": egoschema}[a.dataset]
+    fn = {"videomme": videomme, "egoschema": egoschema, "lvbench": lvbench}[a.dataset]
     qs, vids = fn(a.root, a.duration)
     with open(a.out_questions, "w") as f:
         for q in qs:

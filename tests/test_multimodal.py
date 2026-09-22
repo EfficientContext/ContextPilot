@@ -151,7 +151,7 @@ class TestPrompt:
         assert msgs[0]["role"] == "user"
         texts = _texts(msgs)
         assert texts[0] == "INTRO"
-        assert "Answer with a letter." in texts[-1] and texts[-1].endswith("Q")
+        assert texts[-1].endswith("Q\n\nAnswer with a letter.")
 
 
 # ── API (real ContextPilot index) ────────────────────────────────────────

@@ -116,7 +116,7 @@ def build_multimodal_messages(
         hint_template: Template for the sentence; ``{order}`` placeholder.
         in_order_template: Sentence used when the displayed order already
             is chronological.  ``None``/``""`` to emit nothing in that case.
-        extra_suffix: Optional text appended after the hint, before the query
+        extra_suffix: Optional text appended after the query
             (e.g. answer-format instructions).
     """
     if order_hint not in _VALID_HINT_MODES:
@@ -140,9 +140,9 @@ def build_multimodal_messages(
         )
         if hint:
             tail.append(hint)
+    tail.append(query)
     if extra_suffix:
         tail.append(extra_suffix)
-    tail.append(query)
     content.append({"type": "text", "text": "\n\n".join(tail)})
 
     messages: List[Dict[str, Any]] = []

@@ -16,10 +16,10 @@ runner, analysis). These are raw runs, not tuned.
 
 | | |
 |---|---|
-| Benchmark | Video-MME, all three duration splits, 3 questions per video |
-| Questions | 633 (211 videos) with retrieval available at run time |
+| Benchmarks | Video-MME (3 questions per video) and LVBench (hour-long videos, ~11 questions per video) |
 | Retrieval | SigLIP-2 base over a 1 fps frame pool (≤256 frames/video, 448 px), top-16 frames per question |
-| Model | Qwen3.8-27B, SGLang v0.5.20 stock image, 2×H100, tp 2 |
+| Models | Qwen3.8-27B (2×H100, tp 2), Qwen3.8-Flash-Next-FP8 180B (4×H100, tp 4 ep 4) |
+| Engine | SGLang v0.5.20, stock image, `--enable-cache-report` |
 | Prompt | system + intro + frames + question, answer forced with "The best answer is:" |
 | Requests | concurrency 4, engine cache flushed before every condition |
 
@@ -29,37 +29,48 @@ Conditions differ only in frame order and in how the true order is conveyed:
 |---|---|---|
 | `chrono_plain` | chronological | none (baseline) |
 | `chrono_labels` | chronological | per-frame `[Frame i \| t=..s]` labels |
-| `cp_sentence` | ContextPilot reorder | one sentence listing the true order |
+| `cp_sentence` | per-request ContextPilot reorder | one sentence listing the true order |
 | `canon_*` | canonical per-video core prefix | per the suffix |
 
 ## Result 1 — reordering frames does not cost accuracy
 
-Paired against the `chrono_plain` baseline on the same 633 questions (McNemar
-exact test on discordant pairs):
+**LVBench, Qwen3.8-27B, 1131 questions.** Paired against the chronological
+baseline on the same questions (McNemar exact test on discordant pairs):
 
-| condition | accuracy | Δ | lost / gained | p |
-|---|---|---|---|---|
-| `canon_none` (reorder, no order info) | 0.6888 | +0.002 | 26 / 27 | 1.00 |
-| `chrono_plain` (baseline) | 0.6872 | — | — | — |
-| `canon_sentence` (reorder + sentence) | 0.6777 | −0.010 | 36 / 30 | 0.54 |
-| `cp_sentence` | 0.6746 | −0.013 | 36 / 28 | 0.38 |
-| `canon_labels` (reorder + labels) | 0.6746 | −0.013 | 43 / 35 | 0.43 |
-| `chrono_labels` | 0.6619 | −0.025 | 36 / 20 | 0.044 |
-| `canon_both` (reorder + labels + sentence) | 0.6351 | −0.052 | 63 / 30 | 0.001 |
+| condition | accuracy | Δ | p | cached tokens | uncached tokens/req |
+|---|---|---|---|---|---|
+| `canon_none` (reorder, no order info) | 0.4403 | +0.002 | 0.91 | **8.0 %** | **1804** |
+| `chrono_plain` (baseline) | 0.4385 | — | — | 0.6 % | 1949 |
+| `canon_labels` | 0.4332 | −0.005 | 0.70 | 7.7 % | 2048 |
+| `canon_sentence` | 0.4324 | −0.006 | 0.57 | 7.0 % | 2077 |
+| `cp_sentence` (per-request reorder) | 0.4253 | −0.013 | 0.22 | 0.4 % | 2236 |
 
-Reordering the frames is free: `canon_none` matches the chronological baseline
-exactly. Adding one sentence that states the true chronological order is also
-free within noise (p = 0.54). What does cost accuracy is piling both signals on
-at once — labels *and* the sentence together lose 5 points (p = 0.001).
+The canonical reordering matches the baseline accuracy exactly while raising the
+cached-token share from 0.6 % to 8.0 % and cutting prefill tokens by 7.4 %.
 
-So for a model of this size the premise holds: frames can be reordered for
-cache friendliness, with or without a one-line order hint. Use one order
-signal, not two.
+**Video-MME, Qwen3.8-27B, 633 questions**, baseline 0.6872:
+
+| condition | accuracy | Δ | p |
+|---|---|---|---|
+| `canon_none` | 0.6888 | +0.002 | 1.00 |
+| `canon_sentence` | 0.6777 | −0.010 | 0.54 |
+| `cp_sentence` | 0.6746 | −0.013 | 0.38 |
+| `canon_labels` | 0.6746 | −0.013 | 0.43 |
+| `chrono_labels` | 0.6619 | −0.025 | 0.044 |
+| `canon_both` (labels + sentence) | 0.6351 | −0.052 | 0.001 |
+
+**Video-MME, Qwen3.8-Flash-Next-FP8 180B, 708 questions**, baseline 0.7542:
+`canon_none` 0.7500, `canon_sentence` 0.7444, `cp_sentence` 0.7260.
+
+Across both benchmarks and both models, reordering the frames is free, and one
+sentence stating the true order is free within noise. What does cost accuracy
+is supplying two order signals at once: labels *and* the sentence lose 5 points
+on Video-MME (p = 0.001). Use one order signal, not two.
 
 Note on model size: the same experiment on a 4B model showed the order sentence
-costing 9–11 points (p < 1e−4) while reordering alone stayed free. The ability
-to follow a positional order statement is what scales with model size, not the
-tolerance for reordering.
+costing 9–11 points (p < 1e−4) while reordering alone stayed free. Following a
+positional order statement is what scales with model size, not tolerance for
+reordering.
 
 ## Result 2 — the cache hit needs a canonical prefix
 
@@ -78,16 +89,18 @@ occurs once is never reused. Measured on one such server: a shared boundary
 misses on its first two occurrences and is reused from the third on, which is
 why per-request reordering yields nothing and a canonical prefix is required.
 
-Observed cached-token share in the runs above was low (≤ 0.9 %) under the
-tp 2 / `--disable-prefill-cuda-graph` configuration used here, against 10.8 %
-measured for the same canonical prefix on a single-GPU server. Treat the
-canonical prefix as necessary but not sufficient: the engine's checkpoint
-policy decides how much of it is actually reused.
+The payoff scales with how many questions share a video. On LVBench (~11
+questions per video) the canonical prefix reached 8.0 % cached tokens against
+0.6 % for the chronological baseline. On Video-MME (3 questions per video) the
+same mechanism reached 10.8 % on a single-GPU server but under 1 % on the
+multi-GPU servers used for the models above, so treat the canonical prefix as
+necessary but not sufficient — the engine's checkpoint policy decides how much
+of it is actually reused.
 
 ## Result 3 — cached tokens do not become faster prefill
 
-TTFT is flat across every condition above (7.4–7.9 s at concurrency 4),
-independent of the hit rate. A multi-image request is dominated by host-side
+TTFT is flat across every condition above, independent of the hit rate: 7.5–7.7 s
+at concurrency 4 for the 27B and 9.0–9.5 s for the 180B. A multi-image request is dominated by host-side
 per-image work that the KV cache does not cover. Isolated measurement on the
 same stack:
 
@@ -111,10 +124,11 @@ the bottleneck, for example one that caches vision embeddings across requests
 
 ## Honest limitations
 
-- Video-MME gives only 3 questions per video, the least favourable regime for a
-  canonical prefix. A long-video benchmark with ~11 questions per video is the
-  better test of the cache claim.
 - Retrieval is a single dual-encoder over uniformly sampled frames; a stronger
   retriever changes the frame overlap between questions and so the headroom.
-- The accuracy numbers come from Qwen3.8-27B; the cache and latency figures are
-  tied to the SGLang version and flags listed above.
+- 16 frames is sparse coverage for LVBench's hour-long videos, which is why its
+  absolute accuracy is low; the comparison between conditions is unaffected
+  because every condition sees the same frames.
+- The cache and latency figures are tied to the SGLang version and flags listed
+  above, and the cached-token share varied by server configuration.
+- The 180B run covers a subset of the conditions; the 27B carries the full grid.

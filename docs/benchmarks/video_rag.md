@@ -108,30 +108,49 @@ multi-GPU servers used for the models above, so treat the canonical prefix as
 necessary but not sufficient — the engine's checkpoint policy decides how much
 of it is actually reused.
 
-## Result 3 — cached tokens do not become faster prefill
+## Result 3 — why cached tokens do not become faster prefill
 
 TTFT is flat across every condition above, independent of the hit rate: 7.5–7.7 s
-at concurrency 4 for the 27B and 9.0–9.5 s for the 180B. A multi-image request is dominated by host-side
-per-image work that the KV cache does not cover. Isolated measurement on the
-same stack:
+at concurrency 4 for the 27B and 9.0–9.5 s for the 180B. The reason is a cost
+split, not a lack of overlap. Decomposition on Qwen3.8-27B (2×H100), median of 3:
 
-| | |
+| request | time | prompt tokens | cached |
+|---|---|---|---|
+| 16 frames, cold | 3.47 s | 1870 | 0 |
+| 16 frames, repeated (99 % cached) | 3.31 s | 1870 | 1856 |
+| same frames, new question | 3.21 s | 1891 | 1856 |
+| text-only of the same length, cold | 0.32 s | 1917 | 0 |
+| text-only repeated | 0.15 s | 1917 | 1856 |
+
+The language-model prefill for ~1870 tokens costs 0.32 s, of which the KV cache
+removes 0.17 s. Everything else — about 91 % of an image request — is per-frame
+vision work that the KV cache does not touch. **So even a perfect 100 % prefix
+hit could only remove about 5 % of the wall time.** Frame overlap is not the
+limiting factor.
+
+That per-frame work is also not deduplicated anywhere in this configuration:
+
+| request | time |
 |---|---|
-| 16-frame request (1871 prompt tokens), cold | 3.17 s |
-| same request, 99 % of tokens KV-cached | 3.06 s |
-| 3817-token text-only prompt, cold / cached | 0.14 s / 0.05 s |
-| per-frame cost, 64×64 … 896×504 | 191 … 233 ms, flat in resolution |
-| throughput at concurrency 1 / 4 / 8 | 0.33 req/s at every level |
+| 16 copies of one identical image | 3.18 s |
+| 16 different images | 3.05 s |
+| 4 copies of one identical image | 1.12 s |
+| 4 different images | 0.98 s |
 
-GPU utilisation is 0 % during those requests, and the figure does not move with
-`--image-processor-backend pil`, `--mm-preprocess-cache-size-mb`,
-`--mm-io-worker-num`, `--mm-processor-worker-num`, `--mm-feature-transport
-cuda_ipc --keep-mm-feature-on-device`, or with frames sent as http URLs instead
-of `data:` URIs. So on this stack the win from reordering is in tokens, not in
-wall time. A wall-time win needs a serving path where the vision stage is not
-the bottleneck, for example one that caches vision embeddings across requests
-(`--enable-mm-global-cache`, currently wired only into the disaggregated
-`--encoder-only` mode).
+Sixteen copies of a single image cost the same as sixteen distinct ones, so the
+vision tower runs once per image slot on every request. This is unchanged by
+`SGLANG_VLM_CACHE_SIZE_MB=16384`, `--image-processor-backend pil`,
+`--mm-preprocess-cache-size-mb`, `--mm-io-worker-num`,
+`--mm-processor-worker-num`, `--mm-feature-transport cuda_ipc
+--keep-mm-feature-on-device`, and by sending frames as http URLs instead of
+`data:` URIs. Per-frame cost is ~180–200 ms, flat from 64×64 to 896×504, with
+GPU utilisation at 0 % and no throughput scaling from concurrency 1 to 8.
+
+The win from reordering is therefore in tokens (7.4 % fewer uncached prefill
+tokens on LVBench), and it converts to wall time only on a serving path where
+the vision stage is not dominant: pre-encoded frame embeddings, or a
+disaggregated encoder deployment where `--enable-mm-global-cache` can reuse
+vision work across requests.
 
 ## Honest limitations
 

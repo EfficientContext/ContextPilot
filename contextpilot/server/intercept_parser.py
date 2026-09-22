@@ -46,6 +46,12 @@ class InterceptConfig:
     alpha: float = 0.001
     linkage_method: str = "average"
     scope: str = "all"  # "system", "tool_results", "all"
+    # Multimodal (image / video-frame) blocks in user messages:
+    # "auto" = reorder when >=2 image parts found, "off" = never
+    multimodal: str = "auto"
+    # How the true frame order is conveyed after reordering:
+    # "sentence" | "labels" | "both" | "none"
+    mm_order_hint: str = "sentence"
 
 
 @dataclass
@@ -134,6 +140,15 @@ def parse_intercept_headers(headers: Dict[str, str]) -> InterceptConfig:
     if scope not in ("system", "tool_results", "all"):
         scope = "all"
 
+    multimodal = get("multimodal", "auto").lower()
+    if multimodal in ("false", "0", "no", "off", "disabled"):
+        multimodal = "off"
+    else:
+        multimodal = "auto"
+    mm_order_hint = get("mm-order-hint", "sentence").lower()
+    if mm_order_hint not in ("sentence", "labels", "both", "none"):
+        mm_order_hint = "sentence"
+
     return InterceptConfig(
         enabled=enabled,
         mode=get("mode", "auto").lower(),
@@ -142,6 +157,8 @@ def parse_intercept_headers(headers: Dict[str, str]) -> InterceptConfig:
         alpha=_safe_float(get("alpha", "0.001"), 0.001),
         linkage_method=get("linkage", "average"),
         scope=scope,
+        multimodal=multimodal,
+        mm_order_hint=mm_order_hint,
     )
 
 

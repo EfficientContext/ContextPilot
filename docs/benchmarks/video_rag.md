@@ -60,12 +60,23 @@ cached-token share from 0.6 % to 8.0 % and cutting prefill tokens by 7.4 %.
 | `canon_both` (labels + sentence) | 0.6351 | −0.052 | 0.001 |
 
 **Video-MME, Qwen3.8-Flash-Next-FP8 180B, 708 questions**, baseline 0.7542:
-`canon_none` 0.7500, `canon_sentence` 0.7444, `cp_sentence` 0.7260.
+
+| condition | accuracy | Δ | p |
+|---|---|---|---|
+| `canon_none` | 0.7500 | −0.004 | 0.78 |
+| `canon_labels` | 0.7486 | −0.006 | 0.73 |
+| `canon_both` | 0.7472 | −0.007 | 0.64 |
+| `canon_sentence` | 0.7444 | −0.010 | 0.48 |
+| `chrono_labels` | 0.7429 | −0.011 | 0.40 |
+| `cp_sentence` | 0.7260 | −0.028 | 0.029 |
 
 Across both benchmarks and both models, reordering the frames is free, and one
-sentence stating the true order is free within noise. What does cost accuracy
-is supplying two order signals at once: labels *and* the sentence lose 5 points
-on Video-MME (p = 0.001). Use one order signal, not two.
+sentence stating the true order is free within noise. Two caveats show up in the
+grid. On the 27B, supplying two order signals at once (labels *and* the
+sentence) loses 5 points (p = 0.001), while the 180B absorbs both. And
+per-request reordering — the variant that also fails to produce cache hits —
+is the weakest arm on both models, significantly so on the 180B (p = 0.029).
+Prefer the canonical prefix with a single order signal.
 
 Note on model size: the same experiment on a 4B model showed the order sentence
 costing 9–11 points (p < 1e−4) while reordering alone stayed free. Following a
@@ -131,4 +142,5 @@ the bottleneck, for example one that caches vision embeddings across requests
   because every condition sees the same frames.
 - The cache and latency figures are tied to the SGLang version and flags listed
   above, and the cached-token share varied by server configuration.
-- The 180B run covers a subset of the conditions; the 27B carries the full grid.
+- Qwen3.8-Flash-Next-FP8 ran on 4×H100 rather than H200: the cluster's H200
+  nodes were fully booked by other tenants for the whole session.

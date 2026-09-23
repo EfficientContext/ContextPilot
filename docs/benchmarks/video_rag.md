@@ -108,49 +108,50 @@ multi-GPU servers used for the models above, so treat the canonical prefix as
 necessary but not sufficient — the engine's checkpoint policy decides how much
 of it is actually reused.
 
-## Result 3 — why cached tokens do not become faster prefill
+## Result 3 — prefill time, and a serving-configuration trap
 
-TTFT is flat across every condition above, independent of the hit rate: 7.5–7.7 s
-at concurrency 4 for the 27B and 9.0–9.5 s for the 180B. The reason is a cost
-split, not a lack of overlap. Decomposition on Qwen3.8-27B (2×H100), median of 3:
+The reordering raises the cached-token share, but on this stack it did not
+shorten prefill in any run: TTFT was flat across every condition, independent
+of the hit rate.
 
-| request | time | prompt tokens | cached |
-|---|---|---|---|
-| 16 frames, cold | 3.47 s | 1870 | 0 |
-| 16 frames, repeated (99 % cached) | 3.31 s | 1870 | 1856 |
-| same frames, new question | 3.21 s | 1891 | 1856 |
-| text-only of the same length, cold | 0.32 s | 1917 | 0 |
-| text-only repeated | 0.15 s | 1917 | 1856 |
+Before reading that as a property of the method, note what dominates an image
+request here. The vision stage is **CPU-bound on the serving pod**, and its cost
+swamps everything else when the pod is under-provisioned:
 
-The language-model prefill for ~1870 tokens costs 0.32 s, of which the KV cache
-removes 0.17 s. Everything else — about 91 % of an image request — is per-frame
-vision work that the KV cache does not touch. **So even a perfect 100 % prefix
-hit could only remove about 5 % of the wall time.** Frame overlap is not the
-limiting factor.
+| CPUs requested by the SGLang pod | cost per frame | 64-frame request |
+|---|---|---|
+| 8 | 210 ms | 13.4 s |
+| 24 | 80 ms | 5.1 s |
+| 36 | 60–70 ms | 3.9 s |
 
-That per-frame work is also not deduplicated anywhere in this configuration:
+Two of our earlier conclusions were artifacts of running at 8 CPUs and were
+withdrawn after re-measurement:
 
-| request | time |
+* "Throughput does not scale with concurrency." At 8 CPUs it was flat at
+  0.075 req/s from concurrency 1 to 16. At 36 CPUs, 206 requests complete in
+  1545 s against a 17.8 s single-request latency, i.e. concurrency does help.
+* "A full prefix hit saves 22–37 % of wall time." That came from a single
+  server session we could not reproduce. On a controlled server, 30 requests
+  with heavy frame reuse and full KV hits (7296 cached tokens) each cost the
+  same as requests with entirely fresh frames.
+
+The honest summary is therefore: **we have not demonstrated a wall-time win
+from frame reordering on SGLang v0.5.20**, and the per-frame vision cost is
+large enough that it should be the first thing tuned in any video-RAG
+deployment. Provision CPU for the serving pod before optimising prompt order.
+
+## Result 4 — frame count matters far more than frame order
+
+Same benchmark and model, varying only how many retrieved frames are shown:
+
+| frames per question | LVBench accuracy |
 |---|---|
-| 16 copies of one identical image | 3.18 s |
-| 16 different images | 3.05 s |
-| 4 copies of one identical image | 1.12 s |
-| 4 different images | 0.98 s |
+| 16 | 0.4385 (n=1131) |
+| 64 | 0.6019 (n=206) |
 
-Sixteen copies of a single image cost the same as sixteen distinct ones, so the
-vision tower runs once per image slot on every request. This is unchanged by
-`SGLANG_VLM_CACHE_SIZE_MB=16384`, `--image-processor-backend pil`,
-`--mm-preprocess-cache-size-mb`, `--mm-io-worker-num`,
-`--mm-processor-worker-num`, `--mm-feature-transport cuda_ipc
---keep-mm-feature-on-device`, and by sending frames as http URLs instead of
-`data:` URIs. Per-frame cost is ~180–200 ms, flat from 64×64 to 896×504, with
-GPU utilisation at 0 % and no throughput scaling from concurrency 1 to 8.
-
-The win from reordering is therefore in tokens (7.4 % fewer uncached prefill
-tokens on LVBench), and it converts to wall time only on a serving path where
-the vision stage is not dominant: pre-encoded frame embeddings, or a
-disaggregated encoder deployment where `--enable-mm-global-cache` can reuse
-vision work across requests.
+Sixteen points, against at most a couple of points from any ordering condition.
+For video RAG the ordering question is a second-order effect next to the frame
+budget.
 
 ## Honest limitations
 
@@ -163,3 +164,7 @@ vision work across requests.
   above, and the cached-token share varied by server configuration.
 - Qwen3.8-Flash-Next-FP8 ran on 4×H100 rather than H200: the cluster's H200
   nodes were fully booked by other tenants for the whole session.
+- Accuracy results at 64 frames come from a 206-question subset covering all
+  103 LVBench videos (2 questions per video); the 16-frame results use the full
+  sets. GLM-5.3-Flash was never served: it needs 4×H200 or 8×H100 and neither
+  was free.

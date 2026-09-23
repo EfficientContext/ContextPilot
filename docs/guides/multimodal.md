@@ -111,30 +111,26 @@ length is unchanged. The core itself is never truncated.
 * Reordering frames changes the token sequence, so a frame moved to a new
   position is a miss — that is exactly what the reorder avoids across requests.
 
-### Measured on SGLang v0.5.20, Qwen3.5-4B, 1×H100 (2026-09)
+### Measured on SGLang v0.5.20, Qwen3.8-27B, 2×H100 (2026-09)
 
-Prefix reuse shows up in *tokens*, not in wall time, because a multi-image
-request is dominated by host-side per-image work that the KV cache does not
-cover:
+Prefix reuse shows up in cached tokens. We have **not** demonstrated that it
+shortens prefill on this stack: TTFT stayed flat across conditions in every run.
 
-| Measurement | Result |
-|---|---|
-| 16 frames (1871 prompt tokens), cold | 3.17 s |
-| same request, 99 % of tokens KV-cached | 3.06 s |
-| 3817-token text prompt, cold / cached | 0.14 s / 0.05 s |
-| cost per frame, 64×64 … 896×504 | 191 … 233 ms (flat in resolution) |
-| throughput at concurrency 1 / 4 / 8 | 0.33 req/s at every level |
+The dominant cost of an image request here is the vision stage, and it is
+CPU-bound on the serving pod:
 
-GPU utilisation stays at 0 % during those requests, and the figure is unchanged
-by `--image-processor-backend pil`, `--mm-preprocess-cache-size-mb`,
-`--mm-io-worker-num`, `--mm-processor-worker-num`, `--mm-feature-transport
-cuda_ipc --keep-mm-feature-on-device`, and by sending frames as http URLs
-instead of `data:` URIs. `--enable-mm-global-cache`, which would skip repeated
-vision-encoder work, is only wired into the disaggregated encoder mode
-(`--encoder-only`).
+| CPUs requested by the pod | cost per frame | 64-frame request |
+|---|---|---|
+| 8 | 210 ms | 13.4 s |
+| 24 | 80 ms | 5.1 s |
+| 36 | 60–70 ms | 3.9 s |
 
-So on this stack reordering frames raises the cached-token ratio but does not
-shorten prefill. Expect a wall-time win only where the vision path is not the
+Provision CPU for the SGLang pod before tuning prompt order. An earlier version
+of this guide reported a 22–37 % wall-time saving from prefix hits; that came
+from one unreproducible session and has been withdrawn. On a controlled server,
+requests with full KV hits cost the same as requests with entirely fresh frames.
+
+Expect a wall-time win only where the vision path is not the
 bottleneck: engines that cache vision embeddings across requests, disaggregated
 encoder deployments, or prompts whose text dominates the frames.
 

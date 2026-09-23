@@ -364,6 +364,12 @@ def summarize(results, wall):
         "prompt_tokens_mean": pt / len(ok) if ok else None,
         "wall_s": wall, "req_per_s": len(ok) / wall if wall else None,
         "prefill_tok_per_s_uncached": (pt - ct) / sum(r["ttft"] for r in ok) if ok and sum(r["ttft"] for r in ok) > 0 else None,
+        # prefill-side aggregates (TTFT is prefill-dominated: max_tokens is tiny)
+        "ttft_total_s": sum(r["ttft"] for r in ok if r["ttft"] is not None),
+        "ttft_p99": pct(ttfts, 0.99),
+        "uncached_tokens_per_req": (pt - ct) / len(ok) if ok else None,
+        "cached_tokens_per_req": ct / len(ok) if ok else None,
+        "frames_per_req": sum(len(r["display_frames"]) for r in ok) / len(ok) if ok else None,
     }
 
 
@@ -441,12 +447,15 @@ def main():
               f"cache_hit={s['cache_hit_ratio']:.3f} errors={s['errors']} wall={wall:.1f}s", flush=True)
 
     print("\n=== SUMMARY ===")
-    print(f"{'condition':<18}{'acc':>8}{'ttft_mean':>11}{'ttft_p50':>10}{'hit':>8}{'errors':>8}{'wall_s':>9}")
+    print(f"{'condition':<18}{'acc':>8}{'ttft_mean':>11}{'ttft_p50':>10}{'ttft_p99':>10}"
+          f"{'hit':>8}{'uncach/req':>11}{'prefill_s':>11}{'errors':>7}{'wall_s':>9}")
     for cond, s in summary.items():
         if cond.startswith("_"):
             continue
         print(f"{cond:<18}{s['accuracy']:>8.4f}{s['ttft_mean'] or 0:>11.3f}{s['ttft_p50'] or 0:>10.3f}"
-              f"{s['cache_hit_ratio'] or 0:>8.3f}{s['errors']:>8}{s['wall_s']:>9.1f}")
+              f"{s.get('ttft_p99') or 0:>10.3f}{s['cache_hit_ratio'] or 0:>8.3f}"
+              f"{s.get('uncached_tokens_per_req') or 0:>11.0f}{s.get('ttft_total_s') or 0:>11.0f}"
+              f"{s['errors']:>7}{s['wall_s']:>9.1f}")
 
 
 if __name__ == "__main__":

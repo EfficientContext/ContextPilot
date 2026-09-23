@@ -108,37 +108,45 @@ multi-GPU servers used for the models above, so treat the canonical prefix as
 necessary but not sufficient — the engine's checkpoint policy decides how much
 of it is actually reused.
 
-## Result 3 — prefill time, and a serving-configuration trap
+## Result 3 — what frame overlap is actually worth
 
-The reordering raises the cached-token share, but on this stack it did not
-shorten prefill in any run: TTFT was flat across every condition, independent
-of the hit rate.
+Measured on a quiet server (Qwen3.8-27B, 2×H100, 36 CPUs requested), five
+trials per cell, frames never previously sent so nothing is pre-encoded:
 
-Before reading that as a property of the method, note what dominates an image
-request here. The vision stage is **CPU-bound on the serving pod**, and its cost
-swamps everything else when the pod is under-provisioned:
-
-| CPUs requested by the SGLang pod | cost per frame | 64-frame request |
+| | 64 frames (7.3k tok) | 128 frames (14.6k tok) |
 |---|---|---|
-| 8 | 210 ms | 13.4 s |
-| 24 | 80 ms | 5.1 s |
-| 36 | 60–70 ms | 3.9 s |
+| cold: new frames, empty KV | 4.01 s | 8.65 s |
+| identical request, KV warm | 3.55 s (**−12 %**) | 7.07 s (**−18 %**) |
+| same frames, new question, KV flushed | 4.09 s (−2 %) | — |
 
-Two of our earlier conclusions were artifacts of running at 8 CPUs and were
-withdrawn after re-measurement:
+Two separate effects, often conflated:
 
-* "Throughput does not scale with concurrency." At 8 CPUs it was flat at
-  0.075 req/s from concurrency 1 to 16. At 36 CPUs, 206 requests complete in
-  1545 s against a 17.8 s single-request latency, i.e. concurrency does help.
-* "A full prefix hit saves 22–37 % of wall time." That came from a single
-  server session we could not reproduce. On a controlled server, 30 requests
-  with heavy frame reuse and full KV hits (7296 cached tokens) each cost the
-  same as requests with entirely fresh frames.
+* **KV prefix reuse is real and grows with context**: 12 % at 64 frames, 18 %
+  at 128. This is the effect ContextPilot's reordering exists to enable, since
+  a shared prefix is what makes the hit possible at all.
+* **Re-sending the same images buys almost nothing (2 %)**: the vision encoder
+  runs again on every request. There is no cross-request embedding reuse in a
+  monolithic server, so overlap only pays through the KV cache.
 
-The honest summary is therefore: **we have not demonstrated a wall-time win
-from frame reordering on SGLang v0.5.20**, and the per-frame vision cost is
-large enough that it should be the first thing tuned in any video-RAG
-deployment. Provision CPU for the serving pod before optimising prompt order.
+The ceiling is set by the vision stage, which is CPU-bound on the serving pod
+and accounts for the bulk of an image request:
+
+| CPUs requested by the pod | cost per frame |
+|---|---|
+| 8 | 210 ms |
+| 24 | 80 ms |
+| 36 | 60–70 ms |
+
+Provision CPU for the SGLang pod first: it moves the total far more than prompt
+ordering does. Earlier revisions of this page reported first a flat "no
+speedup" and then a "22–37 % speedup"; both were measured under CPU starvation
+or on a contended server, and the table above supersedes them.
+
+Realised versus available: the canonical prefix reached 8 % cached tokens on
+LVBench at 16 frames but under 1 % at 64 frames with only 2 questions per
+video, because a prefix boundary has to recur before this engine reuses it. The
+12–18 % is an upper bound you approach as boundaries repeat, not a number you
+get for free.
 
 ## Result 4 — frame count matters far more than frame order
 

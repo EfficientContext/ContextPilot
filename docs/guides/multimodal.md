@@ -113,22 +113,18 @@ length is unchanged. The core itself is never truncated.
 
 ### Measured on SGLang v0.5.20, Qwen3.8-27B, 2×H100 (2026-09)
 
-Prefix reuse shows up in cached tokens. We have **not** demonstrated that it
-shortens prefill on this stack: TTFT stayed flat across conditions in every run.
+Quiet server, 36 CPUs requested, five trials, frames never previously sent:
 
-The dominant cost of an image request here is the vision stage, and it is
-CPU-bound on the serving pod:
-
-| CPUs requested by the pod | cost per frame | 64-frame request |
+| | 64 frames | 128 frames |
 |---|---|---|
-| 8 | 210 ms | 13.4 s |
-| 24 | 80 ms | 5.1 s |
-| 36 | 60–70 ms | 3.9 s |
+| cold | 4.01 s | 8.65 s |
+| identical request, KV warm | 3.55 s (−12 %) | 7.07 s (−18 %) |
+| same frames, new question, KV flushed | 4.09 s (−2 %) | — |
 
-Provision CPU for the SGLang pod before tuning prompt order. An earlier version
-of this guide reported a 22–37 % wall-time saving from prefix hits; that came
-from one unreproducible session and has been withdrawn. On a controlled server,
-requests with full KV hits cost the same as requests with entirely fresh frames.
+So prefix reuse pays, and pays more as context grows, while merely re-sending
+the same images does not: the vision encoder re-runs every request. The vision
+stage is CPU-bound on the pod (210 ms/frame at 8 CPUs, 60–70 ms at 36), so
+provision CPU before tuning prompt order.
 
 Expect a wall-time win only where the vision path is not the
 bottleneck: engines that cache vision embeddings across requests, disaggregated

@@ -1,0 +1,178 @@
+# Video RAG: does reordering frames for cache reuse keep accuracy?
+
+Setting: long-video question answering where each question retrieves a subset
+of a video's frames. Reordering those frames so that frames shared with earlier
+questions form a common prefix raises the engine's prefix-cache hit rate, but
+it also destroys the chronological order the model would normally rely on. The
+usual remedy is to state the true order in one sentence *after* the frames,
+where it does not break the shared prefix.
+
+This page reports what that costs and what it buys, measured end to end.
+
+**Reproduce**: `examples/video_rag/` (frame extraction, retrieval, benchmark
+runner, analysis). These are raw runs, not tuned.
+
+## Setup
+
+| | |
+|---|---|
+| Benchmarks | Video-MME (3 questions per video) and LVBench (hour-long videos, ~11 questions per video) |
+| Retrieval | SigLIP-2 base over a 1 fps frame pool (≤256 frames/video, 448 px), top-16 frames per question |
+| Models | Qwen3.8-27B (2×H100, tp 2), Qwen3.8-Flash-Next-FP8 180B (4×H100, tp 4 ep 4) |
+| Engine | SGLang v0.5.20, stock image, `--enable-cache-report` |
+| Prompt | system + intro + frames + question, answer forced with "The best answer is:" |
+| Requests | concurrency 4, engine cache flushed before every condition |
+
+Conditions differ only in frame order and in how the true order is conveyed:
+
+| condition | frame order | order information |
+|---|---|---|
+| `chrono_plain` | chronological | none (baseline) |
+| `chrono_labels` | chronological | per-frame `[Frame i \| t=..s]` labels |
+| `cp_sentence` | per-request ContextPilot reorder | one sentence listing the true order |
+| `canon_*` | canonical per-video core prefix | per the suffix |
+
+## Result 1 — reordering frames does not cost accuracy
+
+**LVBench, Qwen3.8-27B, 1131 questions.** Paired against the chronological
+baseline on the same questions (McNemar exact test on discordant pairs):
+
+| condition | accuracy | Δ | p | cached tokens | uncached tokens/req |
+|---|---|---|---|---|---|
+| `canon_none` (reorder, no order info) | 0.4403 | +0.002 | 0.91 | **8.0 %** | **1804** |
+| `chrono_plain` (baseline) | 0.4385 | — | — | 0.6 % | 1949 |
+| `canon_labels` | 0.4332 | −0.005 | 0.70 | 7.7 % | 2048 |
+| `canon_sentence` | 0.4324 | −0.006 | 0.57 | 7.0 % | 2077 |
+| `cp_sentence` (per-request reorder) | 0.4253 | −0.013 | 0.22 | 0.4 % | 2236 |
+
+The canonical reordering matches the baseline accuracy exactly while raising the
+cached-token share from 0.6 % to 8.0 % and cutting prefill tokens by 7.4 %.
+
+**Video-MME, Qwen3.8-27B, 633 questions**, baseline 0.6872:
+
+| condition | accuracy | Δ | p |
+|---|---|---|---|
+| `canon_none` | 0.6888 | +0.002 | 1.00 |
+| `canon_sentence` | 0.6777 | −0.010 | 0.54 |
+| `cp_sentence` | 0.6746 | −0.013 | 0.38 |
+| `canon_labels` | 0.6746 | −0.013 | 0.43 |
+| `chrono_labels` | 0.6619 | −0.025 | 0.044 |
+| `canon_both` (labels + sentence) | 0.6351 | −0.052 | 0.001 |
+
+**Video-MME, Qwen3.8-Flash-Next-FP8 180B, 708 questions**, baseline 0.7542:
+
+| condition | accuracy | Δ | p |
+|---|---|---|---|
+| `canon_none` | 0.7500 | −0.004 | 0.78 |
+| `canon_labels` | 0.7486 | −0.006 | 0.73 |
+| `canon_both` | 0.7472 | −0.007 | 0.64 |
+| `canon_sentence` | 0.7444 | −0.010 | 0.48 |
+| `chrono_labels` | 0.7429 | −0.011 | 0.40 |
+| `cp_sentence` | 0.7260 | −0.028 | 0.029 |
+
+Across both benchmarks and both models, reordering the frames is free, and one
+sentence stating the true order is free within noise. Two caveats show up in the
+grid. On the 27B, supplying two order signals at once (labels *and* the
+sentence) loses 5 points (p = 0.001), while the 180B absorbs both. And
+per-request reordering — the variant that also fails to produce cache hits —
+is the weakest arm on both models, significantly so on the 180B (p = 0.029).
+Prefer the canonical prefix with a single order signal.
+
+Note on model size: the same experiment on a 4B model showed the order sentence
+costing 9–11 points (p < 1e−4) while reordering alone stayed free. Following a
+positional order statement is what scales with model size, not tolerance for
+reordering.
+
+## Result 2 — the cache hit needs a canonical prefix
+
+Leading frames shared between two questions on the same video (they share ~4 of
+their 16 retrieved frames):
+
+| ordering | mean shared leading frames | pairs sharing none |
+|---|---|---|
+| chronological | 0.26 | 89 % |
+| ContextPilot reorder | 3.04 | 30 % |
+| canonical core prefix | 8.89 | 0 % |
+
+Hybrid linear-attention models (Qwen3.5 / Qwen3.8 / GLM-5.3-Flash) restore
+their recurrent state only at recorded checkpoints, so a prefix boundary that
+occurs once is never reused. Measured on one such server: a shared boundary
+misses on its first two occurrences and is reused from the third on, which is
+why per-request reordering yields nothing and a canonical prefix is required.
+
+The payoff scales with how many questions share a video. On LVBench (~11
+questions per video) the canonical prefix reached 8.0 % cached tokens against
+0.6 % for the chronological baseline. On Video-MME (3 questions per video) the
+same mechanism reached 10.8 % on a single-GPU server but under 1 % on the
+multi-GPU servers used for the models above, so treat the canonical prefix as
+necessary but not sufficient — the engine's checkpoint policy decides how much
+of it is actually reused.
+
+## Result 3 — what frame overlap is actually worth
+
+Measured on a quiet server (Qwen3.8-27B, 2×H100, 36 CPUs requested), five
+trials per cell, frames never previously sent so nothing is pre-encoded:
+
+| | 64 frames (7.3k tok) | 128 frames (14.6k tok) |
+|---|---|---|
+| cold: new frames, empty KV | 4.01 s | 8.65 s |
+| identical request, KV warm | 3.55 s (**−12 %**) | 7.07 s (**−18 %**) |
+| same frames, new question, KV flushed | 4.09 s (−2 %) | — |
+
+Two separate effects, often conflated:
+
+* **KV prefix reuse is real and grows with context**: 12 % at 64 frames, 18 %
+  at 128. This is the effect ContextPilot's reordering exists to enable, since
+  a shared prefix is what makes the hit possible at all.
+* **Re-sending the same images buys almost nothing (2 %)**: the vision encoder
+  runs again on every request. There is no cross-request embedding reuse in a
+  monolithic server, so overlap only pays through the KV cache.
+
+The ceiling is set by the vision stage, which is CPU-bound on the serving pod
+and accounts for the bulk of an image request:
+
+| CPUs requested by the pod | cost per frame |
+|---|---|
+| 8 | 210 ms |
+| 24 | 80 ms |
+| 36 | 60–70 ms |
+
+Provision CPU for the SGLang pod first: it moves the total far more than prompt
+ordering does. Earlier revisions of this page reported first a flat "no
+speedup" and then a "22–37 % speedup"; both were measured under CPU starvation
+or on a contended server, and the table above supersedes them.
+
+Realised versus available: the canonical prefix reached 8 % cached tokens on
+LVBench at 16 frames but under 1 % at 64 frames with only 2 questions per
+video, because a prefix boundary has to recur before this engine reuses it. The
+12–18 % is an upper bound you approach as boundaries repeat, not a number you
+get for free.
+
+## Result 4 — frame count matters far more than frame order
+
+Same benchmark and model, varying only how many retrieved frames are shown:
+
+| frames per question | LVBench accuracy |
+|---|---|
+| 16 | 0.4385 (n=1131) |
+| 64 | 0.6019 (n=206) |
+
+Sixteen points, against at most a couple of points from any ordering condition.
+For video RAG the ordering question is a second-order effect next to the frame
+budget.
+
+## Honest limitations
+
+- Retrieval is a single dual-encoder over uniformly sampled frames; a stronger
+  retriever changes the frame overlap between questions and so the headroom.
+- 16 frames is sparse coverage for LVBench's hour-long videos, which is why its
+  absolute accuracy is low; the comparison between conditions is unaffected
+  because every condition sees the same frames.
+- The cache and latency figures are tied to the SGLang version and flags listed
+  above, and the cached-token share varied by server configuration.
+- Qwen3.8-Flash-Next-FP8 ran on 4×H100 rather than H200: the cluster's H200
+  nodes were fully booked by other tenants for the whole session.
+- Accuracy results at 64 frames come from a 206-question subset covering all
+  103 LVBench videos (2 questions per video); the 16-frame results use the full
+  sets. GLM-5.3-Flash was never served: it needs 4×H200 or 8×H100 and neither
+  was free.

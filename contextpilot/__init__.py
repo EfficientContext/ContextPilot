@@ -53,6 +53,10 @@ _LAZY_EXPORTS = {
     # Convenience functions
     "optimize": ".api",
     "optimize_batch": ".api",
+    # Multimodal (image / video-frame blocks)
+    "ImageBlock": ".multimodal",
+    "optimize_multimodal": ".multimodal",
+    "optimize_multimodal_batch": ".multimodal",
     # Retrievers
     "BM25Retriever": ".retriever",
     "FAISSRetriever": ".retriever",
@@ -82,6 +86,11 @@ def __dir__():
 
 if TYPE_CHECKING:  # pragma: no cover - import-time hints for type checkers only
     from .api import optimize, optimize_batch
+    from .multimodal import (
+        ImageBlock,
+        optimize_multimodal,
+        optimize_multimodal_batch,
+    )
     from .context_index import ContextIndex, IndexResult
     from .context_ordering import IntraContextOrderer
     from .dedup import DedupResult, dedup_chat_completions, dedup_responses_api

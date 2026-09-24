@@ -1434,6 +1434,43 @@ def _reorder_documents(docs: List[str], config: InterceptConfig) -> tuple:
     return reordered_docs, original_order, reordered_order
 
 
+def _intercept_multimodal(body: Dict[str, Any], config: InterceptConfig):
+    """Reorder image blocks (video frames) in the last user message.
+
+    Returns ``(new_body, detail)`` where ``detail`` is ``None`` when no
+    multimodal block sequence was found or nothing changed.  Uses the same
+    persistent intercept index as text documents (keys are content hashes
+    of the image payloads), so frames shared across requests are aligned
+    into a common prefix for the engine's radix cache.
+    """
+    from contextpilot.multimodal.intercept import (
+        extract_image_blocks,
+        reconstruct_image_blocks,
+    )
+
+    extraction = extract_image_blocks(body)
+    if extraction is None:
+        return body, None
+
+    keys = extraction.keys
+    reordered_keys, orig_order, new_order = _reorder_documents(keys, config)
+    by_key = {b.key: b for b in extraction.blocks}
+    displayed = [by_key[k] for k in reordered_keys]
+
+    new_body = reconstruct_image_blocks(
+        body, extraction, displayed, order_hint=config.mm_order_hint
+    )
+    detail = {
+        "source": f"user[{extraction.msg_index}]/images",
+        "count": len(keys),
+        "original_order": orig_order,
+        "reordered_order": new_order,
+        "order_hint": config.mm_order_hint,
+        "order_from_labels": extraction.order_from_labels,
+    }
+    return new_body, detail
+
+
 async def _intercept_and_forward(request: Request, api_format: str):
     """Intercept an LLM API request, reorder documents, and forward.
 
@@ -1559,7 +1596,26 @@ async def _intercept_and_forward(request: Request, api_format: str):
     state = _InterceptConvState()
     state.last_message_count = _debug_msg_count
 
-    if config.enabled:
+    # ── Multimodal: image / video-frame blocks in the last user message ──
+    _mm_handled = False
+    if config.enabled and config.multimodal != "off" and api_format == _OPENAI_CHAT:
+        try:
+            body, _mm_detail = _intercept_multimodal(body, config)
+            if _mm_detail is not None:
+                _mm_handled = True
+                reorder_details.append(_mm_detail)
+                if _mm_detail["original_order"] != _mm_detail["reordered_order"]:
+                    total_reordered += _mm_detail["count"]
+                logger.info(
+                    f"Intercept (multimodal): {_mm_detail['count']} image blocks, "
+                    f"reordered={_mm_detail['original_order'] != _mm_detail['reordered_order']}, "
+                    f"hint={_mm_detail['order_hint']}"
+                )
+        except Exception as e:
+            logger.warning(f"Multimodal intercept failed, forwarding original: {e}")
+            _mm_handled = False
+
+    if config.enabled and not _mm_handled:
         try:
             body = copy.deepcopy(body)
 
@@ -1826,6 +1882,7 @@ async def _intercept_and_forward(request: Request, api_format: str):
         or total_deduped > 0
         or total_slimmed > 0
         or _dedup_result.chars_saved > 0
+        or _mm_handled
     )
     if _has_activity:
         cp_response_headers["X-ContextPilot-Result"] = json.dumps(

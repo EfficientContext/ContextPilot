@@ -18,6 +18,7 @@
 | [Offline Usage](guides/offline_usage.md) | Batch processing without server |
 | [Online Usage](guides/online_usage.md) | Index server (stateless and stateful modes) |
 | [Multi-Turn Conversations](guides/multi_turn.md) | Context deduplication across turns |
+| [Multimodal / Video RAG](guides/multimodal.md) | Reorder video frames for prefix sharing with an order hint |
 | [Mem0 Integration](guides/mem0.md) | Memory-augmented chat with LoCoMo benchmark |
 | [PageIndex Integration](guides/pageindex.md) | Tree-structured documents |
 | [Mac + llama.cpp](guides/mac_llama_cpp.md) | Apple Silicon deployment |
@@ -28,6 +29,7 @@
 |-----------|-------------|
 | [OpenClaw](benchmarks/openclaw.md) | 60 enterprise document analysis tasks on RTX 5090 |
 | [RAG](benchmarks/rag.md) | MultihopRAG and NarrativeQA on Qwen3-32B and DeepSeek-R1 |
+| [Video RAG](benchmarks/video_rag.md) | Video-MME frame reordering: accuracy, cache hits and where the time goes |
 
 ## Reference
 

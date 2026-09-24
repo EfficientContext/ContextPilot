@@ -17,6 +17,7 @@
 
 ## News
 
+- [2026/09] Supports **multimodal contexts**: reorder retrieved video frames / images for prefix-cache sharing while preserving accuracy — [guide](docs/guides/multimodal.md) | [video RAG](examples/video_rag/)
 - [2026/05] Supports [Hermes Agent](https://github.com/NousResearch/hermes-agent) as a native context engine plugin — [guide](docs/guides/hermes.md)
 - [2026/03] Supports [OpenClaw](https://openclaw.ai) — [guide](docs/guides/openclaw.md) | [benchmark](docs/benchmarks/openclaw.md)
 - [2026/03] Supports cloud APIs (OpenAI, Anthropic, MiniMax) — [cache sync](docs/guides/cache_sync.md)
@@ -33,7 +34,8 @@ ContextPilot sits between context assembly and inference to maximize prefix reus
 1. **Higher throughput & cache hits** — boosts prefill throughput and prefix cache hit ratio via context reuse.  
 2. **Drop-in solutions** — supports [OpenClaw](https://openclaw.ai) ([guide](docs/guides/openclaw.md)), [Hermes Agent](https://github.com/NousResearch/hermes-agent) ([guide](docs/guides/hermes.md)), [PageIndex](https://github.com/VectifyAI/PageIndex), [Mem0](https://github.com/mem0ai/mem0), [LMCache](https://github.com/LMCache/LMCache), [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang), [llama.cpp](docs/guides/mac_llama_cpp.md), and cloud APIs (OpenAI, Anthropic).
 3. **No compromise in reasoning quality** — can even improve with extremely long contexts.
-4. **Widely tested** — validated across diverse RAG and agentic workloads.
+4. **Text and multimodal** — reorders retrieved video frames / images as well as text blocks, raising the cache hit ratio while keeping answer accuracy ([guide](docs/guides/multimodal.md)).
+5. **Widely tested** — validated across diverse RAG and agentic workloads.
 
 It maintains a **Context Index** of cached content, then per request applies **Reorder** (align shared blocks into a common prefix) and/or **Deduplicate** (replace repeats with reference hints), plus **cache-aware scheduling** to maximize prefix sharing. The optimized prompt is sent via the OpenAI-compatible API; `POST /evict` keeps the index synced when KV cache is reclaimed. See its design overview below.
 

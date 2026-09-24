@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "dataset_kind": "provenance_linking",
+  "mode": "synthetic",
+  "output": "datasets/provenance_linking/synthetic_v1.jsonl",
+  "example_count": 3,
+  "block_count": 8,
+  "claim_count": 4,
+  "gold_link_count": 4,
+  "shadow_link_count": 3,
+  "privacy_note": "synthetic is commit-safe; trace mode may contain raw local content and must stay local/gitignored"
+}

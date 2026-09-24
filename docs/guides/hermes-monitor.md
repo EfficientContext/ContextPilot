@@ -55,10 +55,14 @@ Then read the generated Markdown report for today and send a short Chinese summa
 
 ## Quick savings summary (lightweight)
 
-If you just want to answer "how many tokens did ContextPilot save?", use the
-lightweight `scripts/contextpilot_savings.py` command instead of this monitor or
-the analyzer below. It reads **only** the metadata-only telemetry file, imports
-no Hermes internals, and prints a one-screen summary:
+If you just want a lightweight realized-savings summary, use the
+`scripts/contextpilot_savings.py` command instead of this monitor or the analyzer
+below. It reads **only** the metadata-only telemetry file, imports no Hermes
+internals, and prints a one-screen summary. Character savings are measured from
+ContextPilot's actual before/after processed payload; exact tokenizer tokens are
+shown only when telemetry recorded an explicitly configured exact tokenizer
+backend. The legacy chars/4 counter is labelled as derived; tokenizer measurement
+is off by default to avoid provider/tokenizer mismatches.
 
 ```bash
 python scripts/contextpilot_savings.py            # last 24h
@@ -68,10 +72,10 @@ python scripts/contextpilot_savings.py --format json
 python ~/.hermes/plugins/ContextPilot/scripts/contextpilot_savings.py
 ```
 
-It reports events, chars saved, estimated tokens saved, the window, and average
-tokens per event. This is the right tool for ordinary users; the monitor in this
-guide (which also reads `state.db` metadata) and the content-aware analyzer below
-are for deeper investigation.
+It reports events, processed-payload chars saved, exact tokenizer tokens when
+available, and the legacy derived chars/4 counter. This is the right tool for
+ordinary users; the monitor in this guide (which also reads `state.db` metadata)
+and the content-aware analyzer below are for deeper investigation.
 
 ### Ask Hermes for savings
 
@@ -100,7 +104,9 @@ It surfaces concrete token-reduction opportunities:
 - repeated line/block fingerprints (shared boilerplate across outputs),
 - large tool outputs grouped by `tool_name`,
 - heavy sessions by input-token / tool-call / message counts (hashed ids),
-- ContextPilot telemetry coverage and savings ratios,
+- **Prompt duplicate shadow telemetry** for exact system/skill prompt template
+  repeats (advisory only; no prompt rewriting),
+- ContextPilot telemetry coverage and processed-payload savings counters,
 - **Worker Context Routing shadow labels** for future router training/eval,
 - **Parent Aggregation Artifact telemetry** (exact duplicate worker/parent
   artifacts grouped by hash) for future parent-aggregation dedup eval.
@@ -128,6 +134,104 @@ aggregated. The report then shows:
   observed in 2+ block types (e.g. the same chunk shipped from a skill/system
   prompt *and* a tool result *and* a user prompt). Reported only as a hash plus
   per-type counters — never the raw text.
+
+### Prompt duplicate shadow mode
+
+The analyzer includes a dedicated **Prompt duplicate blocks — system/skill**
+section for the static-template opportunity found in Hermes workloads. It scans
+only `system_prompt` and `skill_prompt` blocks, groups **EXACT** duplicate block
+fingerprints, and reports:
+
+- duplicate group count and duplicate occurrence count,
+- actual duplicated characters observed in prompt assembly,
+- a derived chars/4 advisory token counter labelled as advisory,
+- per-type counters and top salted hashes.
+
+This section is **advisory only**. It never rewrites, summarizes, deduplicates,
+or replaces prompt text, and its counters are not realized savings. Use it to
+prioritize a future prompt-assembly A/B where before/after payloads are measured
+with an exact tokenizer/API usage comparison.
+
+### Prompt dedup A/B simulation
+
+The analyzer also includes a **Prompt dedup A/B simulation — system/skill**
+section. This is the evidence gate before any canary replacement. It still does
+not mutate runtime payloads: it keeps prompt text in memory, groups exact
+duplicate `system_prompt` / `skill_prompt` blocks, and simulates the accounting
+for keeping the first occurrence while replacing only later occurrences with a
+deterministic reference placeholder.
+
+The simulation reports candidate classes separately:
+
+- `same_type_skill_prompt_only` — lowest-risk first canary candidate,
+- `same_type_system_prompt_only` — higher risk,
+- `cross_type_system_skill` — higher risk because it crosses prompt hierarchy.
+
+For each class the report includes group counts, replacement occurrence counts,
+`chars_before`, `chars_after_simulated`, and signed `chars_delta_simulated`.
+When you pass an explicitly configured tokenizer backend, for example
+`--prompt-dedup-tokenizer tiktoken:cl100k_base`, it also reports actual tokenizer
+before/after/delta fields for the simulation. Without that opt-in backend,
+`tokenizer_status=unavailable` and no fake actual-token numbers are emitted.
+
+Use `--disable-prompt-dedup-ab` to omit this section. Even when enabled, all
+figures are **simulation-only**, **not realized savings**, and no prompt text is
+rewritten, summarized, deduplicated, or emitted.
+
+### Prompt dedup canary (runtime; default OFF)
+
+> **Use only after the A/B simulation above shows a clear, positive
+> `same_type_skill_prompt_only` delta and you have a golden eval in place.**
+> This is the one ContextPilot path that *actually rewrites prompt text*; treat
+> it as gray/canary, not default behavior.
+
+Everything else in the analyzer is measurement/shadow/simulation only. The
+canary (`contextpilot.hermes_opportunities.prompt_dedup_canary`) is the single
+runtime replacement path and it is **off by default**. It is controlled entirely
+by environment variables — no config file is required:
+
+```sh
+# off (default): no scan, no mutation, no prompt-dedup savings recorded
+CONTEXTPILOT_PROMPT_DEDUP_MODE=off
+
+# shadow: measure what a canary *would* replace; payload still unchanged
+CONTEXTPILOT_PROMPT_DEDUP_MODE=shadow
+
+# canary: actually replace later exact duplicate skill-prompt blocks
+CONTEXTPILOT_PROMPT_DEDUP_MODE=canary
+```
+
+**Rollback / kill switch.** Set the mode back to `off` (or unset the variable)
+to disable immediately. The escape-hatch variable forces `off` regardless of the
+mode variable, for an instant kill without editing the mode:
+
+```sh
+CONTEXTPILOT_PROMPT_DEDUP_DISABLE=1   # forces off even if MODE=canary
+```
+
+What the canary will and will not do, even when `MODE=canary`:
+
+- It acts **only** on the `same_type_skill_prompt_only` class — an EXACT
+  duplicate block whose every occurrence is inside `skill_prompt` content.
+- It **never** replaces `system_prompt`-only duplicates, **never** replaces
+  cross-type `system_prompt`/`skill_prompt` duplicates, and **never** touches
+  user, assistant, tool, or ordinary system-prompt content.
+- The **first** occurrence is always kept verbatim; only later exact duplicates
+  are replaced, and only with a deterministic reference string containing a
+  low-cardinality prompt-type enum plus a salted hash — never raw prompt text.
+- A replacement happens only when the reference string is **strictly shorter**
+  than the line it replaces, so the payload is never grown.
+- A broad **safety denylist** (instruction / safety / security / tool / auth /
+  secret / must / never / always / required / ...) leaves any matching block
+  unchanged even in canary mode. Skill-prompt detection is conservative: if a
+  block is not clearly a skill-prompt duplicate, it is left as-is.
+
+Telemetry is metadata-only: `prompt_dedup_mode`, `prompt_dedup_class`,
+`prompt_dedup_blocks_replaced`, and `prompt_dedup_chars_saved` (mode/class enums
+and integer counters only — no prompt text). The realized `prompt_dedup_chars_saved`
+and its contribution to the aggregate `chars_saved` total are non-zero **only
+when a real canary mutation occurred**; `off` and `shadow` record no prompt-dedup
+savings.
 
 ### Worker Context Routing shadow mode
 
@@ -217,9 +321,31 @@ gate below before changing ContextPilot config or code. A defensive guard in
 `write_report` refuses to emit any forbidden raw-content key, so the reports are
 safe to ship from an unattended cron job.
 
-## Accuracy gate
+## Default-off canaries
 
-This monitor only measures token/cost savings and operational signals. Before shipping ContextPilot changes, run a fixed golden eval set and require:
+Prompt and artifact reuse are opt-in canaries. Ordinary installs keep both off
+unless an operator explicitly enables them and restarts Hermes.
+
+```bash
+# Skill-prompt exact duplicate canary (lowest-risk prompt class)
+export CONTEXTPILOT_PROMPT_DEDUP_MODE=canary
+
+# Provenance-aware tool/artifact exact duplicate canary
+export CONTEXTPILOT_ARTIFACT_DEDUP_MODE=canary
+
+# Emergency kill switches
+export CONTEXTPILOT_PROMPT_DEDUP_DISABLE=1
+export CONTEXTPILOT_ARTIFACT_DEDUP_DISABLE=1
+```
+
+The artifact canary only keeps the first full `tool_result`/`assistant_context`
+artifact body and replaces later exact duplicates with a shorter ContextPilot
+reference. It does not summarize, semantically compress, or drop user/system
+content.
+
+## Safety gates
+
+This monitor reports processed-payload savings, exact tokenizer token deltas when recorded, and operational signals. Before shipping ContextPilot changes, run a fixed golden eval set and require:
 
 - no task-success regression,
 - no drop in context recall beyond the chosen threshold,

@@ -93,8 +93,8 @@ Vary the command to match the request:
 
   (Combine with `--all-time` or `--since-hours N` as needed.)
 
-The script prints events, chars saved, estimated tokens saved, the time window,
-and average tokens per event. It imports no Hermes internals.
+The script prints events, chars saved, telemetry tokens saved, the time window,
+and average tokens per event.
 
 ### Step 3 — Summarize in plain language
 

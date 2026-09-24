@@ -228,7 +228,6 @@ def test_optimize_writes_metadata_only_telemetry_line(monkeypatch, tmp_path):
 
     # Numeric/metadata only — savings recorded.
     assert record["chars_saved"] > 0
-    assert record["tokens_saved"] == record["chars_saved"] // 4
     assert record["turn"] == 1
     assert record["session_hash"] == module._hash_text("session-XYZ")
     assert "session" not in record
@@ -240,6 +239,84 @@ def test_optimize_writes_metadata_only_telemetry_line(monkeypatch, tmp_path):
     assert "FULL TOOL RESULT" not in raw
     forbidden = {"content", "messages", "prompt", "system_prompt", "text", "tool_calls"}
     assert forbidden.isdisjoint(record.keys())
+
+
+def test_telemetry_records_payload_chars_and_unavailable_tokenizer_status(monkeypatch, tmp_path):
+    """Before/after payload chars are actual; no char/4 token proxy is emitted."""
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _saving_dedup)
+    # Force the exact tokenizer OFF so this case is deterministic everywhere.
+    monkeypatch.setenv("CONTEXTPILOT_DISABLE_EXACT_TOKENIZER", "1")
+
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    engine = module.ContextPilotEngine()
+    messages = [
+        {"role": "user", "content": "read file"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+    ]
+    _out, stats = engine.optimize_api_messages(messages)
+
+    record = json.loads(telemetry.read_text(encoding="utf-8").splitlines()[0])
+
+    # Actual processed-payload before/after char measurement.
+    assert record["payload_chars_before"] > record["payload_chars_after"]
+    assert (
+        record["payload_chars_saved"]
+        == record["payload_chars_before"] - record["payload_chars_after"]
+    )
+    # No tokenizer -> a clear status and NO fabricated token numbers.
+    assert "tokens_saved" not in record
+    assert "tokens_saved_method" not in record
+    assert record["actual_token_status"] == "unavailable"
+    assert "actual_tokens_before" not in record
+    assert "actual_tokens_after" not in record
+    assert "actual_tokens_saved" not in record
+    # Returned stats expose the same payload-char measurement.
+    assert stats["payload_chars_saved"] == record["payload_chars_saved"]
+
+
+def test_telemetry_records_exact_tokens_when_backend_available(monkeypatch, tmp_path):
+    """When an exact tokenizer backend is present, actual token fields are emitted."""
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _saving_dedup)
+
+    # Inject a deterministic fake exact tokenizer (1 token per 3 chars).
+    def fake_counter(text):
+        return len(text) // 3
+
+    fake_counter._backend = "fake:test-encoding"
+    monkeypatch.setattr(module, "_get_exact_tokenizer", lambda: fake_counter)
+
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    engine = module.ContextPilotEngine()
+    messages = [
+        {"role": "user", "content": "read file"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "FULL TOOL RESULT"},
+    ]
+    engine.optimize_api_messages(messages)
+
+    record = json.loads(telemetry.read_text(encoding="utf-8").splitlines()[0])
+
+    assert record["actual_token_status"] == "available"
+    assert record["actual_tokenizer_backend"] == "fake:test-encoding"
+    assert record["actual_tokens_before"] >= record["actual_tokens_after"]
+    assert (
+        record["actual_tokens_saved"]
+        == record["actual_tokens_before"] - record["actual_tokens_after"]
+    )
+    assert "tokens_saved_method" not in record
 
 
 def test_optimize_telemetry_skipped_when_nothing_saved(monkeypatch, tmp_path):
@@ -284,3 +361,236 @@ def test_optimize_survives_unwritable_telemetry_path(monkeypatch, tmp_path):
     out, stats = engine.optimize_api_messages(messages)
     assert out[1]["content"] == "REF"
     assert stats["chars_saved"] > 0
+
+
+def _zero_dedup(body, **kwargs):
+    return SimpleNamespace(
+        chars_saved=0,
+        blocks_deduped=0,
+        blocks_total=0,
+        system_blocks_matched=0,
+    )
+
+
+def test_prompt_dedup_canary_default_off_does_not_mutate_runtime(monkeypatch, tmp_path):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+    monkeypatch.delenv("CONTEXTPILOT_PROMPT_DEDUP_MODE", raising=False)
+
+    repeated = (
+        "Reusable examples paragraph for skill notes with enough descriptive filler "
+        "to make the reference shorter than the duplicate body in this test."
+    )
+    content = f"Use this skill when testing.\n{repeated}\n{repeated}"
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages([{"role": "system", "content": content}])
+
+    assert out[0]["content"] == content
+    assert stats["prompt_dedup_mode"] == "off"
+    assert stats["prompt_dedup_chars_saved"] == 0
+    assert not telemetry.exists()
+
+
+def test_prompt_dedup_canary_mutates_only_skill_prompt_runtime(monkeypatch, tmp_path):
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.setenv("CONTEXTPILOT_PROMPT_DEDUP_MODE", "canary")
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    repeated = (
+        "Reusable examples paragraph for skill notes with enough descriptive filler "
+        "to make the reference shorter than the duplicate body in this test."
+    )
+    skill_content = f"Use this skill when testing.\n{repeated}\n{repeated}"
+    ordinary_system = "ordinary system heading\nordinary system text stays untouched"
+    user_content = f"{repeated}\n{repeated}"
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(
+        [
+            {"role": "system", "content": skill_content},
+            {"role": "system", "content": ordinary_system},
+            {"role": "user", "content": user_content},
+        ]
+    )
+
+    assert repeated in out[0]["content"]  # first occurrence kept
+    assert out[0]["content"].count(repeated) == 1
+    assert "ContextPilot dedup: duplicate skill_prompt block omitted" in out[0]["content"]
+    # Ordinary system and user content are untouched.
+    assert out[1]["content"] == ordinary_system
+    assert out[2]["content"] == user_content
+    assert stats["prompt_dedup_mode"] == "canary"
+    assert stats["prompt_dedup_blocks_replaced"] == 1
+    assert stats["prompt_dedup_chars_saved"] > 0
+    assert stats["chars_saved"] == stats["prompt_dedup_chars_saved"]
+
+    record = json.loads(telemetry.read_text(encoding="utf-8").splitlines()[0])
+    assert record["prompt_dedup_mode"] == "canary"
+    assert record["prompt_dedup_class"] == "same_type_skill_prompt_only"
+    assert record["prompt_dedup_blocks_replaced"] == 1
+    assert record["prompt_dedup_chars_saved"] == stats["prompt_dedup_chars_saved"]
+    raw = telemetry.read_text(encoding="utf-8")
+    assert repeated not in raw
+    assert "Use this skill" not in raw
+
+
+def test_prompt_dedup_canary_does_not_replace_cross_type_or_denylisted_runtime(monkeypatch):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.setenv("CONTEXTPILOT_PROMPT_DEDUP_MODE", "canary")
+
+    cross = (
+        "Shared examples paragraph across prompts with enough descriptive filler "
+        "to be tempting but cross hierarchy should stay unchanged."
+    )
+    denied = (
+        "This duplicate line contains secret handling details and enough filler "
+        "to be long but should be blocked by denylist."
+    )
+    skill_content = f"Use this skill when testing.\n{cross}\n{denied}\n{denied}"
+    ordinary_system = f"ordinary system heading\n{cross}"
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(
+        [
+            {"role": "system", "content": skill_content},
+            {"role": "system", "content": ordinary_system},
+        ]
+    )
+
+    assert out[0]["content"] == skill_content
+    assert out[1]["content"] == ordinary_system
+    assert stats["prompt_dedup_chars_saved"] == 0
+    assert stats["prompt_dedup_blocks_replaced"] == 0
+
+
+
+def test_artifact_dedup_canary_default_off_does_not_mutate_runtime(monkeypatch, tmp_path):
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.delenv("CONTEXTPILOT_ARTIFACT_DEDUP_MODE", raising=False)
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    repeated = "pytest terminal output line showing repeated failure details\n" * 12
+    messages = [
+        {"role": "tool", "tool_call_id": "call_1", "content": repeated},
+        {"role": "tool", "tool_call_id": "call_2", "content": repeated},
+    ]
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(messages)
+
+    assert out[0]["content"] == repeated
+    assert out[1]["content"] == repeated
+    assert stats["artifact_dedup_mode"] == "off"
+    assert stats["artifact_dedup_chars_saved"] == 0
+    assert not telemetry.exists()
+
+
+def test_artifact_dedup_canary_mutates_repeated_tool_artifacts_runtime(monkeypatch, tmp_path):
+    import json
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.setenv("CONTEXTPILOT_ARTIFACT_DEDUP_MODE", "canary")
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    repeated = "pytest terminal output line showing repeated failure details\n" * 12
+    user_same = repeated
+    messages = [
+        {"role": "tool", "tool_call_id": "call_1", "content": repeated},
+        {"role": "assistant", "content": "ordinary assistant response stays untouched"},
+        {"role": "tool", "tool_call_id": "call_2", "content": repeated},
+        {"role": "user", "content": user_same},
+    ]
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(messages)
+
+    assert out[0]["content"] == repeated  # canonical full copy kept
+    assert out[1]["content"] == "ordinary assistant response stays untouched"
+    assert "ContextPilot artifact dedup: duplicate" in out[2]["content"]
+    assert repeated not in out[2]["content"]
+    assert out[3]["content"] == user_same  # protected same text is untouched
+    assert stats["artifact_dedup_mode"] == "canary"
+    assert stats["artifact_dedup_blocks_replaced"] == 1
+    assert stats["artifact_dedup_chars_saved"] > 0
+    assert stats["chars_saved"] == stats["artifact_dedup_chars_saved"]
+
+    record = json.loads(telemetry.read_text(encoding="utf-8").splitlines()[0])
+    assert record["artifact_dedup_mode"] == "canary"
+    assert record["artifact_dedup_class"] == "same_payload_exact_artifact_body"
+    assert record["artifact_dedup_blocks_replaced"] == 1
+    assert record["artifact_dedup_chars_saved"] == stats["artifact_dedup_chars_saved"]
+    raw = telemetry.read_text(encoding="utf-8")
+    assert repeated not in raw
+    assert "pytest terminal output" not in raw
+
+
+def test_artifact_dedup_canary_runs_when_contextpilot_package_init_unimportable(
+    monkeypatch, tmp_path
+):
+    """Regression: the canary must load via direct-file loading even when the
+    ``contextpilot`` package ``__init__`` cannot be imported (e.g. scipy missing
+    in the Hermes/plugin runtime). Previously the apply helpers imported
+    ``contextpilot.hermes_opportunities.*`` directly, which executed the heavy
+    package ``__init__`` and silently fell back to ``artifact_dedup_mode=off``.
+    """
+    import builtins
+
+    module, _ = _load_plugin_module(monkeypatch)
+    monkeypatch.setattr(module, "_check_reorder", lambda: False)
+    monkeypatch.setattr(module, "_CONTEXTPILOT_AVAILABLE", False)
+    monkeypatch.setattr(module, "dedup_chat_completions", _zero_dedup)
+    monkeypatch.setenv("CONTEXTPILOT_ARTIFACT_DEDUP_MODE", "canary")
+    telemetry = tmp_path / "telemetry.jsonl"
+    monkeypatch.setenv("CONTEXTPILOT_TELEMETRY_FILE", str(telemetry))
+
+    # Force a fresh load attempt and simulate the unimportable package.
+    monkeypatch.setattr(module, "_canary_modules", None)
+    for mod_name in list(sys.modules):
+        if mod_name == "contextpilot" or mod_name.startswith("contextpilot."):
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    real_import = builtins.__import__
+
+    def _poisoned_import(name, *args, **kwargs):
+        if name == "contextpilot" or name.startswith("contextpilot."):
+            raise ImportError("simulated: contextpilot package __init__ (scipy) unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _poisoned_import)
+
+    repeated = "pytest terminal output line showing repeated failure details\n" * 12
+    messages = [
+        {"role": "tool", "tool_call_id": "call_1", "content": repeated},
+        {"role": "tool", "tool_call_id": "call_2", "content": repeated},
+    ]
+
+    engine = module.ContextPilotEngine()
+    out, stats = engine.optimize_api_messages(messages)
+
+    assert out[0]["content"] == repeated  # canonical full copy kept
+    assert "ContextPilot artifact dedup: duplicate" in out[1]["content"]
+    assert repeated not in out[1]["content"]
+    assert stats["artifact_dedup_mode"] == "canary"
+    assert stats["artifact_dedup_blocks_replaced"] == 1
+    assert stats["artifact_dedup_chars_saved"] > 0

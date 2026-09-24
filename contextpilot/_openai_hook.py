@@ -336,13 +336,12 @@ def _optimize_messages(kwargs):
     if chars_saved > 0 or docs_reordered > 0:
         logger.info(
             "[ContextPilot] Call #%d: %d chars saved, %d blocks deduped, "
-            "%d docs reordered (cumulative: %d chars ≈ %d tokens)",
+            "%d docs reordered (cumulative: %d chars; tokenizer accounting required for tokens)",
             _total_calls,
             chars_saved,
             dedup_result.blocks_deduped,
             docs_reordered,
             _total_chars_saved,
-            _total_chars_saved // 4,
         )
 
 
@@ -369,12 +368,11 @@ def _optimize_responses(kwargs):
     if dedup_result.chars_saved > 0:
         logger.info(
             "[ContextPilot] Responses call #%d: %d chars saved, %d blocks deduped "
-            "(cumulative: %d chars ≈ %d tokens)",
+            "(cumulative: %d chars; tokenizer accounting required for tokens)",
             _total_calls,
             dedup_result.chars_saved,
             dedup_result.blocks_deduped,
             _total_chars_saved,
-            _total_chars_saved // 4,
         )
 
 

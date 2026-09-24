@@ -183,8 +183,8 @@ def test_malformed_telemetry_tolerated(tmp_path):
     tel.write_text(
         "\n".join(
             [
-                json.dumps({"ts": FAR_FUTURE, "chars_saved": 400, "tokens_saved": 100}),
-                json.dumps({"ts": FAR_FUTURE, "chars_saved": 200}),  # missing tokens_saved
+                json.dumps({"ts": FAR_FUTURE, "chars_saved": 400, "actual_token_status": "available", "actual_tokens_saved": 100}),
+                json.dumps({"ts": FAR_FUTURE, "chars_saved": 200}),  # valid char metadata, token unavailable
                 "this is not json at all",
                 json.dumps([1, 2, 3]),  # not a dict
                 json.dumps({"ts": FAR_FUTURE, "note": "no counters here"}),
@@ -196,10 +196,11 @@ def test_malformed_telemetry_tolerated(tmp_path):
     )
     report = _analyze(db, tmp_path, telemetry=tel)
     t = report.telemetry
-    # Two valid records aggregated; second infers tokens from chars (200//4=50).
+    # Two valid char-metadata records aggregated; only tokenizer-measured token
+    # telemetry is counted, and missing actual tokens remain unavailable/zero.
     assert t.events == 2
     assert t.chars_saved == 600
-    assert t.tokens_saved == 150
+    assert t.tokens_saved == 100
     # Non-json, non-dict, and missing-counter lines are skipped, not fatal.
     assert t.malformed_records_skipped == 3
     assert t.coverage_ratio_pct > 0
@@ -939,3 +940,229 @@ def test_worker_routing_intact_alongside_parent_aggregation(tmp_path):
     assert report.worker_routing.est_drop_candidate_tokens > 0
     # And parent aggregation independently sees the same body as a duplicate.
     assert report.parent_aggregation.duplicate_group_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Prompt duplicate shadow (system/skill prompts only; advisory only)
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_duplicate_shadow_detects_system_skill_duplicates():
+    line = "This is a sufficiently long duplicated instruction line here."
+    sys_unique = "A completely unique system instruction line that is long."
+    skill_unique = "Skill body unique line that is also clearly long enough."
+    contents = [
+        analyzer._LLMContent(
+            block_type="system_prompt", content=f"{line}\n{sys_unique}\n{line}"
+        ),
+        analyzer._LLMContent(block_type="skill_prompt", content=f"{line}\n{skill_unique}"),
+        # Non-prompt duplicates must be ignored by this prompt-only section.
+        analyzer._LLMContent(block_type="tool_result", content=f"{line}\n{line}"),
+        analyzer._LLMContent(block_type="user_prompt", content=f"{line}\n{line}"),
+    ]
+    shadow = analyzer.detect_prompt_duplicate_blocks(
+        contents, salt="s", min_block_chars=40, top_n=20
+    )
+    assert shadow.enabled
+    assert shadow.item_count == 2  # only system + skill items scanned
+    assert shadow.scanned_block_types == ["system_prompt", "skill_prompt"]
+    # `line` appears 2x (system) + 1x (skill) = 3 across prompt types only.
+    assert shadow.duplicate_group_count == 1
+    grp = shadow.top_duplicate_blocks[0]
+    assert grp.occurrences == 3
+    assert grp.block_types == ["skill_prompt", "system_prompt"]
+    assert grp.chars_duplicated == (3 - 1) * len(line)
+    assert shadow.total_chars_duplicated == grp.chars_duplicated
+    # Advisory token figure is exactly chars/4, never an actual token count.
+    assert (
+        shadow.advisory_est_duplicate_tokens_chars_div_4
+        == shadow.total_chars_duplicated // 4
+    )
+    assert (
+        grp.advisory_est_duplicate_tokens_chars_div_4 == grp.chars_duplicated // 4
+    )
+    # Occurrences are broken out per prompt type.
+    types = {tc.block_type: tc for tc in shadow.by_block_type}
+    assert set(types) == {"system_prompt", "skill_prompt"}
+    assert types["system_prompt"].occurrence_count == 2
+    assert types["skill_prompt"].occurrence_count == 1
+
+
+def test_prompt_duplicate_shadow_in_report_no_leak_and_advisory(tmp_path):
+    db = tmp_path / "state.db"
+    secret_line = "SECRET-PROMPT-LINE-THAT-REPEATS-AND-IS-PLENTY-LONG"
+    other_line = "some other distinct system instruction text here now"
+    sys_prompt = f"{secret_line}\n{other_line}\n{secret_line}"
+    _make_db(
+        db,
+        [("tool", "irrelevant tool output", "Bash")],
+        sessions=[("raw-session-id", "discord", None, 1, 1, 100, 10, 1, sys_prompt)],
+    )
+    report = _analyze(db, tmp_path)
+    pd = report.prompt_duplicates
+    assert pd.enabled
+    assert pd.duplicate_group_count == 1
+    assert pd.total_chars_duplicated == len(secret_line)
+    # Advisory figures are NOT folded into realized telemetry savings.
+    assert report.telemetry.chars_saved == 0
+    assert pd.total_chars_duplicated > 0
+
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    md_text = md_path.read_text(encoding="utf-8")
+    blob = json_path.read_text(encoding="utf-8") + md_text
+    # Raw prompt text must never appear in the report.
+    assert secret_line not in blob
+    assert other_line not in blob
+    # Section is present and clearly labelled advisory / not-realized.
+    assert "Prompt duplicate blocks" in md_text
+    assert "advisory" in md_text.lower()
+    assert "NOT a realized saving" in md_text or "NOT realized savings" in md_text
+
+
+def test_prompt_duplicate_shadow_can_be_disabled(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db(db, [("tool", "out", "Bash")])
+    tool_messages = analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    heavy = analyzer.load_heavy_sessions(
+        db, since_hours=WIDE_WINDOW, salt="s", top_n=20
+    )
+    tel = analyzer.parse_telemetry(
+        tmp_path / "none.jsonl", since_hours=WIDE_WINDOW, total_input_tokens=0
+    )
+    report = analyzer.build_report(
+        date="2100-01-01",
+        since_hours=24,
+        salt="s",
+        tool_messages=tool_messages,
+        heavy_sessions=heavy,
+        telemetry=tel,
+        llm_contents=llm,
+        prompt_duplicate_shadow=False,
+    )
+    assert report.prompt_duplicates.enabled is False
+    _, md_path = analyzer.write_report(report, tmp_path / "out")
+    # Section still renders, marked disabled; report writing stays healthy.
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "Prompt duplicate blocks" in md_text
+    assert "disabled" in md_text
+
+
+# ---------------------------------------------------------------------------
+# Prompt dedup A/B simulation (offline only; no replacement)
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_dedup_ab_simulates_candidate_classes_without_tokenizer():
+    skill_line = "Skill duplicate instruction line long enough for hashing."
+    sys_line = "System duplicate instruction line long enough for hashing."
+    cross_line = "Cross prompt duplicate instruction line long enough for hashing."
+    contents = [
+        analyzer._LLMContent(
+            block_type="skill_prompt",
+            content=f"{skill_line}\n{skill_line}\n{cross_line}",
+        ),
+        analyzer._LLMContent(
+            block_type="system_prompt",
+            content=f"{sys_line}\n{sys_line}\n{cross_line}",
+        ),
+        analyzer._LLMContent(
+            block_type="tool_result",
+            content=f"{skill_line}\n{skill_line}",
+        ),
+    ]
+    sim = analyzer.simulate_prompt_dedup_ab(
+        contents, salt="s", min_block_chars=40, tokenizer=None
+    )
+    assert sim.enabled
+    assert sim.item_count == 2
+    assert sim.tokenizer_status == "unavailable"
+    classes = {c.candidate_class: c for c in sim.classes}
+    assert classes["same_type_skill_prompt_only"].candidate_group_count == 1
+    assert classes["same_type_skill_prompt_only"].replacement_occurrence_count == 1
+    assert classes["same_type_system_prompt_only"].candidate_group_count == 1
+    assert classes["cross_type_system_skill"].candidate_group_count == 1
+    for cls in classes.values():
+        assert cls.actual_tokens_before is None
+        assert cls.actual_tokens_after is None
+        assert cls.actual_tokens_delta is None
+    # Tool duplicates with the same text are ignored by this prompt-only harness.
+    assert all("tool" not in c.candidate_class for c in sim.classes)
+
+
+def test_prompt_dedup_ab_uses_injected_tokenizer_only_when_available():
+    line = "Skill duplicate instruction line long enough for tokenizer counting."
+    fake = analyzer.TokenizerBackend(
+        name="fake:chars",
+        count=lambda text: len(text),
+    )
+    sim = analyzer.simulate_prompt_dedup_ab(
+        [
+            analyzer._LLMContent(
+                block_type="skill_prompt", content=f"{line}\n{line}\n{line}"
+            )
+        ],
+        salt="s",
+        min_block_chars=40,
+        tokenizer=fake,
+    )
+    assert sim.tokenizer_status == "available"
+    assert sim.tokenizer_backend == "fake:chars"
+    cls = {c.candidate_class: c for c in sim.classes}["same_type_skill_prompt_only"]
+    assert cls.actual_tokens_before == 3 * len(line)
+    assert cls.actual_tokens_after is not None
+    assert cls.actual_tokens_delta == cls.actual_tokens_before - cls.actual_tokens_after
+
+
+def test_prompt_dedup_ab_report_no_leak_and_not_realized(tmp_path):
+    db = tmp_path / "state.db"
+    secret_line = "SECRET-PROMPT-AB-LINE-THAT-REPEATS-AND-IS-LONG-ENOUGH"
+    sys_prompt = f"{secret_line}\n{secret_line}"
+    _make_db(
+        db,
+        [("tool", "irrelevant tool output", "Bash")],
+        sessions=[("raw-session-id", "discord", None, 1, 1, 100, 10, 1, sys_prompt)],
+    )
+    report = _analyze(db, tmp_path)
+    ab = report.prompt_dedup_ab
+    assert ab.enabled
+    cls = {c.candidate_class: c for c in ab.classes}["same_type_system_prompt_only"]
+    assert cls.candidate_group_count == 1
+    assert cls.replacement_occurrence_count == 1
+    # A/B simulation is not realized telemetry savings.
+    assert report.telemetry.chars_saved == 0
+
+    json_path, md_path = analyzer.write_report(report, tmp_path / "out")
+    blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
+    assert secret_line not in blob
+    assert "Prompt dedup A/B simulation" in blob
+    assert "OFFLINE SIMULATION ONLY" in blob
+    assert "NOT realized savings" in blob
+
+
+def test_prompt_dedup_ab_can_be_disabled(tmp_path):
+    db = tmp_path / "state.db"
+    _make_db(db, [("tool", "out", "Bash")])
+    tool_messages = analyzer.load_tool_messages(db, since_hours=WIDE_WINDOW)
+    llm = analyzer.load_llm_bound_content(db, since_hours=WIDE_WINDOW)
+    heavy = analyzer.load_heavy_sessions(
+        db, since_hours=WIDE_WINDOW, salt="s", top_n=20
+    )
+    tel = analyzer.parse_telemetry(
+        tmp_path / "none.jsonl", since_hours=WIDE_WINDOW, total_input_tokens=0
+    )
+    report = analyzer.build_report(
+        date="2100-01-01",
+        since_hours=24,
+        salt="s",
+        tool_messages=tool_messages,
+        heavy_sessions=heavy,
+        telemetry=tel,
+        llm_contents=llm,
+        prompt_dedup_ab=False,
+    )
+    assert report.prompt_dedup_ab.enabled is False
+    _, md_path = analyzer.write_report(report, tmp_path / "out")
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "Prompt dedup A/B simulation" in md_text
+    assert "disabled" in md_text

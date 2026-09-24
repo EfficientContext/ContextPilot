@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import Iterable
 
 SAVINGS_RE = re.compile(
-    r"\[ContextPilot\].*?saved\s+(?P<chars>\d+)\s+chars\s+\(~(?P<tokens>\d+)\s+tokens\)"
+    r"\[ContextPilot\].*?saved\s+(?P<chars>\d+)\s+chars"
 )
 SESSION_RE = re.compile(
     r"\[ContextPilot\]\s+Session\s+(?P<session>[^:]+):\s+(?P<turns>\d+)\s+turns,\s+"
-    r"(?P<chars>\d+)\s+chars\s+saved\s+\(~(?P<tokens>\d+)\s+tokens\)"
+    r"(?P<chars>\d+)\s+chars\s+saved"
 )
 
 FORBIDDEN_COLUMNS = {
@@ -71,6 +71,7 @@ class DailyReport:
     contextpilot_log_events: int
     contextpilot_telemetry_events: int
     contextpilot_savings_source: str
+    contextpilot_token_status: str
     contextpilot_chars_saved: int
     contextpilot_tokens_saved: int
     estimated_input_token_reduction_pct: float
@@ -191,24 +192,30 @@ def parse_contextpilot_savings(log_path: Path, *, since_hours: int) -> tuple[int
             continue
         events += 1
         chars += int(m.group("chars"))
-        tokens += int(m.group("tokens"))
+        # Gateway log lines are char-only for token accounting. Older logs used
+        # to include a ``(~N tokens)`` suffix derived from chars/4; daily reports
+        # must not consume that estimate. Token savings come only from
+        # tokenizer-measured telemetry (``actual_tokens_saved``).
     return events, chars, tokens
 
 
-def parse_contextpilot_telemetry(telemetry_path: Path, *, since_hours: int) -> tuple[int, int, int]:
+def parse_contextpilot_telemetry(telemetry_path: Path, *, since_hours: int) -> tuple[int, int, int, int]:
     """Aggregate the plugin's metadata-only telemetry file.
 
-    Returns (events, chars_saved, tokens_saved). The file is JSON-lines, one
-    numeric record per saved turn; it never contains message content, prompts,
-    or tool payloads, so we only read numeric counters here.
+    Returns (events, chars_saved, actual_tokens_saved, actual_token_events).
+    The file is JSON-lines, one numeric record per saved turn; it never contains
+    message content, prompts, or tool payloads, so we only read numeric counters
+    here. Token savings are counted only from tokenizer-measured
+    ``actual_tokens_saved`` records.
     """
     if not telemetry_path or not telemetry_path.exists():
-        return 0, 0, 0
+        return 0, 0, 0, 0
     cutoff = dt.datetime.now(dt.timezone.utc).timestamp() - since_hours * 3600
 
     events = 0
     chars = 0
     tokens = 0
+    actual_token_events = 0
     with telemetry_path.open("r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
@@ -226,11 +233,14 @@ def parse_contextpilot_telemetry(telemetry_path: Path, *, since_hours: int) -> t
             cs = record.get("chars_saved")
             if not isinstance(cs, (int, float)):
                 continue
-            saved_tokens = record.get("tokens_saved")
             events += 1
             chars += int(cs)
-            tokens += int(saved_tokens) if isinstance(saved_tokens, (int, float)) else int(cs) // 4
-    return events, chars, tokens
+            if record.get("actual_token_status") == "available":
+                saved = record.get("actual_tokens_saved")
+                if isinstance(saved, (int, float)):
+                    tokens += int(saved)
+                    actual_token_events += 1
+    return events, chars, tokens, actual_token_events
 
 
 def build_report(
@@ -239,7 +249,7 @@ def build_report(
     date: str,
     since_hours: int,
     log_stats: tuple[int, int, int],
-    telemetry_stats: tuple[int, int, int] = (0, 0, 0),
+    telemetry_stats: tuple[int, int, int, int] = (0, 0, 0, 0),
 ) -> DailyReport:
     rows = list(metrics)
     source_counts: dict[str, int] = {}
@@ -247,26 +257,34 @@ def build_report(
         source_counts[row.source or "unknown"] = source_counts.get(row.source or "unknown", 0) + 1
 
     total_input = sum(r.input_tokens for r in rows)
-    log_events, log_chars, log_tokens = log_stats
-    tel_events, tel_chars, tel_tokens = telemetry_stats
+    log_events, log_chars, _log_tokens_ignored = log_stats
+    tel_events, tel_chars, tel_tokens, tel_token_events = telemetry_stats
 
     # Prefer the local telemetry file when present: it is the authoritative,
-    # log-independent source. Logs are a fallback and are NOT summed on top
-    # (both record the same turns, so summing would double-count).
+    # log-independent source. Logs are a fallback for char savings only; token
+    # savings must be tokenizer-measured and are never derived from log chars.
     if tel_events > 0:
-        events, saved_chars, saved_tokens = tel_events, tel_chars, tel_tokens
+        events, saved_chars = tel_events, tel_chars
         savings_source = "telemetry"
     else:
-        events, saved_chars, saved_tokens = log_events, log_chars, log_tokens
-        savings_source = "gateway-log"
+        events, saved_chars = log_events, log_chars
+        savings_source = "gateway-log-chars-only"
+
+    if tel_token_events > 0:
+        saved_tokens = tel_tokens
+        token_status = "available"
+    else:
+        saved_tokens = 0
+        token_status = "unavailable"
 
     denominator = total_input + saved_tokens
-    reduction = (saved_tokens / denominator * 100.0) if denominator else 0.0
+    reduction = (saved_tokens / denominator * 100.0) if token_status == "available" and denominator else 0.0
 
     notes: list[str] = [
         "metadata-only: did not read messages.content, sessions.system_prompt, reasoning, or tool payloads",
         "accuracy gate is observational here; apply code/config changes only after separate golden-eval pass",
         f"contextpilot savings source: {savings_source} (telemetry={tel_events} events, log={log_events} events)",
+        f"contextpilot token savings status: {token_status} (tokenizer-measured events={tel_token_events})",
     ]
     if not rows:
         notes.append("no sessions observed in the selected window")
@@ -292,6 +310,7 @@ def build_report(
         contextpilot_log_events=log_events,
         contextpilot_telemetry_events=tel_events,
         contextpilot_savings_source=savings_source,
+        contextpilot_token_status=token_status,
         contextpilot_chars_saved=saved_chars,
         contextpilot_tokens_saved=saved_tokens,
         estimated_input_token_reduction_pct=round(reduction, 2),
@@ -308,6 +327,22 @@ def write_report(report: DailyReport, out_dir: Path) -> tuple[Path, Path]:
     data = asdict(report)
     json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    if report.contextpilot_token_status == "available":
+        token_saved_line = (
+            f"- ContextPilot saved tokens (tokenizer): {report.contextpilot_tokens_saved} "
+            f"tokens ({report.contextpilot_chars_saved} chars metadata)"
+        )
+        reduction_line = (
+            f"- Input-token reduction from tokenizer telemetry: "
+            f"{report.estimated_input_token_reduction_pct}%"
+        )
+    else:
+        token_saved_line = (
+            f"- ContextPilot saved tokens (tokenizer): unavailable "
+            f"({report.contextpilot_chars_saved} chars metadata only)"
+        )
+        reduction_line = "- Input-token reduction from tokenizer telemetry: unavailable"
+
     md = [
         f"# ContextPilot Hermes monitor — {report.date}",
         "",
@@ -318,11 +353,12 @@ def write_report(report: DailyReport, out_dir: Path) -> tuple[Path, Path]:
         f"- Input tokens: {report.total_input_tokens}",
         f"- Output tokens: {report.total_output_tokens}",
         f"- Tool calls: {report.total_tool_calls}",
-        f"- ContextPilot saved: ~{report.contextpilot_tokens_saved} tokens ({report.contextpilot_chars_saved} chars)",
+        token_saved_line,
         f"- ContextPilot savings source: {report.contextpilot_savings_source} "
-        f"(telemetry events={report.contextpilot_telemetry_events}, log events={report.contextpilot_log_events})",
-        f"- Estimated input-token reduction: {report.estimated_input_token_reduction_pct}%",
-        f"- Estimated cost: ${report.estimated_cost_usd:.4f}",
+        f"(telemetry events={report.contextpilot_telemetry_events}, log events={report.contextpilot_log_events}, "
+        f"token status={report.contextpilot_token_status})",
+        reduction_line,
+        f"- Session cost field total: ${report.estimated_cost_usd:.4f}",
         "",
         "## Top sources",
     ]

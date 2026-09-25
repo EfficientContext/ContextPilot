@@ -1,0 +1,8 @@
+# Extra dependencies for the video-RAG reproduction scripts only.
+# contextpilot.multimodal itself needs nothing beyond the core install.
+#
+#   pip install -r examples/video_rag/requirements.txt
+#   ffmpeg is also required for prepare_frames.py (apt-get install ffmpeg / brew install ffmpeg)
+
+pillow>=10.0     # retrieve_frames.py: decode frames for the retrieval encoder
+torch>=2.1       # retrieve_frames.py: SigLIP-2 image/text encoder

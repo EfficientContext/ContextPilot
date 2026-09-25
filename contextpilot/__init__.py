@@ -29,7 +29,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 # Map each public name to the submodule that defines it. Submodules are imported
 # on first attribute access, so importing ``contextpilot`` (or any lightweight

@@ -2,7 +2,7 @@
 
 This guide covers installing ContextPilot and its dependencies.
 
-**Requirements:** Python >= 3.10
+**Requirements:** Python >= 3.10 · current release: **v0.5.0**
 
 ---
 
@@ -49,6 +49,37 @@ xcode-select --install    # one-time: provides clang++ to compile the native hoo
 
 ---
 
+## Multimodal / Video RAG
+
+`contextpilot.multimodal` (video-frame and image context blocks, new in v0.5.0)
+needs no dependencies beyond the core install:
+
+```bash
+pip install contextpilot
+```
+
+Only the reproduction scripts under `examples/video_rag/` need more — a frame
+decoder for the retrieval encoder, plus `ffmpeg` to extract frames:
+
+```bash
+pip install -r examples/video_rag/requirements.txt   # pillow + torch
+sudo apt-get install ffmpeg                          # or: brew install ffmpeg
+```
+
+See the [multimodal guide](../guides/multimodal.md).
+
+---
+
+## Optional Extras
+
+| Extra | Install | Adds |
+|---|---|---|
+| `gpu` | `pip install "contextpilot[gpu]"` | GPU distance computation (`cupy-cuda12x`, CUDA 12.x) |
+| `sglang` | `pip install "contextpilot[sglang]"` | Pins `sglang>=0.5` alongside ContextPilot |
+| `dev` | `pip install "contextpilot[dev]"` | Formatters, linters, pytest |
+
+---
+
 ## Distributed Setup
 
 If the ContextPilot index server and the inference engine run in **separate Python environments** (e.g., different virtualenvs or containers), the engine environment won't have the `contextpilot` package. Use the standalone hook instead:
@@ -77,6 +108,11 @@ The installer downloads the hook from GitHub and installs it into site-packages.
 
 ```bash
 python -c "import contextpilot; print('ContextPilot', contextpilot.__version__)"
+# ContextPilot 0.5.0
 ```
+
+Importing `contextpilot` is lazy: the heavy RAG stack (SciPy and friends) loads
+on first use of a name that needs it, so this check stays fast in minimal
+environments.
 
 Docker images are also available for both all-in-one and standalone deployment. See the [Docker guide](docker.md).

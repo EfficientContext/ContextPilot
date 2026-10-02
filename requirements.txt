@@ -8,6 +8,6 @@ numpy
 scipy
 tqdm
 fastapi[all]>=0.115.0
-uvicorn[standard]>=0.32.0
+uvicorn[standard]>=0.54.0
 httpx>=0.28.0
 pytest

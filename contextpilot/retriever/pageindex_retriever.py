@@ -111,10 +111,7 @@ class PageIndexRetriever:
     
     Examples:
         >>> # Basic usage with PDF documents
-        >>> retriever = PageIndexRetriever(
-        ...     model="gpt-4o",
-        ...     openai_api_key="your-api-key"
-        ... )
+        >>> retriever = PageIndexRetriever(model="gpt-4o")
         >>> retriever.index_documents(["report.pdf", "manual.pdf"])
         >>> results = retriever.search_queries(
         ...     query_data=[{"question": "What is the revenue for Q1?"}],

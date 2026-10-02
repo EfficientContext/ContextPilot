@@ -165,7 +165,7 @@ def update_evi(metrics, prediction, gold):
     return em, prec, recall
 
 
-def eval(prediction_file, gold_file, alias_file):
+def evaluate(prediction_file, gold_file, alias_file):
     aliases = {}
 
     with open(prediction_file) as f:
@@ -259,6 +259,10 @@ def eval(prediction_file, gold_file, alias_file):
         metrics[k] = round(metrics[k] / N * 100, 2)
 
     print(json.dumps(metrics, indent=4))
+
+
+# Keep the historical public name without using dynamic code execution.
+eval = evaluate
 
 
 import re

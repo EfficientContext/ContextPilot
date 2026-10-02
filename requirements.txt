@@ -1,7 +1,7 @@
 datasets
 transformers
 openai
-elasticsearch==8.18.1
+elasticsearch==9.5.1
 aiohttp
 ujson
 numpy

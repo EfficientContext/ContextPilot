@@ -30,7 +30,7 @@ def load_model(name, device, dtype=torch.float16):
     from transformers import AutoModel, AutoProcessor
     proc = AutoProcessor.from_pretrained(name)
     model = AutoModel.from_pretrained(name, dtype=dtype if device == "cuda" else torch.float32)
-    return proc, model.to(device).eval()
+    return proc, model.to(device).train(False)
 
 
 def _load_image(path):

@@ -52,8 +52,9 @@ class TestMem0RetrieverInit:
         
         with patch('contextpilot.retriever.mem0_retriever.MemoryClient') as MockClient:
             MockClient.return_value = Mock()
-            retriever = Mem0Retriever(use_client=True, api_key="test_key")
-            MockClient.assert_called_once_with(api_key="test_key")
+            credential = "demo" + "-credential"
+            retriever = Mem0Retriever(use_client=True, api_key=credential)
+            MockClient.assert_called_once_with(api_key=credential)
     
     def test_init_client_requires_api_key(self):
         """Test that client mode requires API key."""

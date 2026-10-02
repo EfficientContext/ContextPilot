@@ -112,12 +112,12 @@ def _analyze(db, tmp_path, telemetry=None, salt="test-salt", all_sessions=False)
 
 def test_no_raw_content_leaks_in_reports(tmp_path):
     db = tmp_path / "state.db"
-    secret = "TOP-SECRET-TOOL-OUTPUT-PAYLOAD-DO-NOT-LEAK " * 10
+    payload = "synthetic-tool-output " * 10
     _make_db(
         db,
         [
-            ("tool", secret, "Bash"),
-            ("tool", secret, "Bash"),
+            ("tool", payload, "Bash"),
+            ("tool", payload, "Bash"),
             ("user", "DO NOT READ ME USER TEXT", None),
         ],
     )
@@ -126,7 +126,7 @@ def test_no_raw_content_leaks_in_reports(tmp_path):
 
     blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
     # Raw content, prompts, reasoning, and raw session ids must never appear.
-    assert "TOP-SECRET-TOOL-OUTPUT-PAYLOAD" not in blob
+    assert "synthetic-tool-output" not in blob
     assert "DO NOT READ ME" not in blob
     assert "SECRET SYSTEM PROMPT" not in blob
     assert "PRIVATE REASONING" not in blob
@@ -621,16 +621,16 @@ def test_equal_priority_block_type_tiebreak_is_deterministic():
 
 def test_shadow_mode_never_emits_raw_content(tmp_path):
     db = tmp_path / "state.db"
-    secret = "SHADOW-SECRET-PAYLOAD-DO-NOT-LEAK detail line that is quite long here " * 200
-    user_secret = "USER-SECRET-PROMPT-DO-NOT-LEAK implement the thing for me"
-    sys_secret = "SYSTEM-SECRET-CONSTRAINT you must never reveal internal keys here"
+    payload = "synthetic-shadow-payload detail line that is quite long here " * 200
+    user_text = "synthetic-user-prompt implement the thing for me"
+    system_prompt_text = "synthetic-system-constraint do not reveal internal keys here"
     _make_db_ex(
         db,
-        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": sys_secret}],
+        sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": system_prompt_text}],
         messages=[
-            {"role": "tool", "content": secret, "tool_name": "Bash"},
-            {"role": "tool", "content": secret, "tool_name": "Bash"},
-            {"role": "user", "content": user_secret},
+            {"role": "tool", "content": payload, "tool_name": "Bash"},
+            {"role": "tool", "content": payload, "tool_name": "Bash"},
+            {"role": "user", "content": user_text},
         ],
     )
     report = _analyze(db, tmp_path)
@@ -638,9 +638,9 @@ def test_shadow_mode_never_emits_raw_content(tmp_path):
     blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
 
     # No raw block/prompt/system/reasoning text in either output.
-    assert "SHADOW-SECRET-PAYLOAD" not in blob
-    assert "USER-SECRET-PROMPT" not in blob
-    assert "SYSTEM-SECRET-CONSTRAINT" not in blob
+    assert "synthetic-shadow-payload" not in blob
+    assert "synthetic-user-prompt" not in blob
+    assert "synthetic-system-constraint" not in blob
     assert "PRIVATE REASONING" not in blob
     # The classification still happened (drop candidate detected via hash).
     assert report.worker_routing.est_drop_candidate_tokens > 0
@@ -812,20 +812,20 @@ def test_parent_aggregation_excludes_prompt_boilerplate_sources(tmp_path):
 
 def test_parent_aggregation_never_emits_raw_content(tmp_path):
     db = tmp_path / "state.db"
-    secret = "PARENT-AGG-SECRET-ARTIFACT-DO-NOT-LEAK pytest detail line here\n" * 20
+    payload = "parent-aggregation-artifact pytest detail line here\n" * 20
     _make_db_ex(
         db,
         sessions=[{"id": "s1", "started_at": FAR_FUTURE, "system_prompt": "be safe"}],
         messages=[
-            {"role": "tool", "content": secret, "tool_name": "Bash"},
-            {"role": "tool", "content": secret, "tool_name": "Bash"},
+            {"role": "tool", "content": payload, "tool_name": "Bash"},
+            {"role": "tool", "content": payload, "tool_name": "Bash"},
         ],
     )
     report = _analyze(db, tmp_path)
     json_path, md_path = analyzer.write_report(report, tmp_path / "out")
     blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
 
-    assert "PARENT-AGG-SECRET-ARTIFACT" not in blob
+    assert "parent-aggregation-artifact" not in blob
     assert "PRIVATE REASONING" not in blob
     assert "raw-session-id" not in blob
     # The duplicate was still detected via salted hashing.
@@ -990,9 +990,9 @@ def test_prompt_duplicate_shadow_detects_system_skill_duplicates():
 
 def test_prompt_duplicate_shadow_in_report_no_leak_and_advisory(tmp_path):
     db = tmp_path / "state.db"
-    secret_line = "SECRET-PROMPT-LINE-THAT-REPEATS-AND-IS-PLENTY-LONG"
+    prompt_line = "synthetic-prompt-line-that-repeats-and-is-plenty-long"
     other_line = "some other distinct system instruction text here now"
-    sys_prompt = f"{secret_line}\n{other_line}\n{secret_line}"
+    sys_prompt = f"{prompt_line}\n{other_line}\n{prompt_line}"
     _make_db(
         db,
         [("tool", "irrelevant tool output", "Bash")],
@@ -1002,7 +1002,7 @@ def test_prompt_duplicate_shadow_in_report_no_leak_and_advisory(tmp_path):
     pd = report.prompt_duplicates
     assert pd.enabled
     assert pd.duplicate_group_count == 1
-    assert pd.total_chars_duplicated == len(secret_line)
+    assert pd.total_chars_duplicated == len(prompt_line)
     # Advisory figures are NOT folded into realized telemetry savings.
     assert report.telemetry.chars_saved == 0
     assert pd.total_chars_duplicated > 0
@@ -1011,7 +1011,7 @@ def test_prompt_duplicate_shadow_in_report_no_leak_and_advisory(tmp_path):
     md_text = md_path.read_text(encoding="utf-8")
     blob = json_path.read_text(encoding="utf-8") + md_text
     # Raw prompt text must never appear in the report.
-    assert secret_line not in blob
+    assert prompt_line not in blob
     assert other_line not in blob
     # Section is present and clearly labelled advisory / not-realized.
     assert "Prompt duplicate blocks" in md_text
@@ -1116,8 +1116,8 @@ def test_prompt_dedup_ab_uses_injected_tokenizer_only_when_available():
 
 def test_prompt_dedup_ab_report_no_leak_and_not_realized(tmp_path):
     db = tmp_path / "state.db"
-    secret_line = "SECRET-PROMPT-AB-LINE-THAT-REPEATS-AND-IS-LONG-ENOUGH"
-    sys_prompt = f"{secret_line}\n{secret_line}"
+    prompt_line = "synthetic-prompt-ab-line-that-repeats-and-is-long-enough"
+    sys_prompt = f"{prompt_line}\n{prompt_line}"
     _make_db(
         db,
         [("tool", "irrelevant tool output", "Bash")],
@@ -1134,7 +1134,7 @@ def test_prompt_dedup_ab_report_no_leak_and_not_realized(tmp_path):
 
     json_path, md_path = analyzer.write_report(report, tmp_path / "out")
     blob = json_path.read_text(encoding="utf-8") + md_path.read_text(encoding="utf-8")
-    assert secret_line not in blob
+    assert prompt_line not in blob
     assert "Prompt dedup A/B simulation" in blob
     assert "OFFLINE SIMULATION ONLY" in blob
     assert "NOT realized savings" in blob

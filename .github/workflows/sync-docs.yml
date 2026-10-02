@@ -6,6 +6,9 @@ on:
     paths:
       - 'docs/**'
 
+permissions:
+  contents: read
+
 jobs:
   notify:
     name: Trigger docs site sync

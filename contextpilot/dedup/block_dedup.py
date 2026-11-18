@@ -324,6 +324,37 @@ def _dedup_assistant_message(
                 block["text"] = new_text
 
 
+def _register_assistant_blocks(
+    msg: dict,
+    idx: int,
+    seen_blocks: Dict[str, Tuple[int, str, int]],
+    result: DedupResult,
+    min_block_chars: int,
+    min_content_chars: int,
+    chunk_modulus: int,
+) -> None:
+    """Register assistant content as a dedup source without shortening it.
+
+    Uses the same size gate as ``_dedup_assistant_message`` so the set of
+    blocks available to later messages is unchanged.
+    """
+    raw = msg.get("content", "")
+    if isinstance(raw, str):
+        texts = [raw]
+    elif isinstance(raw, list):
+        texts = [b.get("text", "") for b in raw
+                 if isinstance(b, dict) and b.get("type") == "text"]
+    else:
+        texts = []
+    for t in texts:
+        if not isinstance(t, str) or len(t) < min_content_chars:
+            continue
+        _register_blocks_only(
+            t, seen_blocks, idx, "assistant message", result,
+            min_block_chars, chunk_modulus,
+        )
+
+
 def _dedup_tool_message(
     msg: dict,
     idx: int,
@@ -370,6 +401,7 @@ def dedup_chat_completions(
     min_content_chars: int = MIN_CONTENT_CHARS,
     chunk_modulus: int = CHUNK_MODULUS,
     system_content: Optional[str] = None,
+    dedup_assistant: bool = False,
 ) -> DedupResult:
     """Exact-block dedup across ALL roles within a single chat payload.
 
@@ -382,6 +414,12 @@ def dedup_chat_completions(
 
     The system / skill prompt is treated as the canonical source: its blocks are
     registered but it is never itself shortened.
+
+    Assistant messages (the model's own earlier replies) are, by default, also
+    registered but never shortened. In replay tests the model copied "see above"
+    notes from its own past replies into new replies, breaking its commands
+    (research/dedup-replay-2026-11-11.md). Pass ``dedup_assistant=True`` to
+    restore the old behaviour.
     """
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -422,10 +460,16 @@ def dedup_chat_completions(
                     msg["content"] = new_content
 
         elif role == "assistant":
-            _dedup_assistant_message(
-                msg, idx, seen_blocks, result,
-                min_block_chars, min_content_chars, chunk_modulus,
-            )
+            if dedup_assistant:
+                _dedup_assistant_message(
+                    msg, idx, seen_blocks, result,
+                    min_block_chars, min_content_chars, chunk_modulus,
+                )
+            else:
+                _register_assistant_blocks(
+                    msg, idx, seen_blocks, result,
+                    min_block_chars, min_content_chars, chunk_modulus,
+                )
 
         elif role == "tool":
             _dedup_tool_message(

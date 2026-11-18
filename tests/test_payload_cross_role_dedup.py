@@ -11,6 +11,12 @@ Hard safety contract these tests lock in:
 1. Exact repeated blocks ACROSS DIFFERENT ROLES are deduped. The first
    (earliest, in document order) occurrence keeps its full text; later
    occurrences are shortened to a reference pointing "above".
+   Exception: the model's OWN earlier replies (assistant messages) are never
+   shortened by default. Replay tests showed the model copies the "see above"
+   notes it finds in its own past replies into new replies, which breaks its
+   commands (research/dedup-replay-2026-11-11.md). Their blocks still serve as
+   sources for later duplicates. `dedup_assistant=True` restores the old
+   behaviour for experiments.
 2. References point to an EARLIER block in the SAME payload (never forward,
    never the first occurrence).
 3. A one-character-different / near-duplicate block is NEVER collapsed — its
@@ -79,7 +85,60 @@ def test_repeated_block_across_roles_is_deduped_first_copy_kept():
     assert len(user_after) < len(body["messages"][1]["content"]) or REFERENCE_MARKER in user_after
     assert REFERENCE_MARKER in user_after, "user-role duplicate must be deduped"
     assert REFERENCE_MARKER in tool_after, "tool-role duplicate must be deduped"
-    assert REFERENCE_MARKER in asst_after, "assistant-role duplicate must be deduped"
+    assert REFERENCE_MARKER not in asst_after, "assistant replies are never shortened by default"
+
+
+def test_assistant_reply_kept_verbatim_by_default():
+    """The model's own replies must never contain dedup notes (it copies them)."""
+    block = _instruction_block()
+    body = _cross_role_payload(block, block, block, block)
+    asst_before = body["messages"][4]["content"]
+
+    dedup_chat_completions(body)
+
+    assert body["messages"][4]["content"] == asst_before
+
+
+def test_assistant_reply_list_content_kept_verbatim_by_default():
+    block = _instruction_block()
+    body = _cross_role_payload(block, block, block, block)
+    parts = [{"type": "text", "text": "Acknowledging the rules:\n" + block + "\nDone."}]
+    body["messages"][4]["content"] = json.loads(json.dumps(parts))
+
+    dedup_chat_completions(body)
+
+    assert body["messages"][4]["content"] == parts
+
+
+def test_assistant_blocks_still_seed_later_duplicates():
+    """A block first written by the assistant still lets a later tool repeat be cut."""
+    block = _instruction_block()
+    other = "unrelated system text"
+    body = {
+        "messages": [
+            {"role": "system", "content": other},
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "Here is the plan:\n" + block + "\nOK."},
+            {"role": "assistant", "tool_calls": [{"id": "c1", "function": {"name": "Read"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "File header\n" + block + "\nFooter."},
+        ]
+    }
+    asst_before = body["messages"][2]["content"]
+
+    result = dedup_chat_completions(body)
+
+    assert body["messages"][2]["content"] == asst_before
+    assert REFERENCE_MARKER in body["messages"][4]["content"]
+    assert result.chars_saved > 0
+
+
+def test_dedup_assistant_opt_in_restores_old_behaviour():
+    block = _instruction_block()
+    body = _cross_role_payload(block, block, block, block)
+
+    dedup_chat_completions(body, dedup_assistant=True)
+
+    assert REFERENCE_MARKER in body["messages"][4]["content"]
 
 
 def test_reference_points_backward_only_never_first_occurrence():
